@@ -1,0 +1,11 @@
+# Secrets — never committed, matches the CLAUDE.md rule (never read/commit .env)
+**/.env
+
+# Compiled output — regenerate from app/src/
+app/build/
+
+# Logs — journal output, not a deliverable
+**/logs/
+
+# Portable JDK, if fetched here rather than reused from ../motivewave/tools
+/tools/
