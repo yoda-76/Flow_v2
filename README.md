@@ -13,6 +13,11 @@ system**.
 The one-line goal: *test many strategies quickly, without editing the core
 for any of them.*
 
+Architecture below is the current settled shape, recorded decision by
+decision in `docs/dynamic/decisions.md`. It is the current best answer, not
+final — but it is specific enough to build against, which the first draft of
+this file was not.
+
 ## What this is, and what it explicitly is not
 
 **Is:** a single deployed MotiveWave Strategy — "the runtime" — that owns
@@ -28,38 +33,16 @@ did.
   docs flag their optimizer's fills as optimistic, and the tick-level order
   flow this system is built on doesn't survive bar-granularity replay
   anyway. Backtest may come later, from our own recorded data — see
-  *Record now, replay later* below.
+  *Replay* below.
 - **No computed options/Greeks/GEX.** We don't calculate these ourselves —
   that's FLOW's domain, on a different market. GEX *levels* (or any other
   external observation — key levels, a bias for the day, whatever a
   strategy wants) can still enter the system as **manual pluggable input**:
-  see *External/manual inputs* below.
+  see *External inputs and config* below.
 - **No multi-instrument portfolio logic.** One instrument per runtime
   instance (one chart), at first.
 - **No ML.** Rules, expressed explicitly, so a losing forward test tells you
   *which rule* was wrong.
-
-## External/manual inputs
-
-Not everything a strategy should react to comes from the live feed. GEX
-levels (computed elsewhere, e.g. by FLOW, or read off a vendor site), key
-support/resistance, a discretionary daily bias — these change at most once
-a day, sometimes intraday, and are edited by hand.
-
-These are a **first-class, pluggable input type**, not a hack:
-
-- Held in a small daily/session-scoped store (a plain file — JSON/CSV —
-  loaded at session start and re-readable on demand; format TBD when the
-  first strategy actually needs one).
-- Exposed to strategies as just another read-only field on `MarketState`
-  (e.g. `state.externalLevels()`), alongside price/order-flow features —
-  a strategy doesn't know or care whether a number came from the live feed
-  or a file someone edited that morning.
-- Edited only by the user, the same way `.env` is — the runtime reads this
-  store, never writes it.
-- Staleness is visible: the journal records what external input was active
-  at every decision point, so a decision made on a three-day-old GEX level
-  is traceable after the fact, not silently assumed current.
 
 ## Relationship to the two sibling repos
 
@@ -79,31 +62,210 @@ ATR-based or structure-based by default?* is ours, and lives here.
 The SDK docs, Javadoc and sample project are **not copied** into this repo.
 They stay at `../motivewave/docs/static/`, single source, never edited.
 
-## The fixed constraint everything is built around
+## The layer model
 
 FLOW's static docs put one architectural constraint above everything else:
 data flows one way through named layers, and each layer is inspectable on its
 own. That carries over here, re-cut for a live feed:
 
 ```
-FEED          MotiveWave SDK: Tick, DOM, DataSeries (OHLC bars)
+FEED          MotiveWave SDK: Tick, DOM, DataSeries (OHLC bars), clock
   ↓
-INGEST        normalize into our own immutable event types
+INGEST        normalize into our own immutable, sequenced event types
+  ↓           (the last layer allowed to read the wall clock)
+SEQUENCER     one totally-ordered event stream, single-writer drain
   ↓
 FEATURES      price action (candles, swings, structure, levels)
               order flow (delta, footprint, profile, liquidity map, big trades)
   ↓
-MARKET STATE  one immutable read-only snapshot per decision point
+MARKET STATE  read-through view, generation-guarded, handed to the strategy
   ↓
-STRATEGY      plug-in: snapshot → Intent            ← the only part that varies
+TRIGGERS      when does the strategy get woken, and why
   ↓
-EXECUTION     intent → orders, sizing, brackets, session guards
+STRATEGY      plug-in: state → Intent            ← the only part that varies
+  ↓
+RISK CHAIN    ordered filters, each verdict journaled
+  ↓
+EXECUTION     desired state → reconciled orders, sizing, brackets, guards
   ↓
 JOURNAL       every input, decision, order and fill, to disk, always
 ```
 
 Everything left of `STRATEGY` is core and is written once. Everything right
 of it is core and is written once. A new strategy touches **one box**.
+
+## The event stream
+
+Everything the runtime knows arrives as an event on one totally-ordered
+stream. Three producers feed it: the study callbacks (`onTick`, bar hooks,
+order and fill hooks), the `DOMListener` — which runs on its own thread, not
+the study callback thread — and the runtime's own clock.
+
+Every callback does exactly one thing: wrap its payload in an immutable
+event stamped with a monotonic sequence number, the platform event time and
+the local receipt time, then push it onto an MPSC queue. The pipeline drains
+that queue and runs on a **single thread**, so exactly one thread ever
+mutates feature state.
+
+This is what makes the feature layer race-free without locks, and it is also
+precisely the artifact a replay needs. Determinism and thread safety come
+out of the same structure.
+
+Decision cadence and order placement are deliberately separated (see
+*Deciding and acting* below), so the pipeline can run at event level
+regardless of how the `OrderContext` retention question resolves.
+
+### Time is an event
+
+Nothing below `INGEST` may read the wall clock. Time comes off the event:
+"now" is the timestamp of the most recent event drained, whatever kind it
+was.
+
+Market events alone are not enough for that — a quiet book with no prints
+would freeze time for the feature and strategy layers, and a rule like
+*flat by 15:59* would never fire. So the runtime, which sits above ingest
+where the clock is allowed, injects a synthetic `ClockEvent` into the same
+queue on a fixed cadence (100ms). It gets a sequence number and is recorded
+in the raw journal like anything else.
+
+That is what keeps replay honest: clock events are *in the recorded stream*
+and are fed back in order, rather than regenerated from the replay machine's
+clock. Feed the same file in twice, get the same intents.
+
+Clock events do not wake a strategy unless it declared a time-based trigger.
+`MarketState` exposes both notions of time separately — exchange event time
+from the last market event, local time from the last clock event — and the
+gap between them is the feed-latency measurement, journaled.
+
+### Replay
+
+The journal records every input event the runtime saw, not just its
+decisions, so a replay harness feeds recorded events back through the
+identical feature and strategy code.
+
+This is not a deferred nice-to-have. With decisions made at event level, the
+decision log alone can no longer explain *why* something fired — replay is
+the primary debugging tool, and the only honest path to backtesting
+order-flow logic later.
+
+Which makes one property load-bearing: **replay must be bit-identical to
+live.** No wall clock below ingest, no dependence on hash-ordered iteration,
+thread scheduling, or object identity hashes anywhere in the feature or
+strategy path. A self-check goes in early and stays: record a session,
+replay it, assert the intent sequence is identical.
+
+## MarketState
+
+A read-only view handed to the strategy at each decision point. Not a
+per-decision immutable copy — at the rates this feed delivers (~50,988
+`DOMOrder` entries across 20 DOM updates on `@GC`, per
+`../motivewave/docs/dynamic/findings.md`) an immutable object graph per
+decision is not affordable.
+
+Instead: features own mutable, incrementally updated internal state;
+`MarketState` is an interface reading through to them, allocation-free to
+hand over. It carries a generation counter bumped at each decision point,
+and any accessor called on a stale generation throws — which preserves what
+immutability was actually protecting against (a strategy stashing the
+reference and reading it three bars later) without the allocation.
+`MarketState.freeze()` returns a genuinely immutable copy, used only by the
+journal and by tests.
+
+The raw DOM never crosses this boundary. Strategies see derived views:
+bucketed liquidity map, imbalance at N levels, resting size at a price,
+large-order presence.
+
+### Prices are integers
+
+Prices are integer tick offsets from a session anchor throughout the core,
+converted to and from decimal only at the ingest and journal boundaries.
+Tick size and anchor come from instrument config.
+
+Rationale: every feature does price-keyed array indexing, level equality
+comparison and profile bucketing on every event. Integers make all three
+exact and fast; doubles make level equality a tolerance question forever and
+force boxed or hashed lookups in the hot path.
+
+## Features
+
+Features are incremental: each consumes events and is **correct after every
+event**, not just at bar boundaries. No feature defers work to a bar close.
+The hot path allocates nothing per event — primitive arrays, price-keyed by
+tick offset, no boxing, no string-keyed lookups.
+
+Features register in a declared order and never call each other laterally;
+dependencies are constructor-injected, so a cycle is a compile error.
+Strategies declare which features they need, and unused ones don't run.
+
+### Readiness, not warmup
+
+Features differ in what they need before their readings mean anything, and
+the difference is per-feature rather than one global warmup period. Each
+feature declares whether it is warmable and what history it needs; the
+runtime **refuses to arm until every feature the active strategy uses
+reports ready**, journaling which one is holding it up.
+
+Four classes:
+
+- **Ready immediately.** Everything DOM-derived (liquidity map, book
+  imbalance) — a full book snapshot arrives on subscription. Per-bar delta
+  and footprint for bars that begin after attach.
+- **Warmable from historical bars.** Market structure and swings, session
+  and prior-session levels, ATR, overnight high/low, VWAP, volume profile.
+  These do not need tick-level history; bar data is enough.
+- **Warmable only from tick history.** Anything needing per-trade
+  aggressor detail before attach, e.g. session cumulative delta.
+- **Forward-only, cannot be warmed.** Anything wanting DOM *history* —
+  order resting time, book-change rates, liquidity-pull frequency. Historical
+  order-book reconstruction is permission-gated on our Rithmic tier
+  (`../motivewave/docs/dynamic/findings.md`), so these are ready only after
+  N minutes of live running.
+
+Two things that are easy to miss and belong in the readiness check:
+
+- **Relative thresholds are a warmup.** "Big trade = 50 contracts" needs
+  nothing. "Big trade = 95th percentile of the last 30 minutes of trade
+  sizes" needs a filled window and a not-ready state. Same for delta
+  z-scores, normalized book imbalance, adaptive absorption thresholds. Each
+  feature declares whether its threshold is fixed or relative.
+- **The partial bar at attach** is incomplete for every bar-scoped feature.
+  Either backfill the elapsed part from tick history or mark that bar
+  invalid and have triggers skip it.
+
+Note on VWAP: computed from bars it is an approximation (typical price ×
+volume per bar) rather than true tick-weighted VWAP. On 1-minute bars the
+error is small and acceptable; the journal records which method produced the
+value so the two can be compared later if it ever matters.
+
+### Volume profile: ours and MotiveWave's, side by side
+
+Volume profile is built behind a provider interface with two
+implementations, both running at once:
+
+```
+VolumeProfileProvider          // interface, flow-core
+  ├─ CustomVolumeProfile       // flow-core, built from our own tick stream
+  └─ BuiltInVolumeProfile      // flow-runtime, reads MotiveWave's study
+```
+
+Both write POC/VAH/VAL to the journal on a fixed cadence; the strategy reads
+exactly one, named in config. Comparing custom against built-in then becomes
+an offline diff of two journal columns rather than a special exercise.
+Because strategies cannot import the SDK, the built-in-backed implementation
+lives in `flow-runtime` and is injected.
+
+Whether MotiveWave's built-in profile is readable from another study at all
+is unverified — see Q-08. If it isn't, the fallback is journaling our values
+on a cadence and comparing against the chart by hand: less automation, same
+comparison.
+
+Carried over from FLOW: its live volume profile found POC holding up well
+while VAH/VAL/HVN/LVN showed real inaccuracy on the same data, and the open
+note there was that multiple value-area methods need testing rather than
+just the current one. So the value-area algorithm is pluggable inside
+`CustomVolumeProfile`, and the journal records which one produced the
+numbers. We already know that's where the disagreement will be, and the
+built-in is the reference FLOW never had.
 
 ## The strategy contract
 
@@ -112,58 +274,109 @@ strategy" true rather than aspirational.
 
 ### Strategies emit intent. They do not place orders.
 
-A strategy receives a read-only `MarketState` and returns an `Intent`:
-*flat, long, or short, this size, with this stop and this target, because of
-this reason.* The core translates intent into actual orders, applies risk
-limits and position sizing, manages brackets, flattens at session end, and
-writes the journal.
+A strategy receives a read-only `MarketState` and returns an `Intent` — a
+**desired end state**, not a command:
 
-Sketch (names provisional until the first two strategies exist):
+```java
+Intent { targetPosition, stopPrice, targetPrice, reason, strategyId, seq }
+```
+
+`exec/` diffs that against the actual position and live orders and emits the
+minimal set of order actions. Re-submitting an identical intent is a no-op.
+Desired state rather than command, because a command model goes ambiguous
+the moment a fill is partial, a stop is already resting, or the same intent
+repeats on consecutive events — all normal at event level. It is also what
+makes a restart mid-position recoverable: desired state is re-derivable,
+command history is not.
 
 ```java
 public interface FlowStrategy {
   String id();                                   // "orb_delta_reversal"
-  List<Param> params();                          // surfaced in the settings UI
+  Set<Feature> requires();                       // gates arming on readiness
+  Set<Trigger> triggers();                       // when to wake this strategy
   void onInit(StrategyConfig cfg);
-  Intent onBarClose(MarketState state);          // primary decision point
-  default Intent onTick(MarketState state) { return Intent.none(); }
+  Intent onEvent(MarketState state);
   default void onFill(FillEvent fill) {}
 }
 ```
 
 Three reasons for intent-only, in order of how much they matter:
 
-1. **Safety.** Only the runtime class ever holds an `OrderContext`. A
-   strategy plug-in *cannot* place an order even by accident, because it is
-   never handed the ability to. Given that this project's predecessor
-   already placed a real, filled order from a study containing zero order
-   calls (see `../motivewave/docs/dynamic/findings.md`, 2026-09-11), that
-   structural guarantee is worth more than any convention.
+1. **Safety.** Only `OrderGateway` ever holds an `OrderContext`. A strategy
+   plug-in *cannot* place an order even by accident, because it is never
+   handed the ability to. Given that this project's predecessor already
+   placed a real, filled order from a study containing zero order calls (see
+   `../motivewave/docs/dynamic/findings.md`, 2026-09-11), that structural
+   guarantee is worth more than any convention.
 2. **Comparability.** Ten strategies sharing one execution path means a
    difference in results is a difference in *signal*, not in someone's
    bespoke stop handling.
-3. **Testability.** An `Intent` returned from a synthetic `MarketState` is
+3. **Testability.** An `Intent` returned from a synthetic event sequence is
    assertable in a plain unit test, with no platform running.
 
 An escape hatch for genuinely complex ideas (scaling in/out, bracket
 ladders) can be added later as an explicit opt-in interface — but not before
 a real strategy actually needs it.
 
+### Decisions are event-level
+
+Bar-close-only decisions quantise entry timing to the bar and will not work
+for the way this methodology is actually traded. The core is built for
+event-level from day one — that's what forces always-consistent features and
+the allocation-free hot path, and those are the expensive-to-retrofit half.
+
+Cadence is declared per strategy, not fixed globally:
+
+```java
+Set<Trigger> triggers();
+// BAR_CLOSE | EVERY_TICK | THROTTLE(millis)
+// PRICE_CROSS(level) | BOOK_CHANGE(minSize)   — registered dynamically
+```
+
+Dynamic registration is what keeps event level affordable. A flat strategy
+watching one level should not be woken forty times a second: it registers
+interest in the zone, sleeps until price is near it, and swaps to
+`EVERY_TICK` once the zone is in play. The runtime owns trigger evaluation
+and journals **why** the strategy was woken, which is half of debugging a
+missed entry.
+
+Phasing: the first two or three strategies declare `BAR_CLOSE` while the
+core settles, keeping early journals small and readable. Moving a later
+strategy to event level is one line, not a migration.
+
+### The shape most strategies will take
+
+Nearly every strategy here is expected to be: *an area of interest* — from
+market structure, GEX levels, or another concept — *plus an order-flow
+entry* inside it.
+
+Two consequences. The reusable library is the **entry evaluator**, not the
+setup logic: absorption, imbalance stacking, sweep-and-reclaim live in
+`flow/` and get composed by every strategy. And proximity triggers are the
+primary wake-up mechanism, which is exactly what dynamic registration above
+is for.
+
+A `ZoneEntryStrategy` base class encoding the two-phase shape (zone logic at
+a slow cadence, entry logic at event level) is the obvious eventual
+abstraction — deliberately not written until two real strategies have shown
+the same shape, per the same rule FLOW's `flow/backtest/common/` follows.
+
 ### Hard rule: a strategy must not import `com.motivewave.*`
 
-This is FLOW's "no Nautilus import in `signal.py`" rule, transplanted. A
-strategy plug-in depends only on our own core types. If a strategy can't be
-written without reaching into the SDK, the core is missing a feature — add
-it to the core, don't leak the platform into the strategy. This is what
-keeps strategies unit-testable, mutually consistent, and portable if the
-platform ever changes underneath us.
+This is FLOW's "no Nautilus import in `signal.py`" rule, transplanted — and
+here it is enforced by the compiler, not by review. `flow-core`, which holds
+every strategy, is compiled with **no `mwave_sdk.jar` on the classpath**. A
+strategy that reaches into the SDK fails the build.
+
+If a strategy can't be written without the SDK, the core is missing a
+feature — add it to the core, don't leak the platform into the strategy.
 
 ### Adding a strategy
 
 1. New class in `strategies/`, implementing `FlowStrategy`.
 2. One line in the registry.
-3. Unit-test it against hand-built `MarketState` snapshots — assert the
-   intent you expect, *before* the platform is involved.
+3. Unit-test it against synthetic event sequences — assert the intents you
+   expect, *before* the platform is involved.
 4. Recompile, redeploy, pick it from the dropdown, run in dry-run.
 
 No new `@StudyHeader`, no new deployment target, no core edits, no touching
@@ -171,7 +384,97 @@ another strategy. If step 1 forces you to modify anything in `core/`,
 `flow/`, `price/` or `exec/`, that's a signal the core abstraction is wrong
 — fix it there properly, once, for all strategies.
 
-## Safety — non-negotiable
+## External inputs and config
+
+Not everything a strategy should react to comes from the live feed. GEX
+levels (computed elsewhere, e.g. by FLOW, or read off a vendor site), key
+support/resistance, a discretionary daily bias — these change at most once a
+day, sometimes intraday, and are edited by hand.
+
+The same hand-edited store also holds **strategy parameters**. MotiveWave's
+settings panel carries only `strategyId`, `armed` and `mode`; everything
+else — per-strategy params, risk defaults, session config — is read from
+file. That sidesteps the question of whether one settings panel can
+conditionally show only the active strategy's params, keeps one config
+mechanism instead of two, makes params journalable as data rather than
+scraped from a UI, and turns a param sweep into a file edit rather than a
+recompile-and-redeploy. Cost accepted: the GUI's type-checked widgets and
+validation are lost.
+
+Properties of the store:
+
+- Plain files (JSON/CSV), session-scoped, loaded at session start and
+  re-readable on demand.
+- Exposed to strategies as just another read-only field on `MarketState`
+  (e.g. `state.externalLevels()`), alongside price and order-flow features —
+  a strategy doesn't know or care whether a number came from the live feed
+  or a file someone edited that morning.
+- Edited only by the user, the same way `.env` is — the runtime reads this
+  store, never writes it.
+- Staleness is visible: the journal records what external input and what
+  param set was active at every decision point, so a decision made on a
+  three-day-old GEX level is traceable after the fact, not silently assumed
+  current.
+
+## Execution, risk and safety
+
+### Deciding and acting are separate
+
+The pipeline always produces intents at event level and puts them on an
+intent queue. A separate **flush** step drains that queue through the risk
+chain into `OrderGateway`.
+
+Where the flush runs is the only thing that varies with the unresolved
+`OrderContext` retention question (Q-02). If a retained context is valid and
+callable off-thread, flush inline for full event-level latency. If it is
+retainable but not thread-safe, or not retainable at all, flush at the top of
+the next platform callback. Strategies, features and intent types are
+identical either way, so the experiment is off the critical path.
+
+The gap between intent sequence number and execution sequence number is
+journaled on every trade, so the cost of a lagging flush is measured rather
+than argued about.
+
+### The risk chain
+
+Ordered filters between intent and gateway, each recording its verdict so a
+suppressed trade is visible rather than invisible: armed, session open,
+readiness, daily-loss limit, size cap, rate limit, churn guard, lag guard.
+
+Two of those exist specifically because decisions are event-level, and both
+are core rather than per-strategy — comparability is lost the moment each
+strategy implements its own throttling:
+
+- **Churn.** Minimum dwell time in a position and a max-reversals-per-session
+  cap. Reconciliation already makes a repeated identical intent a no-op, but
+  it does not stop long/flat/long across three consecutive ticks.
+- **Lag.** The runtime watches drain-queue depth and per-event processing
+  time. If lag crosses a threshold it **disarms and journals the reason**
+  while continuing to compute, so the session stays diagnosable. Disarm
+  rather than drop, because dropping events corrupts feature state silently,
+  and the failure mode without the guard is a strategy trading on a book
+  that is seconds stale.
+
+### Restart with a live position
+
+If the runtime starts — or the study reloads after a redeploy — and finds an
+open position or resting orders on the account, it **refuses to arm** and
+journals what it found. It does not adopt them and does not flatten them.
+The position is cleared manually by the user before arming.
+
+Rationale: adopting a position whose reasoning no longer exists in memory is
+how a small loss becomes a large one, and auto-flattening is an order placed
+as a side effect of startup, which the hard rule forbids.
+
+### Errors
+
+A feature or strategy that throws is caught at the pipeline boundary: the
+runtime disarms, journals the exception with the event sequence number that
+caused it, and continues ingesting so the session stays diagnosable. Nothing
+propagates into a MotiveWave callback, where it risks the platform
+deactivating the study or flooding the output log.
+
+### Safety — non-negotiable
 
 Carried over from `../motivewave/CLAUDE.md`, and tightened by the structure
 above.
@@ -182,7 +485,12 @@ above.
 - **Every inherited order-capable hook is explicitly overridden** in the
   runtime class — `onEnterNow` above all. Omitting a hook inherits
   MotiveWave's default, and MotiveWave's default for `onEnterNow` places a
-  market order.
+  market order. This is enforced by a reflection test that enumerates every
+  `OrderContext`-taking method on `Study` from the jar and asserts the
+  runtime overrides each one — so it stays true the day MotiveWave ships a
+  new hook.
+- **`OrderGateway` is the only class holding an `OrderContext`**,
+  package-private, instantiated by the runtime, never handed elsewhere.
 - **Dry-run is the default mode.** The runtime ships with `armed = false`:
   intents are computed and journaled, no order is ever submitted. Arming is
   a deliberate per-session act.
@@ -190,71 +498,122 @@ above.
   — every time. The GUI's account selection can change between sessions.
 - **Never place, modify or cancel an order as a side effect of other work.**
 
+## Journal
+
+Two tiers, because one JSONL stream will not hold at MBO rates and the raw
+tier is the only part replay needs.
+
+**Decisions tier** — JSONL, human-readable, long retention. Intents that
+differ from the previous intent, risk verdicts, trigger reasons, orders,
+fills, readiness transitions, active external inputs and their staleness,
+plus a periodic heartbeat snapshot. Change-only, because at event level a
+record per decision is no longer readable by a human.
+
+**Raw tier** — the sequenced event stream in a compact encoding, rotated per
+session, short rolling retention (2–3 days, exact figure set from
+measurement — see Q-03). This is replay fuel and regression-fixture source.
+
+Both are written by a dedicated writer thread off bounded queues; the
+pipeline thread never does I/O. Backpressure is decided rather than
+discovered: if the raw queue fills, **drop and write a gap marker recording
+the lost sequence range** — a replay that silently skipped events is worse
+than one that refuses to run. If the decisions queue fills, that's a bug and
+it fails loudly.
+
+Every session file opens with a header record: strategy id, git commit, full
+param set, instrument and session config. Cross-strategy comparison is
+meaningless without knowing which build produced a run.
+
+Comparison across strategies is done **offline, from the journals** — one
+run directory per session per strategy. Analysis tooling there can be
+Python; the constraint is that the *runtime* is all-Java, not that every
+script ever written is.
+
 ## Forward-test workflow
 
 Three modes, in order, each a gate on the next:
 
 1. **Dry run** — strategy computes intents against live data; nothing is
-   submitted. Read the journal: did it fire where you'd have fired
-   manually? This catches most "the idea is wrong" and all "the feature is
-   buggy" failures for free.
-2. **Sim** — same thing, orders actually submitted to the Simulated
-   account. Now fills, slippage, partial fills and rejections become real
-   and the journal starts producing a PnL curve.
+   submitted. Read the journal: did it fire where you'd have fired manually?
+   This catches most "the idea is wrong" and all "the feature is buggy"
+   failures for free.
+2. **Sim** — same thing, orders actually submitted to the Simulated account.
+   Now fills, slippage, partial fills and rejections become real and the
+   journal starts producing a PnL curve.
 3. **Live** — out of scope until a strategy has earned it, and gated by an
    explicit decision recorded in `docs/dynamic/decisions.md`.
 
-Comparison across strategies is done **offline, from the journals** — one
-run directory per session per strategy, structured JSONL. Analysis tooling
-there can be Python; the constraint is that the *runtime* is all-Java, not
-that every script ever written is.
+## Testing
 
-### Record now, replay later
+`flow-core` compiles and runs under a plain JDK with no platform present,
+which is what makes the following possible at all.
 
-The journal records every input event the runtime saw, not just its
-decisions. That makes a replay harness — feed recorded ticks and DOM back
-through the identical feature and strategy code — a straight-line future
-project, and it's the only honest path to backtesting order-flow logic. It
-is deliberately not being built now, but the journal format is designed so
-it stays possible.
+Tests are **event sequences**, not single states — at event level a sequence
+is the unit of behaviour:
 
-Raw tick/DOM-level journal data is **retained for a short rolling window
-only (last 2–3 days — exact number to be set once real data size is
-known)**, not indefinitely. Order-flow data at MBO granularity is large
-enough that unbounded retention is a real disk-space decision, not a free
-default. Higher-level records (intents, orders, fills, bar-level summaries)
-are cheap and can be kept longer; the retention window applies specifically
-to the raw event stream a future replay would need.
+```java
+seq().trade(4391.2, 3, ASK)
+     .bookPull(4391.5, 120)
+     .trade(4391.4, 8, ASK)
+     .expectIntent(LONG, 1);
+```
 
-## Repo layout (planned, tentative)
+Interesting slices cut from a raw session log (30 seconds around a real
+setup) are committed as fixtures and asserted against permanently. That's
+the regression suite, and it only exists if the raw log format is stable
+early.
+
+Two tests are structural rather than behavioural and run from the start: the
+replay-equivalence check (record, replay, assert identical intent sequence)
+and the order-hook override check in `flow-runtime`.
+
+## Repo layout
 
 ```
 FLOW_V2/
 ├── README.md              this file
 ├── CLAUDE.md              working rules (inherits FLOW's and motivewave's)
 ├── docs/dynamic/          decisions.md, findings.md — about this system
-├── app/src/com/flow/
-│   ├── runtime/           the single @StudyHeader host Strategy; settings, lifecycle
-│   ├── core/              event types, MarketState, Intent, FlowStrategy, registry
-│   ├── price/             candles, swings, structure, levels
-│   ├── flow/              delta, footprint, volume profile, liquidity map, big trades
-│   ├── external/          manual/pluggable input store (GEX levels, daily bias, etc.)
-│   ├── exec/              intent → orders, sizing, brackets, session/risk guards
-│   ├── journal/           JSONL writers for inputs, snapshots, intents, orders, fills
-│   └── strategies/        one package per strategy plug-in
-├── app/build/             compile + redeploy scripts (portable JDK 26)
+├── flow-core/             compiled WITHOUT mwave_sdk.jar on the classpath
+│   └── src/com/flow/
+│       ├── core/          event types, MarketState, Intent, FlowStrategy, registry
+│       ├── price/         candles, swings, structure, levels
+│       ├── flow/          delta, footprint, profile, liquidity map, big trades,
+│       │                  entry evaluators (absorption, imbalance, sweep)
+│       ├── external/      hand-edited input + param store
+│       ├── exec/          reconciliation, sizing, brackets, risk chain
+│       ├── journal/       record types and writers
+│       └── strategies/    one package per strategy plug-in
+│   └── test/              event-sequence DSL, recorded fixtures
+├── flow-runtime/          compiled WITH mwave_sdk.jar and flow-core
+│   └── src/com/flow/rt/   the @StudyHeader Study, SDK→core adapters,
+│                          OrderGateway, BuiltInVolumeProfile, clock
+├── build/                 compile + redeploy scripts (portable JDK 26)
 └── logs/
 ```
 
-This layout is a starting sketch, not a commitment — expect it to shift once
-real code exists and the boundaries get tested against an actual second and
-third strategy, the same way FLOW's `flow/backtest/common/` only took its
-current shape after a second strategy actually needed it.
+The two-unit split is the point, not a convention: it is what makes "a
+strategy cannot import the SDK" a compile error instead of a rule someone
+has to remember. Deploy concatenates both class trees into
+`%USERPROFILE%\MotiveWave Extensions\dev\`.
 
-Nothing here is built yet. `../motivewave` proved the pieces exist — live
-tick data with aggressor side, true Market-by-Order DOM depth, working
-strategy lifecycle, readable account state. This repo turns that into a
-system.
+Internal package boundaries are still tentative and expected to shift once a
+second and third strategy test them, the same way FLOW's
+`flow/backtest/common/` only took its current shape after a second strategy
+actually needed it.
+
+## Build order
+
+The walking skeleton first, before any real feature: event types, sequencer,
+clock events, journal writer, a null feature, a strategy that always returns
+`Intent.none()`, gateway in dry-run. Run it for a full session and confirm
+the journal reconstructs what happened and that replay reproduces it
+exactly.
+
+Then: delta (already proven working in the skeleton study), then market
+structure and volume profile with their readiness gates, then one real
+strategy, then the second — which is what actually tests whether the
+boundaries hold.
 
 ## What's confirmed already (inherited, not re-derived)
 
@@ -269,33 +628,57 @@ Rithmic feed:
 - The strategy lifecycle fires correctly, and bar OHLC + live aggressor
   delta + account state were all read together in one working run.
 - Historical DOM reconstruction may be permission-gated on our Rithmic
-  tier. Irrelevant to forward testing; relevant to replay later.
+  tier. Irrelevant to forward testing; relevant to replay and to
+  forward-only features.
 
-## Open questions, to settle empirically before they're designed around
+## Open questions
 
 Recorded here rather than guessed, per the methodology. Each becomes an
-experiment (platform questions in `../motivewave/experiments/`, ours here)
-and then a decision.
+experiment — platform questions in `../motivewave/experiments/`, ours here —
+and then a decision in `docs/dynamic/decisions.md`.
 
-1. **Bar/tick ordering.** Do ticks belonging to a bar reliably arrive before
-   `onBarClose` fires for it, or can a bar close with its last ticks still
-   in flight? Determines whether the decision point can trust bar-aligned
-   flow aggregates.
-2. **Settings UI limits.** Can one settings panel show only the selected
-   strategy's parameters (conditional visibility/enablement), or do all
-   strategies' params have to coexist visibly? Shapes how strategy params
-   are declared.
-3. **Instruments and timeframes.** Which contracts do we forward-test first
-   (`@GC` is what's been used so far), on what bar interval, and does a
-   strategy get to declare the timeframe it requires?
-4. **Session model.** RTH only or 24h? Flatten at session end by default?
-5. **Sizing and risk defaults.** Fixed contracts, or risk-per-trade sized
-   off the stop distance? What's the daily-loss kill switch?
-6. **Intrabar decisions.** Is bar-close-only enough for the first
-   strategies, or does the order-flow half need tick-level entry timing
-   from day one?
-7. **Simulated-account fidelity.** How does MotiveWave's simulator fill —
-   last price, bid/ask, queue-aware? Determines how much to trust sim PnL.
+- **Q-01 — Bar/tick ordering.** Do ticks belonging to a bar reliably arrive
+  before `onBarClose` fires for it? Platform question. Less load-bearing
+  than it was, since the sequencer records the ordering that actually
+  occurred rather than assuming one, but still determines whether a
+  bar-aligned aggregate can be trusted at the moment a bar-close trigger
+  fires.
+- **Q-02 — `OrderContext` retention and thread affinity.** Can a context
+  captured in one callback be retained and used later, and from another
+  thread? Input to the flush point above. Stage (a): retain from
+  `onActivate`, call **read-only** methods from a later callback and from a
+  timer thread, logging results plus `System.identityHashCode(ctx)` — zero
+  risk, and a stable identity hash across callbacks is strong evidence of a
+  long-lived handle. Stage (b), only if (a) is inconclusive and only as its
+  own deliberate session under Sim Trade Only: submit a far-from-market
+  limit order from a retained reference, confirm, cancel. Stage (b) is order
+  placement and needs explicit in-the-moment confirmation per `CLAUDE.md`.
+- **Q-03 — Raw data volume and the retention window.** Capture one hour of
+  live `@GC` and record event counts (trades, DOM updates, `DOMOrder`
+  entries per update) alongside bytes, both uncompressed and gzipped. The
+  ratio decides whether a binary encoding is worth writing or whether
+  compressed JSONL reaches a 3-day window on its own; the absolute number
+  closes the retention figure.
+- **Q-04 — Instruments and timeframes.** Which contracts get forward-tested
+  first (`@GC` so far), on what bar interval, and does a strategy get to
+  declare the timeframe it requires?
+- **Q-05 — Session model.** RTH only or 24h? Flatten at session end by
+  default? Interacts with the per-session reversal cap and the journal's
+  session-file boundary.
+- **Q-06 — Sizing and risk defaults.** Fixed contracts, or risk-per-trade
+  sized off stop distance? What's the daily-loss kill switch, and is it
+  evaluated on realized PnL or realized plus open?
+- **Q-07 — Simulated-account fill fidelity.** How does MotiveWave's
+  simulator fill — last price, bid/ask, queue-aware? Platform question.
+  Determines how much of the sim-stage PnL curve is signal and how much is
+  the simulator being generous.
+- **Q-08 — Is MotiveWave's built-in volume profile readable from our
+  study?** Platform question. Can a deployed study obtain a handle to
+  another study instance on the same chart, and do the built-in profile's
+  POC/VAH/VAL land in an addressable `DataSeries`, or are they internal to
+  the renderer with no programmatic surface? Decides whether
+  `BuiltInVolumeProfile` is automatic or whether custom-vs-built-in
+  comparison falls back to reading the chart by hand.
 
 ## Notes
 
