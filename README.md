@@ -647,12 +647,13 @@ authoritative list — this section is kept in sync with it but
   limit order from a retained reference, confirm, cancel, as its own
   deliberate session under Sim Trade Only. Order placement — explicit
   in-the-moment confirmation per `CLAUDE.md` required.
-- **Q-03 — Raw data volume and the retention window.** Capture one hour of
-  live `@GC` and record event counts (trades, DOM updates, `DOMOrder`
-  entries per update) alongside bytes, both uncompressed and gzipped. The
-  ratio decides whether a binary encoding is worth writing or whether
-  compressed JSONL reaches a 3-day window on its own; the absolute number
-  closes the retention figure.
+- **Q-10 — Raw journal DOM tier: how much per-order detail, retained for
+  how long?** Spun off from Q-03 (`decisions.md` D-35), which measured
+  the empirical cost (full per-order DOM detail: ~31.5 GB/hr raw, ~3.89
+  GB/hr gzipped — vs. ~28 MB/hr / ~1.35 MB/hr for top-of-book-only) but
+  didn't decide the policy. Hinges on whether D-22's forward-only feature
+  class (order resting time, liquidity-pull frequency) needs replay-grade
+  order-ID history or can warm up live-only each session.
 - **Q-07 — Simulated-account fill fidelity.** How does MotiveWave's
   simulator fill — last price, bid/ask, queue-aware? Platform question.
   Determines how much of the sim-stage PnL curve is signal and how much is

@@ -578,6 +578,39 @@ readable rather than being silently rewritten.
   that granularity — revisit once a real strategy's results actually show
   a session-dependent pattern worth isolating.
 
+- **D-35** (2026-09-14) — **Q-03 answered empirically; D-07's retention
+  figure is closed for ticks + top-of-book DOM, but full per-order DOM
+  detail reopens the question rather than closing it.** Two live captures
+  on `@GC` (`../motivewave/docs/dynamic/findings.md`, 2026-09-14):
+  ticks + top-of-book DOM run **~28.0 MB/hour raw, ~1.35 MB/hour gzipped**
+  (~20.7x) — for a 2-3 day window, **~1.4–2.0 GB raw, ~65–97 MB gzipped**.
+  **Compressed JSONL is clearly sufficient for this tier; no binary
+  encoding is needed for it.** Full per-order (`DOMOrder`) detail,
+  measured directly (not the old 20-update sample) at **2,747.6
+  orders/update**, extrapolates to **~31.5 GB/hour raw, ~3.89 GB/hour
+  gzipped** (only ~8.1x, since order IDs don't compress well) — **~1.5–2.3
+  TB raw, ~187–280 GB gzipped** for the same 2-3 day window. That
+  measurement used naive full-snapshot-per-update logging (the whole book
+  re-logged every update, not a delta), so it's an upper bound, not a
+  final number — a delta/incremental encoding is unmeasured but plausibly
+  much smaller.
+
+  **Not decided here, flagged for a follow-up decision:** whether the raw
+  journal's DOM tier retains full per-order detail at all. D-12 already
+  decided strategies never see raw DOM, only derived views — this finding
+  raises the same question one layer down, for what the *raw journal*
+  itself retains for replay (D-11). The one part of the design that
+  plausibly needs order-ID-level history is D-22's forward-only feature
+  class (order resting time, liquidity-pull frequency) — worth checking
+  whether a narrower, shorter, or delta-encoded capture satisfies that
+  specifically, rather than applying a blanket 2-3 day full-detail policy
+  that costs terabytes. Three live options once that's decided: (a)
+  raw journal DOM tier stays top-of-book-only, full per-order detail never
+  retained past what's needed in memory for live feature computation; (b)
+  a delta encoding is built and measured before committing to a retention
+  window for it; (c) a much shorter full-detail window (hours, not days)
+  is accepted as the cost of keeping D-22's class-4 features replayable.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
@@ -594,12 +627,17 @@ outcome becomes an entry above.
   per `CLAUDE.md` required. Only worth running if inline-flush latency
   ever actually matters enough to want the answer.
 
-- **Q-03 — Raw data volume and the retention window.** Capture **one hour
-  of live `@GC`** and record event counts (trades, DOM updates,
-  `DOMOrder` entries per update) alongside bytes, both uncompressed and
-  gzipped. The compression ratio decides whether a binary encoding is
-  worth writing or whether compressed JSONL reaches a 3-day window on its
-  own, and the absolute number closes D-07's TBD retention figure.
+- **Q-10 — Raw journal DOM tier: how much per-order detail, retained for
+  how long?** Spun off from Q-03 by D-35, which measured the empirical
+  cost (full per-order detail: ~31.5 GB/hr raw, ~3.89 GB/hr gzipped) but
+  didn't decide the policy. Three live options: (a) top-of-book only in
+  the raw journal, no per-order history retained past live memory; (b)
+  build and measure a delta/incremental DOM encoding before committing to
+  a window; (c) accept a much shorter full-detail retention window (hours,
+  not days). Hinges on whether D-22's forward-only feature class (order
+  resting time, liquidity-pull frequency) actually needs replay-grade
+  order-ID history, or can warm up live-only each session. System
+  question — no experiment needed, needs a decision.
 
 - **Q-07 — Simulated-account fill fidelity.** How does MotiveWave's
   simulator fill — last price, bid/ask, queue-aware? Platform question.

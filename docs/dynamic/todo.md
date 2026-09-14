@@ -23,37 +23,34 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done (dated) · `[-]` dropped
 
 ## 0. Session handoff (2026-09-14) — read this first
 
-**Q-02(a) is done and closed — see D-31.** `ContextRetentionProbe`
-activated cleanly and ran; its log shows a stable
-`System.identityHashCode` across the platform's own threads and this
-probe's background poller thread, `pos=0`/`cash` flat throughout. No
-Q-02(b) needed to unblock D-17 (it has a safe default already); stage (b)
-is now optional, only relevant if inline-flush latency ever matters
-enough to chase.
+**All eight original open questions plus Q-09 are closed.** Q-01→D-33,
+Q-02(a)→D-31, Q-04→D-28, Q-05→D-29, Q-06→D-30, Q-08→D-32, Q-09→D-34, and
+Q-03→D-35 (though D-35 spins off a new **Q-10**, see below). Remaining
+open: Q-02(b) and Q-07 (both order-placement, deferred/optional) and the
+new Q-10.
 
-**Getting there took two wrong turns worth knowing about before touching
-any future diagnostic `Strategy` class** — full trail in
-`../motivewave/docs/dynamic/findings.md`, 2026-09-14 `[LIVE]` entries.
-Short version: `autoEntry=false` + `manualEntry=false` together produce a
-dead-end "Please Choose Long or Short" dialog on Activate with no actual
-chooser in it — looks like a Position Type problem (it isn't) and doesn't
-respond to `supportsPositionType`. **Standing config for any diagnostic
-strategy with no real entry logic: `autoEntry=true, manualEntry=false,
-supportsPositionType=false` (default), plus
-`supportsEnterOnActivate=false, supportsCloseOnDeactivate=false`
-explicit.** `autoEntry=true` only *permits* the class's own code to
-auto-enter — with no `buy`/`sell` call anywhere in the class, it has
-nothing to act on; confirmed by two full live sessions with position/cash
-flat throughout.
+**Standing config for any future diagnostic `Strategy` with no real entry
+logic** (learned the hard way, full trail in
+`../motivewave/docs/dynamic/findings.md` 2026-09-14 `[LIVE]` entries):
+`autoEntry=true, manualEntry=false, supportsPositionType=false`
+(default), plus `supportsEnterOnActivate=false,
+supportsCloseOnDeactivate=false` explicit. `autoEntry=false` +
+`manualEntry=false` together produce a dead-end "Please Choose Long or
+Short" dialog on Activate with no actual chooser in it — looks like a
+Position Type problem (it isn't) and doesn't respond to
+`supportsPositionType`. `autoEntry=true` only *permits* the class's own
+code to auto-enter — with no `buy`/`sell` call anywhere in the class, it
+has nothing to act on; confirmed by two full live sessions with
+position/cash flat throughout.
 
-Q-01 and Q-08 are also done now — see D-33 and D-32.
-
-**Still pending, unblocked, not yet run:**
-- `TickDomLogger` (Q-03) — already running (started before this handoff
-  was written; baseline byte counts noted), let it reach a full hour then
-  measure `logs/ticks.log` + `logs/dom.log` raw vs. gzipped size.
-
-Q-08 is done — see D-32.
+**New from D-35 (Q-03's result): Q-10 — raw journal DOM tier policy is
+still open.** Full per-order DOM detail costs ~31.5 GB/hr raw (~3.89
+GB/hr gzipped) vs. ~28 MB/hr (~1.35 MB/hr gzipped) for top-of-book-only —
+roughly 1,100-2,900x larger. That measurement used naive full-snapshot-
+per-update logging (`DomDetailCapture.java`, self-bounded to 6,000
+updates, already run and captured — not a pending task); a delta
+encoding is the natural next step if full detail is ever pursued, but
+is unmeasured. See D-35's three options before deciding.
 
 Both repos' changes from this session are committed locally (not pushed).
 
@@ -80,13 +77,14 @@ Platform questions — experiments in `../motivewave`, then a decision here:
   reference, confirm, cancel — Sim Trade Only, its own session, **explicit
   in-the-moment confirmation per `CLAUDE.md`**. Only worth running if
   inline-flush latency ever matters enough to chase.
-- [~] (2026-09-14) **Q-03** `[EXP]` Raw data volume — capture one hour of
-  live `@GC`: trade count, DOM update count, `DOMOrder` entries per
-  update, bytes raw and gzipped. Closes D-07's retention figure and
-  decides binary vs compressed JSONL for the raw journal tier. No new code
-  needed — existing `TickDomLogger.java` already logs everything required.
-  Waiting on: run it for a full hour on live `@GC`, then measure
-  `logs/ticks.log` + `logs/dom.log` raw and gzipped size.
+- [x] (2026-09-14) **Q-03** `[EXP]` Raw data volume — **done → D-35.**
+  Ticks + top-of-book DOM: ~28.0 MB/hr raw, ~1.35 MB/hr gzip (~54 min live
+  `@GC`, `TickDomLogger`). Full per-order DOM detail (`DomDetailCapture`,
+  6,000-update self-bounded capture): 2,747.6 `DOMOrder`/update,
+  extrapolates to ~31.5 GB/hr raw, ~3.89 GB/hr gzip. Compressed JSONL
+  closes the question for ticks+top-of-book; full per-order detail reopens
+  it as **Q-10** (raw journal DOM tier policy, below) rather than closing
+  it outright.
 - [ ] **Q-07** `[EXP]` Sim fill fidelity — how does the Simulated account
   fill (last, bid/ask, queue-aware)? Order placement is involved, so same
   confirmation rule as Q-02 (b).
@@ -114,6 +112,13 @@ System questions — decided here:
   (08:20–13:30 CT), informational grouping only. Counters (reversal cap,
   price anchor, journal file boundary) reset once per full 24h day, not
   per sub-session → D-34.
+- [ ] **Q-10** `[DECIDE]` Raw journal DOM tier — how much per-order detail,
+  retained for how long? Spun off from Q-03 by D-35: full detail costs
+  ~31.5 GB/hr raw / ~3.89 GB/hr gzip vs. ~28 MB/hr / ~1.35 MB/hr for
+  top-of-book-only. Three options in D-35 (top-of-book-only in the raw
+  journal / build+measure a delta encoding / accept a short full-detail
+  window). Hinges on whether D-22's forward-only features (order resting
+  time, liquidity-pull frequency) need replay-grade order-ID history.
 
 ## 2. Walking skeleton `[BUILD]` — waiting on explicit go
 
