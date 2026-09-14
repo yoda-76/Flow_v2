@@ -527,6 +527,20 @@ readable rather than being silently rewritten.
   `../motivewave/docs/dynamic/findings.md`, 2026-09-14, so this doesn't
   need re-diagnosing on the next diagnostic strategy.
 
+- **D-32** (2026-09-14) — **Q-08 closed: `BuiltInVolumeProfile` is not
+  automatic — the built-in Volume Profile study does not expose POC/VAH/
+  VAL to other studies.** Live check on a `@GC` chart
+  (`../motivewave/docs/dynamic/findings.md`, 2026-09-14): an EMA added
+  alongside the built-in Volume Profile study offers no Volume-Profile-
+  derived option in its Input dropdown, and right-clicking directly on the
+  Volume Profile plot gives a plot-specific context menu with no
+  Create/Add Alert entry at all (unlike right-clicking empty chart space,
+  which does offer a generic price alert) — so neither the Export Value
+  mechanism nor the Study Alert mechanism reaches it. D-26's stated
+  fallback is now the plan, not a contingency: `CustomVolumeProfile`
+  journals its own POC/VAH/VAL on a cadence, compared against the chart by
+  hand. No further Q-08 work needed.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
@@ -561,14 +575,6 @@ outcome becomes an entry above.
   simulator fill — last price, bid/ask, queue-aware? Platform question.
   Determines how much of the sim-stage PnL curve is signal and how much is
   the simulator being generous.
-
-- **Q-08 — Is MotiveWave's built-in volume profile readable from our own
-  study?** Platform question, input to D-26. Can a deployed study obtain a
-  handle to another study instance on the same chart, and do the built-in
-  profile's POC/VAH/VAL land in an addressable `DataSeries`, or are they
-  internal to the renderer with no programmatic surface? Decides whether
-  `BuiltInVolumeProfile` is automatic or whether custom-versus-built-in
-  comparison falls back to reading the chart by hand.
 
 - **Q-09 — Session separations within the 24h day.** D-29 settled 24h
   (not RTH-only) with flatten-at-end as the default, but not where the

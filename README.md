@@ -666,13 +666,6 @@ authoritative list — this section is kept in sync with it but
   simulator fill — last price, bid/ask, queue-aware? Platform question.
   Determines how much of the sim-stage PnL curve is signal and how much is
   the simulator being generous.
-- **Q-08 — Is MotiveWave's built-in volume profile readable from our
-  study?** Platform question. Can a deployed study obtain a handle to
-  another study instance on the same chart, and do the built-in profile's
-  POC/VAH/VAL land in an addressable `DataSeries`, or are they internal to
-  the renderer with no programmatic surface? Decides whether
-  `BuiltInVolumeProfile` is automatic or whether custom-vs-built-in
-  comparison falls back to reading the chart by hand.
 - **Q-09 — Session separations within the 24h day.** The 24h-vs-RTH and
   flatten-at-end questions are decided (see `decisions.md` D-29), but where
   the sub-session boundaries fall inside that day (e.g. Asia/London/NY

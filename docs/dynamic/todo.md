@@ -52,12 +52,11 @@ flat throughout.
   ordering_probe.log` (currently only has `# session start` lines, no
   tick/bar-close data yet — it hasn't actually been left running on a
   chart).
-- `TickDomLogger` (Q-03) — run for a full hour on `@GC`, then measure
-  `logs/ticks.log` + `logs/dom.log` raw vs. gzipped size.
-- Q-08 GUI check — Volume Profile study already added to a chart; next
-  step is adding a second study (e.g. Simple Moving Average) and checking
-  its Input dropdown, or right-clicking the Volume Profile plot's axis
-  and choosing "Create Alert", for an addressable POC/VAH/VAL value.
+- `TickDomLogger` (Q-03) — already running (started before this handoff
+  was written; baseline byte counts noted), let it reach a full hour then
+  measure `logs/ticks.log` + `logs/dom.log` raw vs. gzipped size.
+
+Q-08 is done — see D-32.
 
 Both repos' changes from this session are committed locally (not pushed).
 
@@ -93,16 +92,13 @@ Platform questions — experiments in `../motivewave`, then a decision here:
 - [ ] **Q-07** `[EXP]` Sim fill fidelity — how does the Simulated account
   fill (last, bid/ask, queue-aware)? Order placement is involved, so same
   confirmation rule as Q-02 (b).
-- [~] (2026-09-14) **Q-08** `[EXP]` Is the built-in volume profile readable
-  from another study (handle to study instance, POC/VAH/VAL in an
-  addressable `DataSeries`)? Decides whether `BuiltInVolumeProfile` is
-  automatic or a by-hand chart comparison (D-26). Narrowed via SDK docs
-  (`../motivewave/docs/dynamic/findings.md`, 2026-09-14): no API for a
-  study to get another study's handle; the mechanism is Export Values,
-  GUI-wired per connection. Whether the *built-in* study exports POC/VAH/
-  VAL isn't documented. Waiting on: no code needed — place the built-in
-  Volume Profile study on a chart, then check the Add-Study dialog's
-  "Study" input options for a new study.
+- [x] (2026-09-14) **Q-08** `[EXP]` Is the built-in volume profile readable
+  from another study? **Done → D-32: no.** Confirmed live — an EMA added
+  alongside the built-in Volume Profile study shows no Volume-Profile-
+  derived option in its Input dropdown, and right-clicking the Volume
+  Profile plot gives a plot-specific menu with no Create/Add Alert entry.
+  `BuiltInVolumeProfile` is not automatic; D-26's journal-and-compare-by-
+  hand fallback is the plan.
 
 System questions — decided here:
 
