@@ -640,22 +640,13 @@ outcome lands as a decision in `docs/dynamic/decisions.md`, which is the
 authoritative list — this section is kept in sync with it but
 `decisions.md` wins if they ever drift.
 
-- **Q-01 — Bar/tick ordering.** Do ticks belonging to a bar reliably arrive
-  before `onBarClose` fires for it? Platform question. Less load-bearing
-  than it was, since the sequencer records the ordering that actually
-  occurred rather than assuming one, but still determines whether a
-  bar-aligned aggregate can be trusted at the moment a bar-close trigger
-  fires.
-- **Q-02 — `OrderContext` retention and thread affinity.** Can a context
-  captured in one callback be retained and used later, and from another
-  thread? Input to the flush point above. Stage (a): retain from
-  `onActivate`, call **read-only** methods from a later callback and from a
-  timer thread, logging results plus `System.identityHashCode(ctx)` — zero
-  risk, and a stable identity hash across callbacks is strong evidence of a
-  long-lived handle. Stage (b), only if (a) is inconclusive and only as its
-  own deliberate session under Sim Trade Only: submit a far-from-market
-  limit order from a retained reference, confirm, cancel. Stage (b) is order
-  placement and needs explicit in-the-moment confirmation per `CLAUDE.md`.
+- **Q-02, stage (b) only — `OrderContext` write-call thread affinity.**
+  Stage (a) is closed (`decisions.md` D-31): reads are safely retainable
+  and callable off-thread. Stage (b), now optional rather than blocking
+  (the flush point already has a safe default): submit a far-from-market
+  limit order from a retained reference, confirm, cancel, as its own
+  deliberate session under Sim Trade Only. Order placement — explicit
+  in-the-moment confirmation per `CLAUDE.md` required.
 - **Q-03 — Raw data volume and the retention window.** Capture one hour of
   live `@GC` and record event counts (trades, DOM updates, `DOMOrder`
   entries per update) alongside bytes, both uncompressed and gzipped. The

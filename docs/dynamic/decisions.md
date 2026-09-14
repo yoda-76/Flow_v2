@@ -541,19 +541,28 @@ readable rather than being silently rewritten.
   journals its own POC/VAH/VAL on a cadence, compared against the chart by
   hand. No further Q-08 work needed.
 
+- **D-33** (2026-09-14) — **Q-01 closed: ticks belonging to a bar
+  reliably arrive before `onBarClose` fires for it, on this feed.** Live
+  evidence (`../motivewave/docs/dynamic/findings.md`, 2026-09-14):
+  `OrderingProbe.java` logged a monotonic sequence on every tick and every
+  bar close on a live `@GC` 1-min chart. Across 2,738 ticks and 12 bar
+  closes, zero cases of a tick arriving (by sequence) after a bar close
+  whose own exchange timestamp put it at or before that close. Less
+  load-bearing than it would have been pre-D-10 (the sequencer already
+  records actual arrival order rather than assuming one), but confirms a
+  bar-close-triggered aggregate can be trusted at the moment it fires.
+  Secondary observation carried into the findings (not a decision by
+  itself): `recvTime` ran ~668ms *before* `tickTime` throughout the run —
+  worth resolving (clock skew vs. `tick.getTime()` semantics) before
+  trusting any absolute feed-latency number D-23's dual-clock design
+  produces.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
 `../motivewave/experiments/`, landing in that repo's `findings.md`; system
 questions are decided directly, no experiment needed. Either way the
 outcome becomes an entry above.
-
-- **Q-01 — Bar/tick ordering.** Do ticks belonging to a bar reliably
-  arrive before `onBarClose` fires for it, or can a bar close with its
-  last ticks still in flight? Platform question. Less load-bearing than it
-  was, since D-10's sequencer records the ordering that actually occurred
-  rather than assuming one, but still determines whether a bar-aligned
-  aggregate can be trusted at the moment the bar-close trigger fires.
 
 - **Q-02, stage (b) only — `OrderContext` write-call thread affinity.**
   Stage (a) is closed, see D-31: reads are safely retainable and callable

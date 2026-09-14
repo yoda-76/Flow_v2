@@ -46,12 +46,9 @@ auto-enter — with no `buy`/`sell` call anywhere in the class, it has
 nothing to act on; confirmed by two full live sessions with position/cash
 flat throughout.
 
+Q-01 and Q-08 are also done now — see D-33 and D-32.
+
 **Still pending, unblocked, not yet run:**
-- `OrderingProbe` (Q-01) — attach to a live `@GC` chart through several
-  1-min bar closes, then read `../motivewave/experiments/logs/
-  ordering_probe.log` (currently only has `# session start` lines, no
-  tick/bar-close data yet — it hasn't actually been left running on a
-  chart).
 - `TickDomLogger` (Q-03) — already running (started before this handoff
   was written; baseline byte counts noted), let it reach a full hour then
   measure `logs/ticks.log` + `logs/dom.log` raw vs. gzipped size.
@@ -64,12 +61,13 @@ Both repos' changes from this session are committed locally (not pushed).
 
 Platform questions — experiments in `../motivewave`, then a decision here:
 
-- [~] (2026-09-14) **Q-01** `[EXP]` Bar/tick ordering — do a bar's ticks
-  reliably arrive before `onBarClose` fires for it? Log sequence of
-  `onTick` vs bar-close callbacks around many bar boundaries on live `@GC`.
-  `OrderingProbe.java` written, compiled, deployed to
-  `../motivewave/experiments/`. Waiting on: attach to a live `@GC` chart
-  through several bar closes, then read `logs/ordering_probe.log`.
+- [x] (2026-09-14) **Q-01** `[EXP]` Bar/tick ordering — **done → D-33:
+  yes**, ticks reliably arrive before `onBarClose` fires. Zero violations
+  across 2,738 ticks / 12 bar closes on live `@GC`
+  (`logs/ordering_probe.log`). Secondary observation carried into
+  findings for D-23 later: `recvTime` ran ~668ms before `tickTime`
+  throughout — cause (clock skew vs. `tick.getTime()` semantics) not yet
+  isolated.
 - [x] (2026-09-14) **Q-02 (a)** `[EXP]` `OrderContext` retention — retain
   from `onActivate`, call **read-only** methods from a later callback and
   from a timer thread, log results + `System.identityHashCode(ctx)`.
