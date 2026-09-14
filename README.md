@@ -232,14 +232,45 @@ Two things that are easy to miss and belong in the readiness check:
   Either backfill the elapsed part from tick history or mark that bar
   invalid and have triggers skip it.
 
-Note on VWAP: computed from bars it is an approximation (typical price ×
-volume per bar) rather than true tick-weighted VWAP. On 1-minute bars the
-error is small and acceptable; the journal records which method produced the
-value so the two can be compared later if it ever matters.
+Note on VWAP: **adapted from MotiveWave's own published `VWAP.java` source**
+(`docs/dynamic/sdk-capability-findings.md` §2.7, `MotiveWave/motivewave-
+studies` on GitHub), not built from scratch — and that source is genuinely
+tick-weighted (`totalPrice += tick.getPrice() * tick.getVolumeAsFloat()`,
+fed via `instr.forEachTick(...)`), not a bar-level approximation as
+originally assumed here. The file itself can't be compiled as-is (it casts
+to an internal `platform.ui.*` class not in our public SDK jar), so the
+algorithm gets ported into `flow-runtime`, not copied — see D-36 and
+`sdk-capability-findings.md` for the full trail. Matching the chart's VWAP
+line exactly is therefore the expected outcome, not a known gap.
 
-### Volume profile: ours and MotiveWave's, side by side
+### Volume profile: reuse the SDK's engine, don't build one
 
-Volume profile is built behind a provider interface with two
+**Settled 2026-09-15 (D-36), superseding the two-implementation plan below
+this paragraph as historical record** — the SDK's own
+`com.motivewave.platform.sdk.profile.VolumeProfile` engine, fed by our own
+ticks and wrapped behind a read-only view, is confirmed live to produce
+output that matches the chart's built-in Volume Profile study closely once
+both are scoped to the same accumulation window. No custom volume-profile
+implementation gets built. The same engine covers footprint (a bar-scoped
+`VolumeProfile` with `rangeTicks=1`) and delta/cumulative delta
+(`getTotalDelta()` etc.), so this closes "build vs. reuse" for those two as
+well. Full trail: `docs/dynamic/sdk-capability-findings.md` and
+`../motivewave/docs/dynamic/findings.md`, 2026-09-14/15 `[LIVE]` entries.
+
+One caveat this reuse doesn't remove: E-6 found `com.motivewave.platform.
+common.Enums.VAMethod` doesn't exist anywhere in our jar, so only
+`getValueArea(double)` — one fixed value-area algorithm — is actually
+callable. FLOW's own volume profile found POC holding up well while
+VAH/VAL/HVN/LVN showed real inaccuracy on the same data; that's a live
+question worth re-checking against *this* engine specifically (it's not
+FLOW's implementation, and E-2's live parity check already looks
+promising), not assumed to reproduce or assumed fixed.
+
+<details>
+<summary>Historical: the original two-implementation plan (superseded by
+D-36, kept for context)</summary>
+
+Volume profile was originally planned behind a provider interface with two
 implementations, both running at once:
 
 ```
@@ -248,24 +279,16 @@ VolumeProfileProvider          // interface, flow-core
   └─ BuiltInVolumeProfile      // flow-runtime, reads MotiveWave's study
 ```
 
-Both write POC/VAH/VAL to the journal on a fixed cadence; the strategy reads
-exactly one, named in config. Comparing custom against built-in then becomes
-an offline diff of two journal columns rather than a special exercise.
-Because strategies cannot import the SDK, the built-in-backed implementation
-lives in `flow-runtime` and is injected.
+The idea was that both would write POC/VAH/VAL to the journal on a fixed
+cadence, with custom-vs-built-in becoming an offline diff of two journal
+columns. This assumed "reading the built-in study's own output" was a real
+option; D-32/Q-08 later confirmed it structurally isn't (no SDK API reaches
+another study's internal state), and separately, E-10 found there was
+never a need to try: the SDK exposes the same *engine* MotiveWave's own
+studies would use, directly, to any code that instantiates it — which is
+what D-36 uses instead of either half of this plan.
 
-Whether MotiveWave's built-in profile is readable from another study at all
-is unverified — see Q-08. If it isn't, the fallback is journaling our values
-on a cadence and comparing against the chart by hand: less automation, same
-comparison.
-
-Carried over from FLOW: its live volume profile found POC holding up well
-while VAH/VAL/HVN/LVN showed real inaccuracy on the same data, and the open
-note there was that multiple value-area methods need testing rather than
-just the current one. So the value-area algorithm is pluggable inside
-`CustomVolumeProfile`, and the journal records which one produced the
-numbers. We already know that's where the disagreement will be, and the
-built-in is the reference FLOW never had.
+</details>
 
 ## The strategy contract
 
@@ -578,16 +601,21 @@ FLOW_V2/
 │   └── src/com/flow/
 │       ├── core/          event types, MarketState, Intent, FlowStrategy, registry
 │       ├── price/         candles, swings, structure, levels
-│       ├── flow/          delta, footprint, profile, liquidity map, big trades,
-│       │                  entry evaluators (absorption, imbalance, sweep)
+│       ├── flow/          view interfaces only (VolumeProfileView, FootprintView,
+│       │                  BigTradeEvent, ...) + entry evaluators built on them
+│       │                  (absorption, imbalance, sweep) — no SDK import (D-36)
 │       ├── external/      hand-edited input + param store
 │       ├── exec/          reconciliation, sizing, brackets, risk chain
 │       ├── journal/       record types and writers
 │       └── strategies/    one package per strategy plug-in
 │   └── test/              event-sequence DSL, recorded fixtures
 ├── flow-runtime/          compiled WITH mwave_sdk.jar and flow-core
-│   └── src/com/flow/rt/   the @StudyHeader Study, SDK→core adapters,
-│                          OrderGateway, BuiltInVolumeProfile, clock
+│   └── src/com/flow/rt/   the @StudyHeader Study, SDK→core adapters, OrderGateway,
+│                          clock, and the SDK-engine wrappers D-36 settled on:
+│                          delta/footprint/profile (wraps sdk.profile.VolumeProfile),
+│                          big trades (wraps AggregateFilter), VWAP (ported from
+│                          MotiveWave's published source), liquidity map (ours,
+│                          built from the live MBO DOM stream)
 ├── build/                 compile + redeploy scripts (portable JDK 26)
 └── logs/
 ```

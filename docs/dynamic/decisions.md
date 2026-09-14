@@ -383,6 +383,24 @@ readable rather than being silently rewritten.
   error is small and accepted; the journal records which method produced
   the value so the two are comparable if it ever matters.
 
+  **Amended 2026-09-15 by D-36 and `sdk-capability-findings.md`
+  (`../motivewave/motivewave-studies` E-10 inventory)**: two corrections
+  to class 2 and the VWAP note above, both now closed with live/source
+  evidence rather than assumption. First, **volume profile moves from
+  class 2 to class 3** — the SDK's `VolumeProfile` engine D-36 adopted is
+  fed by ticks (`onTick`), not bars, so warming it at startup means
+  replaying historical ticks through it, the same as session cumulative
+  delta already required, not just loading bar history. Second, the VWAP
+  note's "bar approximation, typical price × volume" premise was a
+  guess about what we'd end up building — the actual published
+  MotiveWave `VWAP.java` source is **genuinely tick-weighted**
+  (`totalPrice += tick.getPrice() * tick.getVolumeAsFloat()`, fed via
+  `instr.forEachTick(...)`), so once VWAP is adapted from that source
+  (per D-36's sibling conclusion for volume profile — reuse over
+  rebuild) it is also **class 3**, not class 2, and the approximation
+  caveat doesn't apply: matching the chart's VWAP line exactly is the
+  expected outcome, not a known gap.
+
 - **D-23** (2026-09-14) — **Time is an event: the runtime injects
   synthetic `ClockEvent`s into the sequenced stream.** D-11 forbids
   reading the wall clock below ingest and D-10 means the pipeline only
@@ -440,6 +458,23 @@ readable rather than being silently rewritten.
   see Q-08; if it is not, the fallback is journaling our values on a
   cadence and comparing against the chart by hand, which loses the
   automation but not the comparison.
+
+  **Amended 2026-09-15 by D-36**: the "two competing implementations"
+  premise is retired — there is one engine, the SDK's own
+  `sdk.profile.VolumeProfile`, confirmed live to produce accurate output
+  (matching the chart once scoping is apples-to-apples). No
+  `CustomVolumeProfile` gets built; `BuiltInVolumeProfile` in the sense
+  meant here (reading the built-in *study's* rendered output) was
+  separately confirmed impossible by D-32/Q-08 and was never the actual
+  mechanism anyway — D-36 uses the SDK's *engine class*, fed by our own
+  ticks like the abandoned `CustomVolumeProfile` would have been, not the
+  built-in study. The pluggable-value-area-algorithm idea is also moot:
+  E-6 found `VAMethod` doesn't exist in our jar at all, so only
+  `getValueArea(double)` (one fixed algorithm) is available regardless —
+  FLOW's own VAH/VAL/HVN/LVN disagreement (noted above) is a live
+  question worth re-checking against *this* engine specifically, not
+  assumed to reproduce, since FLOW never had this SDK's engine to lean
+  on.
 
 - **D-27** (2026-09-14) — **The reusable library is the entry evaluator,
   not the setup logic.** Nearly every strategy here is expected to take the
@@ -610,6 +645,57 @@ readable rather than being silently rewritten.
   a delta encoding is built and measured before committing to a retention
   window for it; (c) a much shorter full-detail window (hours, not days)
   is accepted as the cost of keeping D-22's class-4 features replayable.
+
+- **D-36** (2026-09-15) — **Do not build a custom volume profile from
+  scratch: the SDK's `com.motivewave.platform.sdk.profile.VolumeProfile`
+  engine, wrapped directly, is confirmed accurate and is what
+  `flow-runtime` should use.** Closes the open question `docs/dynamic/
+  sdk-capability-findings.md` was written to answer, now with live
+  evidence rather than desk research. Sequence of findings, full detail
+  in `../motivewave/docs/dynamic/findings.md` 2026-09-14/15 `[LIVE]`
+  entries:
+  1. `VolumeProfile`/`VolumeRow`/`SummaryProfile`/`AggregateFilter`/
+     `DataSeries.calcSwingPoints` all compile and run against our actual
+     jar (E-1), with one unrelated constructor mismatch on the
+     out-of-scope `TPOProfile`.
+  2. E-10 found these classes have **zero usage anywhere in MotiveWave's
+     own 339-file published studies repo** — no reference implementation,
+     no proof of a safe usage pattern going in.
+  3. Despite that, a live session-scoped `VolumeProfile` fed by ticks
+     (`SdkCapabilityProbe.java`) produced POC/VAH/VAL that **closely
+     matched the chart's own built-in Volume Profile study** once both
+     were scoped to the same accumulation window (the one mismatch found —
+     VAH off by 0.3 — traced to the built-in study's "Use Historical Bars"
+     option extending its lookback, not to any flaw in the engine).
+  4. Heap growth stayed modest with no exceptions across everything run
+     so far (E-3, partial — see `sdk-capability-findings.md`'s live-status
+     table for what's not yet a clean measurement).
+  **Consequence — amends D-26**: D-26's "two competing implementations"
+  framing (`CustomVolumeProfile` vs `BuiltInVolumeProfile`) is retired.
+  There is one engine (the SDK's `VolumeProfile`), owned and fed in
+  `flow-runtime` (per D-05/D-09, since it's an SDK type `flow-core` can't
+  import), exposed to `flow-core` through a read-only view interface
+  (`VolumeProfileView`, in our own vocabulary, integer ticks per D-21).
+  The former "custom vs built-in" comparison work is replaced by a
+  **settings-parity check** (matching `rangeTicks` and value-area % to
+  whatever the strategy actually needs) — not an implementation choice.
+  **Same engine covers footprint** (§2.2 of `sdk-capability-findings.md`:
+  a footprint row is a bar-scoped `VolumeProfile` with `rangeTicks=1`) and
+  **delta/cumulative delta** (`VolumeProfile.getTotalDelta()` etc.) — so
+  this decision closes the "build vs reuse" question for those two as
+  well, not just volume profile itself. **Consequence for D-22**: volume
+  profile moves from readiness class 2 (warmable from historical bars) to
+  class 3 (warmable only from tick history) — the SDK engine is fed by
+  ticks (`onTick`), not bars, so warming it at startup means replaying
+  historical ticks through it, not just loading bar history.
+  **Still open, not resolved by this decision**: the liquidity heatmap
+  (built-in `Order Heatmap`/`DOM Power` visual quality vs. a custom
+  MBO-fed one — `sdk-capability-findings.md` §2.8 — not yet checked
+  against real output) and Q-10 (raw journal DOM retention policy). Big
+  trades (`AggregateFilter`) has the same zero-reference-usage caveat as
+  point 2 above but real live confirmation of its repeat-emission
+  behavior (E-5) — promising, not yet to the same confidence level as
+  volume profile specifically.
 
 ## Open questions (not yet decisions)
 

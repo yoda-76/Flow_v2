@@ -21,13 +21,37 @@ date, and link the decision/finding it produced; don't delete it.
 Status: `[ ]` open · `[~]` in progress · `[x]` done (dated) · `[-]` dropped
 (dated, with reason)
 
-## 0. Session handoff (2026-09-14) — read this first
+## 0. Session handoff (2026-09-15) — read this first
 
 **All eight original open questions plus Q-09 are closed.** Q-01→D-33,
-Q-02(a)→D-31, Q-04→D-28, Q-05→D-29, Q-06→D-30, Q-08→D-32, Q-09→D-34, and
-Q-03→D-35 (though D-35 spins off a new **Q-10**, see below). Remaining
-open: Q-02(b) and Q-07 (both order-placement, deferred/optional) and the
-new Q-10.
+Q-02(a)→D-31, Q-04→D-28, Q-05→D-29, Q-06→D-30, Q-08→D-32, Q-09→D-34,
+Q-03→D-35 (spun off **Q-10**, still open — see below). Q-02(b) and Q-07
+remain, both order-placement, deferred/optional.
+
+**Big one: `docs/dynamic/sdk-capability-findings.md` (SDK capability
+audit) has been substantially live-verified — see D-36.** Headline:
+**do not build a custom volume profile from scratch.** The SDK's own
+`sdk.profile.VolumeProfile` engine, wrapped in `flow-runtime` and fed by
+our own ticks, was confirmed live to match the chart's built-in Volume
+Profile study closely once both are scoped to the same window (the one
+mismatch found traced to the built-in study's "Use Historical Bars"
+option, not the engine). Same engine covers footprint and delta too.
+D-26 is amended accordingly (its "two competing implementations" plan is
+retired); D-22 is amended (volume profile and VWAP move from readiness
+class 2 to class 3, tick-fed not bar-fed); VWAP's approximation caveat is
+also retired — the real MotiveWave source is genuinely tick-weighted.
+**Read `sdk-capability-findings.md`'s live-verification table before
+touching any of E-1 through E-12** — it has per-experiment status and
+points at the full trail in `../motivewave/docs/dynamic/findings.md`.
+
+**Still genuinely open from that audit:** the liquidity heatmap (built-in
+`Order Heatmap`/`DOM Power` visual quality vs. a custom MBO-fed one —
+not yet checked against real output) and **Q-10** — raw journal DOM tier
+retention policy. Full per-order DOM detail costs ~31.5 GB/hr raw (~3.89
+GB/hr gzipped) vs. ~28 MB/hr (~1.35 MB/hr gzipped) for top-of-book-only —
+roughly 1,100-2,900x larger, measured via naive full-snapshot-per-update
+logging (an upper bound, not final — a delta encoding is unmeasured).
+See D-35's three options before deciding.
 
 **Standing config for any future diagnostic `Strategy` with no real entry
 logic** (learned the hard way, full trail in
@@ -36,23 +60,20 @@ logic** (learned the hard way, full trail in
 (default), plus `supportsEnterOnActivate=false,
 supportsCloseOnDeactivate=false` explicit. `autoEntry=false` +
 `manualEntry=false` together produce a dead-end "Please Choose Long or
-Short" dialog on Activate with no actual chooser in it — looks like a
-Position Type problem (it isn't) and doesn't respond to
-`supportsPositionType`. `autoEntry=true` only *permits* the class's own
-code to auto-enter — with no `buy`/`sell` call anywhere in the class, it
-has nothing to act on; confirmed by two full live sessions with
-position/cash flat throughout.
+Short" dialog on Activate with no actual chooser in it. Also: figures
+(`addFigure`) must be drawn from a real MotiveWave callback thread
+(`onTick`/`onBarClose`), never a spawned timer thread — fails silently,
+no exception, if you get this wrong; and `destroy()` must stop any
+background thread/listener a diagnostic study starts, or a "removed"
+instance keeps running as a zombie.
 
-**New from D-35 (Q-03's result): Q-10 — raw journal DOM tier policy is
-still open.** Full per-order DOM detail costs ~31.5 GB/hr raw (~3.89
-GB/hr gzipped) vs. ~28 MB/hr (~1.35 MB/hr gzipped) for top-of-book-only —
-roughly 1,100-2,900x larger. That measurement used naive full-snapshot-
-per-update logging (`DomDetailCapture.java`, self-bounded to 6,000
-updates, already run and captured — not a pending task); a delta
-encoding is the natural next step if full detail is ever pursued, but
-is unmeasured. See D-35's three options before deciding.
+A working live example of most of this — session-scoped `VolumeProfile`,
+bar-scoped footprint, `AggregateFilter` big trades, `calcSwingPoints`,
+DOM history, chart-drawn POC/VAH/VAL lines, and a clustered translucent
+LVN box, all redrawn once per second — is
+`../motivewave/experiments/src/flow_diag/SdkCapabilityProbe.java`.
 
-Both repos' changes from this session are committed locally (not pushed).
+Both repos' changes are committed; push still pending as of this entry.
 
 ## 1. Resolve open questions
 
@@ -94,7 +115,9 @@ Platform questions — experiments in `../motivewave`, then a decision here:
   derived option in its Input dropdown, and right-clicking the Volume
   Profile plot gives a plot-specific menu with no Create/Add Alert entry.
   `BuiltInVolumeProfile` is not automatic; D-26's journal-and-compare-by-
-  hand fallback is the plan.
+  hand fallback is the plan. (Superseded in practice by D-36: we don't
+  need to read the built-in study's output at all — the SDK's own
+  `VolumeProfile` engine, fed by our own ticks, is what gets used.)
 
 System questions — decided here:
 
@@ -119,6 +142,53 @@ System questions — decided here:
   journal / build+measure a delta encoding / accept a short full-detail
   window). Hinges on whether D-22's forward-only features (order resting
   time, liquidity-pull frequency) need replay-grade order-ID history.
+
+## 1b. SDK capability audit `[EXP]` — see `docs/dynamic/
+sdk-capability-findings.md` for full detail per item; live results in
+`../motivewave/docs/dynamic/findings.md`
+
+Separate from the Q-numbered questions above; this is "which SDK engine
+classes can we reuse instead of building our own" (E-11/E-12 are the same
+work as Q-03/Q-02(a) above, listed here too since they're part of this
+audit's numbering).
+
+- [x] (2026-09-14) **E-1** Signature sweep — all of §2 resolves against
+  our real jar except `TPOProfile`'s constructor (out of scope). Ran live
+  against a real instrument, zero exceptions.
+- [x] (2026-09-15) **E-2** VolumeProfile parity — **confirmed close match
+  → D-36**, the headline result of this whole audit.
+- [~] **E-3** Memory/throughput — heap growth modest, guard never
+  tripped, but no clean single-instance full-session measurement yet
+  (duplicate-instance contamination in the runs so far).
+- [~] **E-4** Footprint/imbalance — bar-scoped rows + imbalance flags
+  captured live at two threshold settings, not yet formally diffed
+  against the chart's footprint row-by-row.
+- [~] **E-5** AggregateFilter/big trades — repeat-emission by real order
+  ID confirmed live (T-3 real); `exchOrderId=0` sentinel wrinkle needs
+  filtering out before trusting a repeat count.
+- [x] (2026-09-14) **E-6** VAMethod accessibility — confirmed dead from
+  `jar tf` alone, no code needed. Only `getValueArea(double)` is usable.
+- [~] **E-7** Swing stability — real instability observed live (heavy
+  revision at low strength, occasional stability at higher strength),
+  not yet turned into a formal rule for structure logic to rely on.
+- [x] (2026-09-14) **E-8** Secondary timeframe — confirmed `NULL` live,
+  matches the forum report (T-4).
+- [~] **E-9** DOM history shape/cadence — logged every heartbeat
+  throughout, not yet analyzed for cadence/retention specifics.
+- [x] (2026-09-14) **E-10** Studies source bundle — inventoried
+  `MotiveWave/motivewave-studies` (339 files). VWAP confirmed
+  tick-weighted; no footprint/big-trades/heatmap source exists;
+  `sdk.profile.*`/`AggregateFilter` have zero usage anywhere in it
+  (raises the stakes on E-2/E-5's live confirmation); `calcSwingPoints`
+  does have real usage (4 studies).
+- [x] (2026-09-14) **E-11** = Q-03, done → D-35.
+- [x] (2026-09-14) **E-12** = Q-02(a), done → D-31.
+- [ ] **Liquidity heatmap visual check** (the user's own idea, not
+  originally in the E-numbered list) — add the built-in `Order Heatmap`
+  and/or `DOM Power` study, judge whether its quality is good enough to
+  skip building a custom MBO-fed heatmap. Not yet done — the two studies
+  were added to a chart early in this effort but no follow-up comparison
+  happened.
 
 ## 2. Walking skeleton `[BUILD]` — waiting on explicit go
 
@@ -165,15 +235,29 @@ journal reconstructs what happened and whose replay reproduces it exactly.
 
 ## 4. Core features and execution `[BUILD]`
 
-- [ ] Delta (already proven in the `../motivewave` skeleton study)
-- [ ] Market structure / swings with bar-history warmup
-- [ ] `VolumeProfileProvider` + `CustomVolumeProfile` with pluggable
-  value-area algorithm; `BuiltInVolumeProfile` per Q-08 outcome (D-26)
+- [ ] Delta (already proven in the `../motivewave` skeleton study; also
+  free from the SDK's `VolumeProfile.getTotalDelta()` per D-36)
+- [ ] Market structure / swings with bar-history warmup, built on
+  `DataSeries.calcSwingPoints` (confirmed real usage pattern, E-10) —
+  factor in E-7's observed swing revision behavior before treating a
+  swing as final
+- [ ] `VolumeProfileView` (flow-core interface) wrapping the SDK's
+  `sdk.profile.VolumeProfile` (flow-runtime) per D-36 — settings-parity
+  to the chart, not a custom implementation. Same engine, bar-scoped,
+  covers footprint (`FootprintView`)
 - [ ] Session / prior-session levels, ATR, overnight high/low, VWAP
-  (method journaled)
-- [ ] Liquidity map and book imbalance (derived DOM views only — raw DOM
-  never crosses `MarketState`)
-- [ ] Footprint, big trades (fixed vs relative threshold declared, D-22)
+  (adapted from MotiveWave's published source per D-36, tick-weighted,
+  method journaled)
+- [ ] Liquidity map, heatmap, and book imbalance (derived DOM views only
+  — raw DOM never crosses `MarketState`): still ours to build from the
+  live MBO DOM stream (`sdk-capability-findings.md` §2.8) unless the
+  built-in visual check (§1b above) says the built-in `Order Heatmap`/
+  `DOM Power` is good enough — not yet done
+- [ ] Big trades: `BigTradeEvent` (flow-core) wrapping `AggregateFilter`
+  (flow-runtime, `aggByOrder=true`) per D-36/E-5 — dedupe on repeat
+  emission by real order ID (T-3, not the `exchOrderId=0` sentinel);
+  fixed vs relative threshold declared, D-22. Footprint: see the
+  `VolumeProfileView` line above, same engine
 - [ ] Partial-bar-at-attach handling: backfill or mark invalid
 - [ ] Triggers: `BAR_CLOSE`, `EVERY_TICK`, `THROTTLE`, dynamic
   `PRICE_CROSS` / `BOOK_CHANGE`, wake reason journaled (D-16)
