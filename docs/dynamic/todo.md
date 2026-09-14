@@ -103,17 +103,17 @@ System questions — decided here:
 - [x] (2026-09-14) **Q-04** `[DECIDE]` Instruments and timeframes — `@GC`
   first, 1-minute bars by default, strategy may declare required bar
   interval(s) → D-28
-- [~] (2026-09-14) **Q-05** `[DECIDE]` Session model — 24h (not RTH-only),
-  flatten at session end by default, decided → D-29. Sub-session boundaries
-  within the 24h day still open, split off as **Q-09** below (user to
-  specify)
+- [x] (2026-09-14) **Q-05** `[DECIDE]` Session model — 24h (not RTH-only),
+  flatten at session end by default → D-29. Sub-session split off as
+  Q-09, now also closed.
 - [x] (2026-09-14) **Q-06** `[DECIDE]` Sizing and risk defaults — fixed
   contracts to start, daily-loss kill switch on realized + open PnL, exact
   value left as a config value rather than a decision → D-30
-- [ ] **Q-09** `[DECIDE]` Session separations within the 24h day — where
-  sub-session boundaries fall (e.g. Asia/London/NY), whether per-session
-  counters (reversal cap, price anchor, journal file boundary) reset per
-  sub-session or once daily. User to specify.
+- [x] (2026-09-14) **Q-09** `[DECIDE]` Session separations within the 24h
+  day — Asia (18:00–03:00 CT) / London (02:00–08:00 CT) / NY-RTH
+  (08:20–13:30 CT), informational grouping only. Counters (reversal cap,
+  price anchor, journal file boundary) reset once per full 24h day, not
+  per sub-session → D-34.
 
 ## 2. Walking skeleton `[BUILD]` — waiting on explicit go
 

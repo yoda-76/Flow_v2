@@ -557,6 +557,27 @@ readable rather than being silently rewritten.
   trusting any absolute feed-latency number D-23's dual-clock design
   produces.
 
+- **D-34** (2026-09-14) — **Q-09 closed: Asia/London/NY sub-session
+  split, informational grouping only — counters reset once per full 24h
+  day, not per sub-session.** Sub-session boundaries (CT, matching
+  COMEX/`@GC` convention): **Asia** 18:00–03:00, **London** 02:00–08:00
+  (slight overlap with Asia's tail is normal for this convention), **NY /
+  RTH** 08:20–13:30 (the existing `@GC` RTH window per
+  `../motivewave/CLAUDE.md`'s prior findings). The gaps this leaves
+  (08:00–08:20, 13:30–18:00) are not assigned a sub-session label — a
+  tick in a gap is just "24h, no sub-session," not an error. These labels
+  exist for journal/analysis grouping (e.g. "did this strategy only work
+  during London") — they do **not** create separate reset boundaries.
+  D-19's reversal cap, D-21's session price anchor, and the journal's
+  session-file boundary all still reset exactly once per full 24h day
+  (D-29's existing boundary), not at each Asia/London/NY transition.
+  Rationale: three independent reset boundaries a day is meaningfully more
+  moving parts (three price anchors, three journal files, three reversal
+  counters) for a forward-testing rig that doesn't yet have evidence any
+  of today's strategies behave differently enough by sub-session to need
+  that granularity — revisit once a real strategy's results actually show
+  a session-dependent pattern worth isolating.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
@@ -585,12 +606,6 @@ outcome becomes an entry above.
   Determines how much of the sim-stage PnL curve is signal and how much is
   the simulator being generous.
 
-- **Q-09 — Session separations within the 24h day.** D-29 settled 24h
-  (not RTH-only) with flatten-at-end as the default, but not where the
-  sub-session boundaries fall inside that day (e.g. Asia/London/NY splits)
-  or whether per-session counters — D-19's reversal cap, D-21's price
-  anchor, the journal's session-file boundary — reset at each sub-session
-  or once daily. System question; user to specify the boundaries.
 
 *Closed by being routed around*: the old open question on settings-UI
 conditional param visibility — see D-18. The old open question on whether

@@ -657,12 +657,6 @@ authoritative list — this section is kept in sync with it but
   simulator fill — last price, bid/ask, queue-aware? Platform question.
   Determines how much of the sim-stage PnL curve is signal and how much is
   the simulator being generous.
-- **Q-09 — Session separations within the 24h day.** The 24h-vs-RTH and
-  flatten-at-end questions are decided (see `decisions.md` D-29), but where
-  the sub-session boundaries fall inside that day (e.g. Asia/London/NY
-  splits) and whether per-session counters — reversal cap, session price
-  anchor, the journal's session-file boundary — reset at each sub-session
-  or once daily is still open. System question; user to specify.
 
 ## Notes
 
