@@ -497,6 +497,36 @@ readable rather than being silently rewritten.
   D-18) as a per-session value, to be set before the first sim session
   rather than frozen into `decisions.md`.
 
+- **D-31** (2026-09-14) — **Q-02 stage (a) closed: a retained
+  `OrderContext` is valid and safely callable (read-only) from a thread
+  other than the one that supplied it, with a stable identity across
+  calls.** Live evidence from `ContextRetentionProbe.java`
+  (`../motivewave/docs/dynamic/findings.md`, 2026-09-14): the same
+  `System.identityHashCode(ctx)` was logged across `onActivate` (a
+  platform thread), `onBarClose` (a different platform thread), and
+  repeated `getPosition()`/`getCashBalance()` polls from this probe's own
+  background timer thread — no exceptions, no state drift. This is a
+  single long-lived handle, not a fresh wrapper per callback, at least for
+  reads. **Does not extend to write calls** (`buy`/`sell`) — only
+  read-only methods were exercised, by design (Q-02(a) was specified as
+  zero-risk). D-17's flush point therefore still can't assume off-thread
+  *write* safety from this evidence alone: its safe default (flush at the
+  top of the next platform callback) stands unless Q-02 stage (b) — an
+  actual order placement test, order-placement risk, explicit
+  in-the-moment confirmation required — is deliberately run later. Stage
+  (b) is no longer *required* to unblock D-17 (a safe default already
+  exists); it would only add the option of inline flush for lower
+  latency, not resolve a blocker.
+
+  **Process note, worth keeping:** getting here took two wrong turns on
+  live MotiveWave activation UI quirks unrelated to Q-02 itself — a
+  StudyHeader flag combination (`autoEntry=false` + `manualEntry=false`)
+  that produces a dead-end "Please Choose Long or Short" dialog with no
+  actual chooser. Full trail and the standing fix
+  (`autoEntry=true, manualEntry=false, supportsPositionType=false`) are in
+  `../motivewave/docs/dynamic/findings.md`, 2026-09-14, so this doesn't
+  need re-diagnosing on the next diagnostic strategy.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
@@ -511,19 +541,14 @@ outcome becomes an entry above.
   rather than assuming one, but still determines whether a bar-aligned
   aggregate can be trusted at the moment the bar-close trigger fires.
 
-- **Q-02 — `OrderContext` retention and thread affinity.** Can a context
-  captured in one callback be retained and used later, and can it be used
-  from a thread other than the one that supplied it? Platform question,
-  and the input to D-17's flush point. Test in two stages: **(a)** retain
-  the context from `onActivate`, call **read-only** methods on it from a
-  later callback and from a timer thread, logging results plus
-  `System.identityHashCode(ctx)` each time one is received — zero risk,
-  and a stable identity hash across callbacks is strong evidence it is a
-  long-lived handle. **(b)** only if (a) is inconclusive, and only as its
-  own deliberate session under Sim Trade Only: submit a far-from-market
-  limit order from a retained reference, confirm, cancel. Stage (b) is
-  order placement and falls under the hard rule in `CLAUDE.md` — explicit
-  in-the-moment confirmation required.
+- **Q-02, stage (b) only — `OrderContext` write-call thread affinity.**
+  Stage (a) is closed, see D-31: reads are safely retainable and callable
+  off-thread. Stage (b), now optional rather than blocking (D-17 has a
+  safe default regardless): submit a far-from-market limit order from a
+  retained reference, confirm, cancel, as its own deliberate session under
+  Sim Trade Only. Order placement — explicit in-the-moment confirmation
+  per `CLAUDE.md` required. Only worth running if inline-flush latency
+  ever actually matters enough to want the answer.
 
 - **Q-03 — Raw data volume and the retention window.** Capture **one hour
   of live `@GC`** and record event counts (trades, DOM updates,

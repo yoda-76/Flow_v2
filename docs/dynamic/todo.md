@@ -23,44 +23,43 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done (dated) · `[-]` dropped
 
 ## 0. Session handoff (2026-09-14) — read this first
 
-**Do not activate any strategy currently deployed in
-`../motivewave/experiments/` until a fresh redeploy has happened.** The
-version of `ContextRetentionProbe.java` deployed to
-`%USERPROFILE%\MotiveWave Extensions\dev` right now is the **unfixed**
-one — it's missing `supportsEnterOnActivate=false` /
-`supportsCloseOnDeactivate=false`, which is why activating it prompted for
-a Long/Short direction choice (these two StudyHeader flags default to
-`true` and place/close a position as a platform-level side effect of
-Activate/Deactivate, independent of the class's own code — see
-`../motivewave/docs/dynamic/findings.md`, 2026-09-14 `[LIVE]` entry). The
-source is fixed on disk (both `ContextRetentionProbe.java` and
-`FlowStrategySkeleton.java`), compiles clean, but **has not been
-redeployed** — redeployment needs your explicit go-ahead each time per
-`../motivewave/CLAUDE.md`'s hard rule, and wasn't done because you were
-stepping away without being able to supervise/confirm it live.
+**Q-02(a) is done and closed — see D-31.** `ContextRetentionProbe`
+activated cleanly and ran; its log shows a stable
+`System.identityHashCode` across the platform's own threads and this
+probe's background poller thread, `pos=0`/`cash` flat throughout. No
+Q-02(b) needed to unblock D-17 (it has a safe default already); stage (b)
+is now optional, only relevant if inline-flush latency ever matters
+enough to chase.
 
-**Next session, in order:**
+**Getting there took two wrong turns worth knowing about before touching
+any future diagnostic `Strategy` class** — full trail in
+`../motivewave/docs/dynamic/findings.md`, 2026-09-14 `[LIVE]` entries.
+Short version: `autoEntry=false` + `manualEntry=false` together produce a
+dead-end "Please Choose Long or Short" dialog on Activate with no actual
+chooser in it — looks like a Position Type problem (it isn't) and doesn't
+respond to `supportsPositionType`. **Standing config for any diagnostic
+strategy with no real entry logic: `autoEntry=true, manualEntry=false,
+supportsPositionType=false` (default), plus
+`supportsEnterOnActivate=false, supportsCloseOnDeactivate=false`
+explicit.** `autoEntry=true` only *permits* the class's own code to
+auto-enter — with no `buy`/`sell` call anywhere in the class, it has
+nothing to act on; confirmed by two full live sessions with position/cash
+flat throughout.
 
-1. Re-run `../motivewave/experiments/redeploy.sh` (needs your OK again,
-   writes outside the project tree) to push the fixed classes.
-2. Restart MotiveWave or remove/re-add the study so it picks up the fixed
-   class.
-3. Re-confirm out loud which account is selected and that Sim Trade Only
-   is on (a past confirmation doesn't carry forward) before activating.
-4. Activate `ContextRetentionProbe` — it should no longer prompt for
-   Long/Short. Let it run a few minutes (polls every 5s), then it can be
-   deactivated.
-5. Also still pending, unblocked by the above: `OrderingProbe` (Q-01) on a
-   live `@GC` chart through several bar closes, `TickDomLogger` (Q-03) for
-   a full hour, and the Q-08 GUI check (Volume Profile already added per
-   this session — next step: add a second study, e.g. a Simple Moving
-   Average, and check its Input dropdown / right-click "Create Alert" on
-   the Volume Profile plot for an addressable POC/VAH/VAL value).
-6. Once logs exist, read them back and write the Q-01/Q-02(a)/Q-03/Q-08
-   findings + decisions in this repo.
+**Still pending, unblocked, not yet run:**
+- `OrderingProbe` (Q-01) — attach to a live `@GC` chart through several
+  1-min bar closes, then read `../motivewave/experiments/logs/
+  ordering_probe.log` (currently only has `# session start` lines, no
+  tick/bar-close data yet — it hasn't actually been left running on a
+  chart).
+- `TickDomLogger` (Q-03) — run for a full hour on `@GC`, then measure
+  `logs/ticks.log` + `logs/dom.log` raw vs. gzipped size.
+- Q-08 GUI check — Volume Profile study already added to a chart; next
+  step is adding a second study (e.g. Simple Moving Average) and checking
+  its Input dropdown, or right-clicking the Volume Profile plot's axis
+  and choosing "Create Alert", for an addressable POC/VAH/VAL value.
 
-Nothing has been committed in `../motivewave` yet this session (new/fixed
-Java files, the findings.md entries) — do that alongside FLOW_V2 if asked.
+Both repos' changes from this session are committed locally (not pushed).
 
 ## 1. Resolve open questions
 
@@ -72,21 +71,18 @@ Platform questions — experiments in `../motivewave`, then a decision here:
   `OrderingProbe.java` written, compiled, deployed to
   `../motivewave/experiments/`. Waiting on: attach to a live `@GC` chart
   through several bar closes, then read `logs/ordering_probe.log`.
-- [~] (2026-09-14) **Q-02 (a)** `[EXP]` `OrderContext` retention — retain
+- [x] (2026-09-14) **Q-02 (a)** `[EXP]` `OrderContext` retention — retain
   from `onActivate`, call **read-only** methods from a later callback and
   from a timer thread, log results + `System.identityHashCode(ctx)`.
-  Zero-risk. Feeds D-17's flush point. `ContextRetentionProbe.java`
-  written, compiled — **found live that the first deploy was unsafe**
-  (`supportsEnterOnActivate`/`supportsCloseOnDeactivate` default `true`,
-  prompted for Long/Short before activation; see session handoff above
-  and `../motivewave/docs/dynamic/findings.md` 2026-09-14 `[LIVE]`), fixed
-  on disk, **not yet redeployed**. Waiting on: redeploy (needs fresh OK),
-  reconfirm account/Sim Trade Only out loud, activate (should no longer
-  prompt for direction), run a few minutes, read
+  Zero-risk. Feeds D-17's flush point. **Done → D-31**: stable identity
+  hash across platform threads and this probe's own poller thread,
+  `pos=0`/`cash` flat throughout, confirmed live in
   `logs/context_retention_probe.log`.
-- [ ] **Q-02 (b)** `[EXP]` Only if (a) is inconclusive. Far-from-market
-  limit order from a retained reference, confirm, cancel — Sim Trade Only,
-  its own session, **explicit in-the-moment confirmation per `CLAUDE.md`**.
+- [ ] **Q-02 (b)** `[EXP]` Optional now, not blocking (D-31 gave D-17 a
+  safe default already). Far-from-market limit order from a retained
+  reference, confirm, cancel — Sim Trade Only, its own session, **explicit
+  in-the-moment confirmation per `CLAUDE.md`**. Only worth running if
+  inline-flush latency ever matters enough to chase.
 - [~] (2026-09-14) **Q-03** `[EXP]` Raw data volume — capture one hour of
   live `@GC`: trade count, DOM update count, `DOMOrder` entries per
   update, bytes raw and gzipped. Closes D-07's retention figure and
