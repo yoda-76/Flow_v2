@@ -458,11 +458,51 @@ readable rather than being silently rewritten.
   have shown the same shape, per the same rule FLOW's
   `flow/backtest/common/` follows.
 
+- **D-28** (2026-09-14) — **Q-04 closed: `@GC` first, 1-minute bars by
+  default, and a strategy may declare the bar interval(s) it needs.** The
+  first forward-tested instrument is `@GC`, matching every experiment run
+  so far in `../motivewave`. The walking skeleton's default bar interval is
+  **1-minute**, matching the VWAP/ATR approximations D-22 already assumes.
+  A strategy is not locked to the default: it may declare a required bar
+  interval alongside its triggers (D-16), and the ingest layer builds bars
+  at each interval actually declared rather than assuming one global
+  timeframe. Rationale: this is the same declarative pattern D-16 already
+  established for trigger cadence, so extending it to bar interval adds no
+  new mechanism — only a second field alongside `Set<Trigger> triggers()`.
+
+- **D-29** (2026-09-14) — **Q-05 partially closed: 24h session, not
+  RTH-only; flatten at session end by default.** The session runs the full
+  electronic day rather than RTH-only. Positions are flattened at session
+  end by default (no overnight carry unless a strategy explicitly opts in
+  later). What is **not** yet decided: where the sub-session boundaries
+  fall inside that 24h day (e.g. Asia/London/NY splits) and whether
+  per-session counters (D-19's reversal cap, D-21's price anchor, the
+  journal's session-file boundary) reset at each sub-session or once daily.
+  Spun off as **Q-09** below rather than left dangling on Q-05, since the
+  direction (24h, flatten-at-end) is settled and only the internal
+  boundary is outstanding.
+
+- **D-30** (2026-09-14) — **Q-06 closed: fixed contracts to start; daily-
+  loss kill switch on realized + open PnL; exact value left as config, not
+  a hardcoded decision.** Sizing is a fixed contract count per trade, not
+  risk-per-trade off stop distance — simplest for the walking skeleton and
+  keeps early cross-strategy comparability (D-04's rationale 2) from being
+  confounded by a sizing model no strategy has been forward-tested against
+  yet. Risk-per-trade sizing is not rejected, just deferred until fixed
+  sizing has produced a comparable baseline. The daily-loss kill switch is
+  evaluated on **realized + open (mark-to-market)** PnL, consistent with
+  D-19's principle that a guard should catch a bad trade still running, not
+  only a closed one. The exact dollar/percentage threshold is deliberately
+  **not** recorded here — it lives in the external config store (D-08,
+  D-18) as a per-session value, to be set before the first sim session
+  rather than frozen into `decisions.md`.
+
 ## Open questions (not yet decisions)
 
-Each becomes an experiment, then an entry above. Platform questions get
-answered by a throwaway study in `../motivewave/experiments/` and land in
-that repo's `findings.md`; system questions get answered here.
+Platform questions get answered by a throwaway study in
+`../motivewave/experiments/`, landing in that repo's `findings.md`; system
+questions are decided directly, no experiment needed. Either way the
+outcome becomes an entry above.
 
 - **Q-01 — Bar/tick ordering.** Do ticks belonging to a bar reliably
   arrive before `onBarClose` fires for it, or can a bar close with its
@@ -492,18 +532,6 @@ that repo's `findings.md`; system questions get answered here.
   worth writing or whether compressed JSONL reaches a 3-day window on its
   own, and the absolute number closes D-07's TBD retention figure.
 
-- **Q-04 — Instruments and timeframes.** Which contracts get forward-
-  tested first (`@GC` is what has been used so far), on what bar interval,
-  and does a strategy get to declare the timeframe it requires?
-
-- **Q-05 — Session model.** RTH only or 24h? Flatten at session end by
-  default? Interacts with D-19's per-session reversal cap, D-21's session
-  price anchor, and the journal's session-file boundary.
-
-- **Q-06 — Sizing and risk defaults.** Fixed contracts, or risk-per-trade
-  sized off the stop distance? What is the daily-loss kill switch, and is
-  it evaluated on realized PnL, or realized plus open?
-
 - **Q-07 — Simulated-account fill fidelity.** How does MotiveWave's
   simulator fill — last price, bid/ask, queue-aware? Platform question.
   Determines how much of the sim-stage PnL curve is signal and how much is
@@ -516,6 +544,13 @@ that repo's `findings.md`; system questions get answered here.
   internal to the renderer with no programmatic surface? Decides whether
   `BuiltInVolumeProfile` is automatic or whether custom-versus-built-in
   comparison falls back to reading the chart by hand.
+
+- **Q-09 — Session separations within the 24h day.** D-29 settled 24h
+  (not RTH-only) with flatten-at-end as the default, but not where the
+  sub-session boundaries fall inside that day (e.g. Asia/London/NY splits)
+  or whether per-session counters — D-19's reversal cap, D-21's price
+  anchor, the journal's session-file boundary — reset at each sub-session
+  or once daily. System question; user to specify the boundaries.
 
 *Closed by being routed around*: the old open question on settings-UI
 conditional param visibility — see D-18. The old open question on whether

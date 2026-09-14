@@ -1,8 +1,9 @@
 # Secrets — never committed, matches the CLAUDE.md rule (never read/commit .env)
 **/.env
 
-# Compiled output — regenerate from app/src/
-app/build/
+# Compiled output — regenerate from flow-core/src, flow-runtime/src (exact
+# output path not yet decided; ignore .class files wherever they land)
+*.class
 
 # Logs — journal output, not a deliverable
 **/logs/

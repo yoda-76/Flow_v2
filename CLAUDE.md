@@ -35,23 +35,28 @@ FLOW_V2/
 ├── CLAUDE.md          this file
 ├── README.md          what this project is, architecture, open questions
 ├── docs/dynamic/      decisions.md, findings.md — working record for THIS system
-└── app/               the actual system — stays empty until told otherwise
+├── flow-core/         core logic — compiles without mwave_sdk.jar on the classpath (D-09)
+├── flow-runtime/      SDK adapters + the deployed Study — compiles with flow-core + SDK
+└── build/             compile + redeploy scripts
 ```
 
-(`app/`'s internal layout is sketched in README.md and is explicitly
-tentative — don't treat it as decided until code exists and a second
-strategy has tested the boundaries.)
+(`flow-core/` and `flow-runtime/`'s internal layout is sketched in
+README.md's "Repo layout" section and is explicitly tentative — don't treat
+it as decided until code exists and a second strategy has tested the
+boundaries.)
 
 - **`docs/dynamic/`** — `decisions.md` (closed answers, one per question,
   dated, with a rationale and a link to supporting evidence) and
   `findings.md` (the empirical evidence behind them, tagged `[DOC]`,
   `[LIVE]`, or `[CODE]`). Same convention as both siblings. Decisions here
-  are the current best answer, not final — expect the seven open questions
-  in README.md to turn into decisions one at a time as they're tested, and
-  expect some of those decisions to get reopened later.
-- **`app/`** — stays empty until told otherwise. We're still resolving the
-  open questions in README.md; building starts on explicit instruction, not
-  by inference from how much of the rest of the work is done.
+  are the current best answer, not final — expect the open questions
+  tracked in README.md and `docs/dynamic/decisions.md` to turn into
+  decisions one at a time as they're tested, and expect some of those
+  decisions to get reopened later.
+- **`flow-core/`, `flow-runtime/`, `build/`** — stay empty until told
+  otherwise. We're still resolving the open questions in README.md;
+  building starts on explicit instruction, not by inference from how much
+  of the rest of the work is done.
 
 ## Secrets — `.env`
 
@@ -108,11 +113,11 @@ insulated from the platform underneath changing.
 ## Architecture stays provisional by design
 
 Decisions in `docs/dynamic/decisions.md` are the current best answer, not
-final. The seven open questions listed in README.md (bar/tick ordering,
-settings UI limits, instruments/timeframes, session model, sizing/risk
-defaults, intrabar decisions, simulated-account fidelity) are expected to
-reshape parts of the design as they get tested. When writing code in
-`app/`: keep the layer boundaries from README.md's diagram
+final. The open questions tracked in README.md and `docs/dynamic/
+decisions.md` (kept in sync between the two, `decisions.md` authoritative)
+are expected to reshape parts of the design as they get tested. When
+writing code in `flow-core/`/`flow-runtime/`: keep the layer boundaries
+from README.md's diagram
 (feed → ingest → features → market state → strategy → execution → journal)
 real, not just diagrammed — a strategy plug-in should be swappable without
 touching anything left of it, and nothing right of the strategy boundary

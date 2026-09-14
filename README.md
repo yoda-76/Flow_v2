@@ -633,9 +633,12 @@ Rithmic feed:
 
 ## Open questions
 
-Recorded here rather than guessed, per the methodology. Each becomes an
-experiment — platform questions in `../motivewave/experiments/`, ours here —
-and then a decision in `docs/dynamic/decisions.md`.
+Recorded here rather than guessed, per the methodology. Platform questions
+become a throwaway experiment in `../motivewave/experiments/`; system
+questions are decided directly, no experiment needed. Either way the
+outcome lands as a decision in `docs/dynamic/decisions.md`, which is the
+authoritative list — this section is kept in sync with it but
+`decisions.md` wins if they ever drift.
 
 - **Q-01 — Bar/tick ordering.** Do ticks belonging to a bar reliably arrive
   before `onBarClose` fires for it? Platform question. Less load-bearing
@@ -659,15 +662,6 @@ and then a decision in `docs/dynamic/decisions.md`.
   ratio decides whether a binary encoding is worth writing or whether
   compressed JSONL reaches a 3-day window on its own; the absolute number
   closes the retention figure.
-- **Q-04 — Instruments and timeframes.** Which contracts get forward-tested
-  first (`@GC` so far), on what bar interval, and does a strategy get to
-  declare the timeframe it requires?
-- **Q-05 — Session model.** RTH only or 24h? Flatten at session end by
-  default? Interacts with the per-session reversal cap and the journal's
-  session-file boundary.
-- **Q-06 — Sizing and risk defaults.** Fixed contracts, or risk-per-trade
-  sized off stop distance? What's the daily-loss kill switch, and is it
-  evaluated on realized PnL or realized plus open?
 - **Q-07 — Simulated-account fill fidelity.** How does MotiveWave's
   simulator fill — last price, bid/ask, queue-aware? Platform question.
   Determines how much of the sim-stage PnL curve is signal and how much is
@@ -679,6 +673,12 @@ and then a decision in `docs/dynamic/decisions.md`.
   the renderer with no programmatic surface? Decides whether
   `BuiltInVolumeProfile` is automatic or whether custom-vs-built-in
   comparison falls back to reading the chart by hand.
+- **Q-09 — Session separations within the 24h day.** The 24h-vs-RTH and
+  flatten-at-end questions are decided (see `decisions.md` D-29), but where
+  the sub-session boundaries fall inside that day (e.g. Asia/London/NY
+  splits) and whether per-session counters — reversal cap, session price
+  anchor, the journal's session-file boundary — reset at each sub-session
+  or once daily is still open. System question; user to specify.
 
 ## Notes
 

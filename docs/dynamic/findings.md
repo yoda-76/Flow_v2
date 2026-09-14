@@ -17,6 +17,6 @@ fix, etc.). Referenced from here rather than duplicated so each fact has
 exactly one home.
 
 Nothing has been built or tested in FLOW_V2 itself yet — this file is
-empty of entries until the first experiment here produces one. The seven
-open questions in `README.md` / `decisions.md` are the current queue of
+empty of entries until the first experiment here produces one. The open
+questions tracked in `README.md` / `decisions.md` are the current queue of
 things to test.

@@ -49,13 +49,20 @@ Platform questions — experiments in `../motivewave`, then a decision here:
 
 System questions — decided here:
 
-- [ ] **Q-04** `[DECIDE]` Instruments and timeframes — first contract(s),
-  bar interval, can a strategy declare its required timeframe?
-- [ ] **Q-05** `[DECIDE]` Session model — RTH vs 24h, flatten at session
-  end by default, session-file boundary, session price anchor (D-21).
-- [ ] **Q-06** `[DECIDE]` Sizing and risk defaults — fixed contracts vs
-  risk-per-trade off stop distance; daily-loss kill switch value; realized
-  vs realized + open.
+- [x] (2026-09-14) **Q-04** `[DECIDE]` Instruments and timeframes — `@GC`
+  first, 1-minute bars by default, strategy may declare required bar
+  interval(s) → D-28
+- [~] (2026-09-14) **Q-05** `[DECIDE]` Session model — 24h (not RTH-only),
+  flatten at session end by default, decided → D-29. Sub-session boundaries
+  within the 24h day still open, split off as **Q-09** below (user to
+  specify)
+- [x] (2026-09-14) **Q-06** `[DECIDE]` Sizing and risk defaults — fixed
+  contracts to start, daily-loss kill switch on realized + open PnL, exact
+  value left as a config value rather than a decision → D-30
+- [ ] **Q-09** `[DECIDE]` Session separations within the 24h day — where
+  sub-session boundaries fall (e.g. Asia/London/NY), whether per-session
+  counters (reversal cap, price anchor, journal file boundary) reset per
+  sub-session or once daily. User to specify.
 
 ## 2. Walking skeleton `[BUILD]` — waiting on explicit go
 
@@ -137,9 +144,11 @@ journal reconstructs what happened and whose replay reproduces it exactly.
 
 ## 6. Doc housekeeping
 
-- [ ] `CLAUDE.md` and `findings.md` still say "seven open questions" —
-  there are eight (Q-01…Q-08)
-- [ ] `CLAUDE.md` directory structure still shows `app/`; README layout is
-  `flow-core/` + `flow-runtime/` + `build/`
-- [ ] `README.md` / `decisions.md` "Open questions" intro still says system
-  questions get experiments here — align with experiments-in-motivewave-only
+- [x] (2026-09-14) `CLAUDE.md` and `findings.md` still say "seven open
+  questions" — there are eight (Q-01…Q-08)
+- [x] (2026-09-14) `CLAUDE.md` directory structure still showed `app/`;
+  now matches README's `flow-core/` + `flow-runtime/` + `build/` layout
+- [x] (2026-09-14) `README.md` / `decisions.md` "Open questions" intro
+  said system questions get experiments here — now states platform
+  questions (Q-01/02/03/07/08) get a `../motivewave` experiment and system
+  questions (Q-04/05/06) are decided directly, no experiment needed
