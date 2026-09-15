@@ -14,8 +14,12 @@ import java.util.List;
  * All accessors return null/empty before the feature is ready (D-37:
  * forward-only from attach, no historical warm-start) -- check isReady()
  * first, same as every other Feature.
+ *
+ * Extends LevelSource/ZoneSource (default-implemented below) so
+ * TriggerEvaluator can drive D-38's LevelCross/ZoneTransition triggers
+ * against this feature without knowing it is volume-profile-specific.
  */
-public interface VolumeProfileView extends Feature {
+public interface VolumeProfileView extends Feature, LevelSource, ZoneSource {
   Integer poc();
   Integer vah();
   Integer val();
@@ -31,4 +35,19 @@ public interface VolumeProfileView extends Feature {
 
   /** LVN and HVN clusters, persistent ids (D-38). Order not significant. */
   List<ZoneView> zones();
+
+  @Override
+  default Integer levelValue(String levelName) {
+    return switch (levelName) {
+      case "POC" -> poc();
+      case "VAH" -> vah();
+      case "VAL" -> val();
+      default -> null;
+    };
+  }
+
+  @Override
+  default List<ZoneView> zonesOfKind(ZoneView.Kind kind) {
+    return zones().stream().filter(z -> z.kind() == kind).toList();
+  }
 }

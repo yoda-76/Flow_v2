@@ -293,7 +293,11 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   2026-09-15 live session — see the §2 entry above for the important
   caveat (degenerate 0-vs-0 comparison, real-change equivalence still
   unexercised).
-- [ ] Event-sequence test DSL in `flow-core` (D-20)
+- [~] Event-sequence test DSL in `flow-core` (D-20). `TriggerEvaluatorTest`
+  (D-45) is a direct, non-DSL synthetic test covering the same territory
+  for trigger logic specifically and already caught one real bug — the
+  general-purpose DSL README describes (`seq().trade(...).expectIntent(...)`)
+  for strategy-level fixtures is still not built.
 
 ## 4. Core features and execution `[BUILD]`
 
@@ -319,14 +323,21 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   (`SdkVolumeProfileFeature` today) can be replayed at all. Not designed
   yet. Until this exists, `ReplayHarness`/`ReplayEquivalenceTest` cannot
   verify replay-equivalence for any strategy depending on volume profile.
-- [ ] `NamedLevel`/`NamedZone` triggers (D-38): `TOUCH`/`CROSS_ABOVE`/
-  `CROSS_BELOW` for POC/VAH/VAL; `ENTER`/`LEAVE`/`TOUCH` for LVN/HVN
-  clusters, as new dynamic trigger types alongside D-16's `PRICE_CROSS`/
-  `BOOK_CHANGE`. Zone identity (overlap-based matching across recomputes,
-  split/merge/dissolve, greedy largest-overlap-wins) is **already
-  implemented** inside `SdkVolumeProfileFeature` (D-44) — this item is
-  just the trigger-layer wiring on top (`TriggerEvaluator` extension) and
-  the boundary-flicker debounce on `LEAVE`, not yet done.
+- [x] (2026-09-16) `NamedLevel`/`NamedZone` triggers (D-38): `TOUCH`/
+  `CROSS_ABOVE`/`CROSS_BELOW` for POC/VAH/VAL; `ENTER`/`LEAVE`/`TOUCH` for
+  LVN/HVN clusters, as new dynamic trigger types alongside D-16's
+  `PRICE_CROSS`/`BOOK_CHANGE` → see D-45. `Trigger.LevelCross`/
+  `Trigger.ZoneTransition` (feature-agnostic: featureId + name/kind, not
+  hardcoded to volume profile), `LevelSource`/`ZoneSource` interfaces
+  (`VolumeProfileView` implements both via default methods),
+  `TriggerEvaluator` extended, boundary-flicker debounce on `LEAVE`
+  implemented. Unit-verified via `TriggerEvaluatorTest` (33 synthetic
+  checks, no platform needed) — **not yet live-verified**, since no real
+  strategy declares one of these triggers yet. Found and fixed a real
+  pre-existing bug along the way: `Pipeline`'s trigger loop broke on the
+  first trigger that fired, silently desyncing any other declared
+  trigger's internal state for that event (e.g. a strategy watching both
+  `ENTER` and `LEAVE` on the same zone kind).
 - [ ] LVN/HVN reversal ranking (D-39): Layer 1 intrinsic composite (void
   depth/width, shoulder strength, POC/VA position, confluence, formation
   delta, recency) blended with Layer 2 track record (touch/outcome

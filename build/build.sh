@@ -17,6 +17,10 @@ rm -rf build/classes/core
 mkdir -p build/classes/core
 "$JAVAC" -encoding UTF-8 -d build/classes/core $(find flow-core/src -name "*.java")
 
+echo "== trigger evaluator synthetic test =="
+"$JAVA" -cp build/classes/core com.flow.core.TriggerEvaluatorTest
+echo "(trigger test passed -- see output above)"
+
 echo "== flow-runtime (SDK + flow-core) =="
 rm -rf build/classes/runtime
 mkdir -p build/classes/runtime

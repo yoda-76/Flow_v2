@@ -1110,6 +1110,54 @@ readable rather than being silently rewritten.
   `VolumeProfileView` is now genuinely live-validated, not just
   compile-clean.
 
+- **D-45** (2026-09-16) — **`NamedLevel`/`NamedZone` triggers (D-38)
+  built: `Trigger.LevelCross`/`Trigger.ZoneTransition`, `LevelSource`/
+  `ZoneSource`, `TriggerEvaluator` extended. Unit-verified, not yet live.**
+
+  Kept feature-agnostic per D-38's own intent ("extensible... without new
+  plumbing"): `LevelCross(featureId, levelName, kind)` and
+  `ZoneTransition(featureId, zoneKind, kind)` reference a feature by id
+  and a level by string name / zone by `ZoneView.Kind`, not by importing
+  `VolumeProfileView` directly. `TriggerEvaluator` looks the feature up in
+  `Pipeline`'s existing `Map<String,Feature>` and only acts if it
+  implements the new `LevelSource`/`ZoneSource` interfaces (both in
+  `com.flow.flow`, alongside `ZoneView`) — `VolumeProfileView` implements
+  both via default methods (`levelValue("POC"|"VAH"|"VAL")`,
+  `zonesOfKind(kind)`), so `SdkVolumeProfileFeature` needed zero changes.
+
+  Semantics, matching D-38 exactly: `LevelCross` fires on either side
+  moving (price or the level itself, since POC/VAH/VAL recompute every
+  tick independently of price) via a relative-position-flip check;
+  `ZoneTransition` wakes on **any** zone of the declared kind, not one
+  specific id (matches the original ask — a strategy inspects
+  `ZoneSource.zonesOfKind()` itself to see which one), `ENTER` fires on
+  new membership (including a direct jump between adjacent zones, not
+  just from "outside"), and `LEAVE` is debounced — not confirmed until
+  price clears one zone-width past its last known range, so a fast
+  re-entry continues the same open trial rather than firing a spurious
+  `ENTER`/`LEAVE` pair.
+
+  **Found and fixed a real pre-existing bug, not a new-code bug**:
+  `Pipeline`'s trigger loop broke on the first trigger that returned
+  true, so any other declared trigger simply never got evaluated that
+  event — silently desyncing its internal state (which side of a level
+  it last saw, which zone it was last inside). This would have corrupted
+  any strategy declaring more than one stateful trigger, including the
+  pre-existing `PriceCross`, not just the new ones. `TriggerEvaluatorTest`
+  (33 synthetic checks, direct assertions against `TriggerEvaluator`, no
+  platform needed — README's own "assert the intents you expect before
+  the platform is involved" testing philosophy) caught it on the first
+  run, before any live session was involved. Fixed: every declared
+  trigger is now evaluated every event unconditionally. Wired into
+  `build/build.sh` as a permanent gate, same standing as the safety
+  reflection test.
+
+  **Not yet live-verified**: no real strategy declares a `LevelCross`/
+  `ZoneTransition` trigger yet, so this has never actually woken a
+  strategy against real market data — only proven correct against
+  synthetic sequences. That's the natural next check once a real
+  strategy (or a throwaway diagnostic) exists to exercise it.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
