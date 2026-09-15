@@ -157,9 +157,15 @@ audit's numbering).
   against a real instrument, zero exceptions.
 - [x] (2026-09-15) **E-2** VolumeProfile parity — **confirmed close match
   → D-36**, the headline result of this whole audit.
-- [~] **E-3** Memory/throughput — heap growth modest, guard never
-  tripped, but no clean single-instance full-session measurement yet
-  (duplicate-instance contamination in the runs so far).
+- [x] (2026-09-15) **E-3** Memory/throughput — **clean single-instance
+  11-minute run done, result is a real concern, not "modest."** T-1 guard
+  (300MB) tripped in ~220s / 317 ticks, ~1.1-1.2 MB retained per tick,
+  extrapolating to ~35-40 GB for a full RTH session unbounded. See
+  `../motivewave/docs/dynamic/findings.md` 2026-09-15. Processing speed is
+  fine (~1.2µs/tick steady-state). **Not yet a decision** — this is input
+  to the features/triggers discussion (D-37) on how `VolumeProfileView`
+  bounds a session-scoped profile (periodic reset, aggregate-only reads,
+  etc.), which still needs to happen before any `VolumeProfileView` code.
 - [~] **E-4** Footprint/imbalance — bar-scoped rows + imbalance flags
   captured live at two threshold settings, not yet formally diffed
   against the chart's footprint row-by-row.
@@ -195,42 +201,98 @@ audit's numbering).
 Per README "Build order". No real feature yet; goal is a full session whose
 journal reconstructs what happened and whose replay reproduces it exactly.
 
-- [ ] Build scripts: compile `flow-core` **without** `mwave_sdk.jar`,
-  compile `flow-runtime` with SDK + core, deploy both class trees to
-  `%USERPROFILE%\MotiveWave Extensions\dev\` (D-09)
-- [ ] Core types: immutable sequenced event types, integer tick-offset
-  prices (D-21), `Intent` as desired state (D-13), `FlowStrategy`,
-  `MarketState` with generation guard + `freeze()` (D-12), registry
-- [ ] Sequencer: MPSC queue, single-writer drain loop (D-10)
-- [ ] `ClockEvent` injection at 100ms, event time only below ingest
-  (D-11, D-23)
-- [ ] SDK→core adapters in `flow-runtime`: `onTick`, `DOMListener`, bar
-  hooks, order/fill hooks
-- [ ] Journal: writer thread, bounded queues, decisions tier (JSONL,
-  change-only, heartbeat) + raw tier, gap markers on raw drop, loud failure
-  on decisions-queue overflow, session header record (D-15). Raw encoding
-  depends on Q-03.
+- [x] (2026-09-15) Build scripts: compile `flow-core` **without**
+  `mwave_sdk.jar`, compile `flow-runtime` with SDK + core, deploy both
+  class trees to `%USERPROFILE%\MotiveWave Extensions\dev\` (D-09) →
+  `build/build.sh`. Compiles clean, deployed. See D-41.
+- [x] (2026-09-15) Core types: immutable sequenced event types
+  (`Event`/`TickEvent`/`BarEvent`/`DomEvent`/`ClockEvent`/`OrderEvent`/
+  `FillEvent`), integer tick-offset prices (D-21), `Intent` as desired
+  state (D-13), `FlowStrategy`, `MarketState`/`MutableMarketState` with
+  generation guard + `freeze()` (D-12), `StrategyRegistry` →
+  `flow-core/src/com/flow/core/`.
+- [x] (2026-09-15) Sequencer: single-writer drain loop, `publish()`
+  synchronized so seq order matches enqueue order across producer threads
+  (D-10) → `Sequencer.java`. Blocks rather than drops on backpressure —
+  deliberately different from the journal's raw tier (see below), since
+  dropping a market event here would corrupt feature state silently.
+- [x] (2026-09-15) `ClockEvent` injection at 100ms, event time only below
+  ingest (D-11, D-23) → `FlowRuntimeStudy.startSession()`'s
+  `clockExecutor`.
+- [~] (2026-09-15) SDK→core adapters in `flow-runtime`: `onTick` and
+  `onBarClose(DataContext)` done. `DOMListener` **not wired** (`DomEvent`
+  type exists, nothing publishes it yet — needed for `BookChange` trigger
+  and the liquidity map later). Order/fill hooks **deliberately not
+  wired** — no order-submission code exists anywhere in this tree yet, so
+  there is nothing to produce a real `OrderEvent`/`FillEvent` from.
+- [x] (2026-09-15) Journal: writer thread, bounded queues, decisions tier
+  (JSONL, change-only, heartbeat every 100 clock events ≈10s) + raw tier
+  (JSONL per D-35's "compressed JSONL is clearly sufficient" finding, not
+  a binary encoding), gap markers on raw drop, loud failure (logged +
+  flagged, checked every event) on decisions-queue overflow, session
+  header record (D-15) → `flow-core/src/com/flow/journal/`.
 - [ ] External config store: file loader for `strategyId`-scoped params,
   risk defaults, session config, external levels; journaled with staleness
-  (D-08, D-18)
-- [ ] Runtime `@StudyHeader` Study: settings panel with only `strategyId`,
-  `armed`, `mode`; `armed = false` default
-- [ ] `OrderGateway` — sole `OrderContext` holder, dry-run only for now
-  (D-14); flush point placement depends on Q-02 (D-17)
-- [ ] Exception boundary: disarm, journal with seq, keep ingesting (D-25)
-- [ ] Refuse-to-arm on existing position / resting orders (D-24)
-- [ ] Readiness framework: per-feature readiness, arming blocked with
-  journaled reason (D-22)
-- [ ] Null feature + null strategy (`Intent.none()`)
-- [ ] Replay harness: feed recorded raw journal back through identical code
-- [ ] Run one full dry-run session, confirm journal + replay
+  (D-08, D-18). **Not done** — `StrategyConfig` exists as an empty-map
+  placeholder only.
+- [x] (2026-09-15) Runtime `@StudyHeader` Study: settings panel with only
+  `strategyId`, `armed`, `mode`; `armed = false` default →
+  `FlowRuntimeStudy.java`. `armed` currently has no effect either way,
+  since no order-submission code exists to gate.
+- [x] (2026-09-15) `OrderGateway` — sole `OrderContext` holder,
+  package-private, dry-run only (D-14) → `flow-runtime/.../OrderGateway.java`.
+  `reconcileDryRun()` only reads `getPosition()` and journals what it
+  would do; contains no call to any order-placement method at all. Flush
+  point placement (Q-02) still open, moot until submission code exists.
+- [x] (2026-09-15) Exception boundary: disarm, journal with seq, keep
+  ingesting (D-25) → `Pipeline` implements `Sequencer.ExceptionHandler`.
+- [ ] Refuse-to-arm on existing position / resting orders (D-24). **Not
+  done** — moot for now since nothing arms, but needed before this stops
+  being true.
+- [x] (2026-09-15) Readiness framework: per-feature readiness, arming
+  blocked with journaled reason (D-22) → `Feature`/`ReadinessChecker`.
+  Vacuously trivial right now — zero features exist, `NullStrategy`
+  requires none — but the mechanism is real and compiles against it.
+- [x] (2026-09-15) Null feature + null strategy (`Intent.none()`) →
+  `NullStrategy`. No literal `NullFeature` class — a strategy requiring
+  zero features already satisfies `ReadinessChecker` vacuously, so one
+  would be dead code.
+- [x] (2026-09-16) Replay harness: feed recorded raw journal back through
+  identical code → `ReplayHarness.java`. Deliberately bypasses
+  `Sequencer` entirely — replay is inherently sequential (read the file
+  top to bottom in original seq order), so a plain loop calling
+  `Pipeline.handle()` directly is simpler and more deterministic than
+  routing through queue/thread machinery that exists only to order
+  concurrent live producers. `RawEventCodec` (encode used live by
+  `Pipeline`, decode used by replay) keeps the two directions from
+  drifting apart — one class, not two independently maintained ones.
+  `StrategyRegistrations.buildDefault()` is now the single registration
+  point both `FlowRuntimeStudy` and `ReplayHarness` call, so "identical
+  strategy code" can't silently drift between live and replay either.
+- [x] (2026-09-16) Run one full dry-run session, confirm journal +
+  replay. **Live-verified, both halves**: journal half per the
+  2026-09-15 entry (superseded by this one). Replay half: ran
+  `ReplayEquivalenceTest` against the recorded live session — **PASS**,
+  3472 events replayed, 0 gaps, replayed decisions.jsonl byte-identical
+  to the live one for every field checked (generation, exchangeTimeMs,
+  localTimeMs, heartbeat cadence). **Still not exercised**: the
+  intent-changed → `OrderGateway.reconcileDryRun` path and its replay
+  equivalence — this was a 0-intent-changes-vs-0 degenerate pass
+  (`NullStrategy` never changes), which proves the mechanism doesn't
+  false-positive but not that it correctly reproduces a *real* change.
+  Stays open until a real strategy exists to exercise it.
 
 ## 3. Structural tests `[BUILD]` — from day one
 
-- [ ] Reflection test in `flow-runtime`: every `OrderContext`-taking method
+- [x] (2026-09-15) Reflection test in `flow-runtime`: every
+  `OrderContext`-taking method
   on `Study` is overridden by the runtime class (D-14)
-- [ ] Replay-equivalence test: record → replay → identical intent sequence
-  (D-11)
+- [x] (2026-09-16) Replay-equivalence test: record → replay → identical
+  intent sequence (D-11) → `ReplayEquivalenceTest.java`, no SDK needed
+  (runs under a plain JDK per README "Testing"). **PASS** against the
+  2026-09-15 live session — see the §2 entry above for the important
+  caveat (degenerate 0-vs-0 comparison, real-change equivalence still
+  unexercised).
 - [ ] Event-sequence test DSL in `flow-core` (D-20)
 
 ## 4. Core features and execution `[BUILD]`
@@ -241,10 +303,39 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   `DataSeries.calcSwingPoints` (confirmed real usage pattern, E-10) —
   factor in E-7's observed swing revision behavior before treating a
   swing as final
-- [ ] `VolumeProfileView` (flow-core interface) wrapping the SDK's
-  `sdk.profile.VolumeProfile` (flow-runtime) per D-36 — settings-parity
-  to the chart, not a custom implementation. Same engine, bar-scoped,
-  covers footprint (`FootprintView`)
+- [x] (2026-09-15) Features/triggers discussion required by D-37 — **done,
+  see D-38/D-39/D-40.** No code written yet against any of them.
+- [x] (2026-09-16) `VolumeProfileView` (flow-core interface) wrapping the
+  SDK's `sdk.profile.VolumeProfile` (flow-runtime) per D-36/D-43 → see
+  D-44. **Built and live-verified**: E-3 rotation fix running clean (150
+  ticks / 3 min), zone ids confirmed stable across recomputes, and drawn
+  POC/VAH/VAL lines visually converged with the built-in study's own
+  levels after a few minutes live on `@GC`. Session-scoped only;
+  footprint (bar-scoped `FootprintView`, same engine) is a separate
+  not-yet-started item.
+- [ ] Replay-inside-MotiveWave (D-43): a mechanism to feed a recorded raw
+  journal through the same runtime code but inside a MotiveWave-hosted
+  process, so a real `Instrument` exists and SDK-engine-backed features
+  (`SdkVolumeProfileFeature` today) can be replayed at all. Not designed
+  yet. Until this exists, `ReplayHarness`/`ReplayEquivalenceTest` cannot
+  verify replay-equivalence for any strategy depending on volume profile.
+- [ ] `NamedLevel`/`NamedZone` triggers (D-38): `TOUCH`/`CROSS_ABOVE`/
+  `CROSS_BELOW` for POC/VAH/VAL; `ENTER`/`LEAVE`/`TOUCH` for LVN/HVN
+  clusters, as new dynamic trigger types alongside D-16's `PRICE_CROSS`/
+  `BOOK_CHANGE`. Zone identity (overlap-based matching across recomputes,
+  split/merge/dissolve, greedy largest-overlap-wins) is **already
+  implemented** inside `SdkVolumeProfileFeature` (D-44) — this item is
+  just the trigger-layer wiring on top (`TriggerEvaluator` extension) and
+  the boundary-flicker debounce on `LEAVE`, not yet done.
+- [ ] LVN/HVN reversal ranking (D-39): Layer 1 intrinsic composite (void
+  depth/width, shoulder strength, POC/VA position, confluence, formation
+  delta, recency) blended with Layer 2 track record (touch/outcome
+  counting off `ENTER`/`LEAVE`, session-scoped in-memory) via the
+  Bayesian-style prior/empirical blend.
+- [ ] Zone lifecycle journal record kind (D-40): new record type in the
+  existing decisions-tier JSONL (D-15) for `CREATED`/`ENTER`/`LEAVE`/
+  `DISSOLVED`/`MERGED`/`SPLIT`, pairing `layer1Score` with `outcome` so
+  it can later validate/recalibrate the D-39 ranking weights.
 - [ ] Session / prior-session levels, ATR, overnight high/low, VWAP
   (adapted from MotiveWave's published source per D-36, tick-weighted,
   method journaled)
@@ -258,7 +349,8 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   emission by real order ID (T-3, not the `exchOrderId=0` sentinel);
   fixed vs relative threshold declared, D-22. Footprint: see the
   `VolumeProfileView` line above, same engine
-- [ ] Partial-bar-at-attach handling: backfill or mark invalid
+- [x] (2026-09-15) Partial-bar-at-attach handling → **D-37: mark invalid,
+  skip it, build starts from the next full bar close, no backfill.**
 - [ ] Triggers: `BAR_CLOSE`, `EVERY_TICK`, `THROTTLE`, dynamic
   `PRICE_CROSS` / `BOOK_CHANGE`, wake reason journaled (D-16)
 - [ ] `exec/` reconciliation: intent diff → minimal order actions (D-13)

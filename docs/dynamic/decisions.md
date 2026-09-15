@@ -697,6 +697,419 @@ readable rather than being silently rewritten.
   behavior (E-5) — promising, not yet to the same confidence level as
   volume profile specifically.
 
+- **D-37** (2026-09-15) — Closing out the volume-profile half of D-36's
+  audit before starting on footprint. Four calls, made directly by the
+  user, not from a new experiment:
+  1. **Settings parity (`rangeTicks`, value-area %) accepted as close
+     enough.** E-2's match against the chart is "close, not verified
+     identical" (see D-36) — not pursuing exact parity further for now.
+  2. **Partial-bar-at-attach: mark invalid, do not backfill.** The first
+     bar-scoped (footprint) profile after a study attaches (or redeploys)
+     is excluded/skipped rather than reconstructed from historical ticks —
+     building starts clean from the next full bar close. Resolves the
+     open item in `todo.md` §4 ("Partial-bar-at-attach handling: backfill
+     or mark invalid") in favor of the simpler option.
+  3. **Historical tick-replay warm-start deferred, not being built now.**
+     `sdk-capability-findings.md` §6.5's open question (readiness class 3 —
+     whether replaying a session's ticks through `VolumeProfile` at startup
+     is fast enough) is left unanswered on purpose; volume profile starts
+     forward-only from attach time until this is revisited.
+  4. **E-3 (memory/throughput) gets one more pass**: a clean single-
+     instance 10-minute run of `SdkCapabilityProbe`, since every prior run
+     was contaminated by duplicate/zombie instances (see D-36 point 4 and
+     the old `sdk_capability_probe.log`, archived
+     2026-09-15 as `sdk_capability_probe.log.bak.20260915_201849` — it
+     showed two instances logging concurrently, one spinning E7_SWINGS/
+     E4_BAR_CLOSE lines ~100ms apart, clearly a zombie). This is in
+     progress this session, not yet closed.
+  **Sequencing set for what comes next**: footprint (`VolumeProfileView`
+  row-level parity, E-4) is the next real build step, but no code gets
+  written for it yet. First: finish the E-3 clean measurement (point 4).
+  Then: a features/triggers discussion with the user — what
+  `VolumeProfileView` actually needs to expose and what should trigger off
+  it — **before** any implementation and **before** footprint
+  experimentation starts. The user's read is that experimentation on
+  volume profile proper is otherwise done.
+
+- **D-38** (2026-09-15) — **`VolumeProfileView` event/trigger design: two
+  general primitives, not five bespoke events.** Closes the
+  features/triggers discussion D-37 required before any footprint or
+  `VolumeProfileView` code. The user's five examples (POC/VAH/VAL
+  touch/cross, LVN/HVN enter/leave) generalize to:
+  - **`NamedLevel`** — a single moving price (POC, VAH, VAL today;
+    extensible later to prior-session POC/VAH/VAL, VWAP, etc. without new
+    plumbing). Events: `TOUCH`, `CROSS_ABOVE`, `CROSS_BELOW`.
+  - **`NamedZone`** — a moving price range (LVN/HVN clusters today;
+    extensible to the value area itself, etc.). Events: `ENTER`, `LEAVE`,
+    `TOUCH` (boundary touch without necessarily entering).
+
+  Since prices are integer tick offsets throughout the core (D-21), touch/
+  cross comparisons are exact — no float-tolerance question.
+
+  **Cross cause: either side moving triggers it.** POC/VAH/VAL/LVN/HVN
+  recompute on their own, independent of price. A `CROSS` fires on any
+  flip in relative position between price and the level, regardless of
+  which one actually moved — chosen over "price-moved-only" (cleaner
+  semantics but loses "the market's balance point just shifted past a
+  stationary price," which is real information) and over tracking both as
+  distinct event kinds (more expressive, not enough evidence yet that the
+  distinction earns its complexity).
+
+  **Two separate cadences, not one.** Zone/level identity (see below) has
+  to be computed centrally, once, at a shared recompute cadence — if two
+  strategies checked at different rates they could disagree about whether
+  a zone still exists. That shared recompute cadence is also the natural
+  hook for D-37's still-open memory-rotation fix (E-3 found the SDK engine
+  unsafe to keep alive unbounded — recompute time is a candidate rotation
+  point). Separately, each strategy declares its own wake/check cadence
+  exactly like D-16's existing `EVERY_TICK`/`THROTTLE(millis)` pattern — a
+  strategy can't see data fresher than the last shared recompute regardless
+  of its own declared cadence.
+
+  **Architectural fit**: these are new dynamic trigger types alongside
+  D-16's existing `PRICE_CROSS`/`BOOK_CHANGE` (dynamically registered per
+  strategy, same rationale — a strategy sleeps until relevant, not woken
+  on every tick), not a separate event bus.
+
+  **Zone identity is persistent, tracked across recomputes** — the more
+  expensive of the two options considered, deliberately chosen because
+  D-39's LVN/HVN ranking needs a stable ID to accumulate touch outcomes
+  against; the simpler stateless-boolean alternative (just "is price
+  inside any current LVN/HVN row") can't support that.
+
+  Matching algorithm (price-range overlap between successive same-type
+  clusters — LVN↔LVN, HVN↔HVN only):
+  - One new cluster overlaps exactly one old cluster → same ID, bounds
+    updated silently (not an event on its own).
+  - **Split** (one old cluster's range now overlaps 2+ new clusters): the
+    new cluster with the largest overlap keeps the old ID; the rest are
+    new IDs.
+  - **Merge** (2+ old clusters now overlap one new cluster): the new
+    cluster keeps the ID of whichever old cluster it overlaps most; the
+    others get `ZONE_DISSOLVED` — deliberately distinct from a normal
+    `LEAVE` (if price was inside one of those at the time, that's
+    inconclusive evidence, not a reversal or a pass-through — see D-39).
+  - No overlap in either direction → plain dissolve / plain appear.
+  - "Largest overlap wins" is flagged explicitly as an arbitrary tie-break,
+    not a principle — open to revision, not load-bearing on anything else.
+
+  IDs reset each session (D-29's boundary), and persist across a profile
+  rotation (D-37's memory fix rotates the underlying SDK object
+  periodically; that's an implementation detail the zone-identity layer
+  must stay continuous through).
+
+  **Boundary-flicker debounce**: a `LEAVE` isn't finalized until price
+  moves at least one full row-width past the boundary; a fast re-entry
+  within that distance continues the same open trial rather than starting
+  a new `ENTER`/`LEAVE` pair. Prevents both trigger-spam (D-16's "should
+  not be woken 40 times a second" concern) and noisy touch/outcome counts
+  (D-39).
+
+- **D-39** (2026-09-15) — **LVN/HVN reversal ranking: two layers, blended,
+  not a single score.** The user wants existing LVNs (and by extension
+  HVNs) ranked by likelihood of reversing price — explicitly **not
+  skippable down to a lighter version**; this is expected to be where the
+  actual trading edge comes from, so the track-record layer is in scope
+  now, not deferred.
+
+  **Layer 1 — intrinsic, available the instant a zone appears, no history
+  needed:**
+  - Void depth: the existing `lvn_threshold` classification ratio, used
+    continuously (`1 - volume/rolling_avg`) instead of as a binary flag.
+  - Void width: row-count/tick-span of the contiguous cluster.
+  - Shoulder strength: volume of the flanking HVN peaks relative to the
+    void — how sharp a cliff it is.
+  - Position relative to POC/value area: inside vs. outside, distance
+    from POC.
+  - Confluence: count of independent structural levels within a few
+    ticks — prior-session POC/VAH/VAL, overnight high/low, a swing point
+    (`calcSwingPoints`, live-proven per E-7), a big-trade cluster
+    (`AggregateFilter`, E-5), round numbers.
+  - Formation delta: aggressive one-sided volume vs. quiet/thin, from
+    `VolumeRow.getTotalDelta()`/imbalance flags (already exposed, no new
+    SDK surface needed).
+  - Recency: session-relative age since the zone first appeared.
+
+  **Layer 2 — track record, reusing D-38's `ENTER`/`LEAVE` events
+  directly, no new detection mechanism:** each `ENTER` opens a trial on
+  that zone ID; the matching `LEAVE` resolves it — same-side exit =
+  `REVERSED`, opposite-side exit = `PASSED_THROUGH`, zone dissolves while
+  price is inside = `INCONCLUSIVE` (excluded from the bounce-rate
+  calculation entirely — it's not evidence either way). D-38's boundary-
+  flicker debounce applies here too, so the trial count isn't polluted by
+  edge noise. Per-zone record: `touchCount`, `reversedCount`,
+  `passedThroughCount`, running `bounceRate`, max penetration depth per
+  touch (how far price got in before reversing — a different signal than
+  reversing right at the edge).
+
+  **Combined score — Bayesian-style blend, solves cold start:**
+  `score = (priorWeight × layer1Score + touches × empiricalRate) /
+  (priorWeight + touches)`. A fresh zone with zero touches ranks on
+  structure alone (Layer 1 as prior); as touches accumulate, the score
+  shifts toward the actual observed outcome. `priorWeight` (how many
+  "virtual touches" the prior counts as) is a tuning constant, not a
+  design question.
+
+  **Scope: session-only, in-memory, resets with zone IDs each session
+  (D-29's boundary) — deliberately, not by default.** Cross-session
+  persistence (this price level has reversed 8 of the last 12 times this
+  month) was considered and explicitly deferred, not ruled out: it needs
+  a price-level proximity match across days (VP itself resets daily, so
+  "the same zone" tomorrow isn't an identity match) and a persistence
+  layer that doesn't exist anywhere in this project yet. Revisit once
+  session-only is proven out.
+
+  **Explicitly a heuristic rank, not a calibrated probability**, until
+  checked against real outcomes — same v1-then-revise-by-evidence pattern
+  as D-22/D-23 elsewhere in this project. D-40's journal is what makes the
+  calibration check possible later.
+
+- **D-40** (2026-09-15) — **Zone lifecycle events are a new record kind in
+  D-15's existing decisions-tier journal, not a new format.** The user
+  wants a persistent audit history of zone events — "likely causality...
+  nothing decisive, just a history of what happened" — but explicitly
+  ruled out raw tick events (too much, uninformative on its own) and plain
+  English (unreplayable, not analyzable). D-15 already defines exactly
+  this shape of tier: JSONL, change-only, human-readable, long retention.
+  Zone lifecycle events fire only on actual transitions (`CREATED`,
+  `ENTER`, `LEAVE`, `DISSOLVED`, `MERGED`, `SPLIT`) — rare relative to
+  ticks, so it stays small by construction, not by pruning after the fact.
+
+  Record shape, one JSON line per event: `ts`, `seq`, `zoneType`
+  (LVN/HVN), `zoneId`, `eventType`, `priceRange` (integer ticks, D-21),
+  `side` (`ENTER`/`LEAVE`), `outcome` (`LEAVE` only:
+  `REVERSED`/`PASSED_THROUGH`/`INCONCLUSIVE`), `penetrationDepth`
+  (`LEAVE` only), `touchCount`, `bounceRate` (running values at time of
+  event), `layer1Score` (intrinsic composite at time of event),
+  `confluence`, `relatedZoneIds` (`MERGED`/`SPLIT` predecessors/
+  successors).
+
+  **Deliberate design point**: pairing `layer1Score` with `outcome` at
+  each event is what turns this from "just a history" into a labeled
+  dataset — Layer 1 features alongside what actually happened, timestamped
+  and replayable (ties into D-11's replay requirement, which this journal
+  tier already exists to support). This is the mechanism for D-39's
+  explicitly-deferred v2: checking, and eventually recalibrating or
+  replacing, the hand-picked Layer 1 weights against real outcomes once
+  enough sessions accumulate. Records are factual only — no verdict field,
+  nothing decisive, per the user's own framing.
+
+  **Sequencing**: this closes the features/triggers discussion D-37
+  required. Next is implementation — `VolumeProfileView`/footprint
+  (D-36/D-37) plus the `NamedLevel`/`NamedZone` triggers (D-38), the
+  ranking engine (D-39), and the journal record kind (D-40) — not yet
+  started; no code has been written against any of D-38/D-39/D-40 yet.
+
+- **D-41** (2026-09-15) — **Walking skeleton built, per README's "Build
+  order" (checked directly with the user rather than jumping straight to
+  `VolumeProfileView`, since nothing in `flow-core`/`flow-runtime` existed
+  yet and D-38/D-39/D-40's event/ranking work needs `MarketState`/
+  readiness/triggers to plug into).** `flow-core`/`flow-runtime` now exist
+  and compile; `build/build.sh` compiles `flow-core` with no
+  `mwave_sdk.jar` on the classpath (D-09, verified — not just intended),
+  compiles `flow-runtime` against the SDK + `flow-core`, runs
+  `SafetyHookReflectionTest`, and refuses to deploy if it fails.
+
+  **What's done, matching todo.md §2/§3 item by item**: core event types
+  (`Event` sealed interface + `TickEvent`/`BarEvent`/`DomEvent`/
+  `ClockEvent`/`OrderEvent`/`FillEvent`), integer tick-offset prices
+  (D-21), `Intent`, `FlowStrategy`, `Trigger` (exactly README's
+  `BarClose`/`EveryTick`/`Throttle`/`PriceCross`/`BookChange` set — D-38's
+  `NamedLevel`/`NamedZone` triggers deliberately not added yet, per that
+  decision's own note that they arrive with `VolumeProfileView`, not
+  speculatively), `MutableMarketState` with a real generation guard,
+  `Feature`/`ReadinessChecker` (vacuously trivial with zero features
+  registered, but the mechanism is real), `Sequencer` (single synchronized
+  `publish()` so seq order matches enqueue order across producer threads —
+  a deliberate correctness-over-throughput call, irrelevant at this feed's
+  measured rates, see E-3), `Pipeline` (SDK-free, unit-testable per
+  README's own "Testing" section — implements the D-25 exception boundary
+  itself), the two-tier `JournalWriter` (JSONL both tiers per D-35's
+  finding that compressed JSONL is sufficient, not a binary encoding;
+  raw-tier drop+gap-marker and decisions-tier loud-failure-on-overflow per
+  D-15, both actually implemented not just described), `NullStrategy`,
+  `OrderGateway` (reads `getPosition()` only, zero order-submission calls
+  anywhere in the class), and `FlowRuntimeStudy` with all 15
+  `OrderContext`-taking hooks confirmed overridden by
+  `SafetyHookReflectionTest` — StudyHeader flags copied from
+  `../motivewave/experiments/src/flow_diag/FlowStrategySkeleton.java`'s
+  already-live-validated combination (2026-09-14 session, pos=0/cash flat
+  throughout) rather than re-derived.
+
+  **What's explicitly not done, not silently skipped**:
+  - `DOMListener` not wired (`DomEvent` exists, nothing publishes it —
+    needed for `BookChange` and the liquidity map later).
+  - External config store is a placeholder (`StrategyConfig` wraps an
+    empty map).
+  - Refuse-to-arm-on-existing-position (D-24) not built — moot while
+    nothing arms, but needed before that stops being true.
+  - Replay harness and the replay-equivalence structural test — next
+    concrete step.
+  - **No live session has been run.** Everything above is compile-clean
+    and deploy-clean, not live-verified. Per this project's own core habit
+    (motivewave/CLAUDE.md: "everything gets checked against a real,
+    running MotiveWave instance... not assumed from the SDK docs"), this
+    is not "done" until a dry-run session's journal is actually read and
+    makes sense.
+
+  **Bug found and fixed before any live run**: `Pipeline`'s intent-change
+  detection initially used `Intent`'s full record equality, which includes
+  `seq` -- since every strategy call increments `seq`, that made *every*
+  wake produce a change record regardless of whether the desired state
+  actually moved, defeating D-15's change-only journal design entirely.
+  Fixed to compare content excluding `seq` (`Pipeline.sameContent()`).
+  Caught by re-reading the code being written, not by a live run —
+  flagging it here because it is exactly the kind of thing a live run
+  should be expected to also catch (an unreadable, bar-per-bar-noisy
+  decisions.jsonl), and didn't need to reach that point to be found.
+
+  **Live-verified 2026-09-15**: journal half of the walking skeleton's
+  definition-of-done confirmed against a real `@GC` session — single
+  clean instance, session header correct, raw stream in strict seq order,
+  3 bar closes landing on exact 20s exchange-time boundaries, heartbeats
+  on the correct ~10s cadence, `exchangeTimeMs`/`localTimeMs` tracked
+  independently and correctly, zero DISARM/GAP_MARKER/exceptions.
+
+- **D-42** (2026-09-16) — **Replay harness + replay-equivalence test
+  built and passing against the D-41 live session.** `ReplayHarness`
+  deliberately bypasses `Sequencer` — replay reads a file top to bottom
+  in original seq order, so a plain loop calling `Pipeline.handle()`
+  directly is simpler and more deterministic than routing through
+  queue/thread machinery whose entire purpose is ordering *concurrent*
+  live producers, which replay doesn't have. Two refactors made this safe
+  rather than just possible: `RawEventCodec` puts encode (used live by
+  `Pipeline`) and decode (used by replay) in one class instead of two that
+  could quietly drift apart, and `StrategyRegistrations.buildDefault()` is
+  now the single registration point both `FlowRuntimeStudy` and
+  `ReplayHarness` call, so "identical strategy code" (README's own phrase
+  for what replay requires) can't silently diverge between live and
+  replay either. `JsonObject` (a hand-rolled flat-JSON reader, companion
+  to the existing `Json` writer — still no JSON library on this offline
+  build's classpath) was needed to parse the raw/decisions journals back.
+
+  **Result**: `ReplayEquivalenceTest` against the D-41 session —
+  **PASS**, 3472 events replayed, 0 gaps, and beyond just the intent-list
+  check, replay's own `decisions.jsonl` came out byte-identical to the
+  live one on every field checked (`generation`, `exchangeTimeMs`,
+  `localTimeMs`, heartbeat cadence) — stronger evidence than the minimum
+  self-check README asks for.
+
+  **Explicitly not proven by this pass**: it was a 0-intent-changes-vs-0
+  comparison (`NullStrategy` never changes), which proves the mechanism
+  doesn't false-positive on a no-op strategy but not that it correctly
+  reproduces a *real* intent change across live vs. replay. That stays
+  open until a real strategy exists to exercise it — flagged here rather
+  than left implicit, same as D-41's equivalent caveat on the live run.
+
+- **D-43** (2026-09-16) — **D-11's "replay must be bit-identical to live"
+  does not hold for any feature backed by the SDK's own engine classes,
+  and D-36 stands anyway — checked directly with the user rather than
+  silently picking a resolution.** Found while starting `VolumeProfileView`:
+  the SDK's `sdk.profile.VolumeProfile` needs a live SDK `Instrument` to
+  even construct (`new VolumeProfile(startTime, endTime, instr,
+  rangeTicks)`), which only exists inside a running MotiveWave session --
+  so a feature built on it structurally cannot run under
+  `ReplayHarness`'s plain-JDK loop, only inside MotiveWave. The
+  alternative considered was porting FLOW's own already-validated
+  bucket-accumulation algorithm (SDK-free, replayable, and incidentally
+  solves E-3's memory problem at the root since a plain `bucket -> volume`
+  map has no per-tick retention to begin with) -- **the user chose to
+  keep the SDK engine instead, accepting replay-inside-MotiveWave as a
+  separate, not-yet-built future mechanism.** D-36 is therefore
+  unamended.
+
+  **Consequence, stated plainly rather than left implicit**: `ReplayHarness`
+  / `ReplayEquivalenceTest` (D-42) cannot reconstruct `SdkVolumeProfileFeature`
+  or any future SDK-engine-backed feature. Replay for a strategy that
+  depends on one is **not** bit-identical to live under the current
+  mechanism -- `ReplayHarness.replay()` now takes an explicit
+  `Map<String,Feature>` from the caller rather than assuming one, so this
+  is a visible, forced choice at every call site instead of a silent gap.
+  `ReplayEquivalenceTest` runs with zero features and prints a caveat
+  saying so. Building replay-inside-MotiveWave (a mechanism that feeds a
+  recorded raw journal through the same runtime code but inside a
+  MotiveWave-hosted process, so a real `Instrument` is available) is now
+  the acknowledged path to closing this gap -- not scheduled, not
+  designed yet, tracked in `todo.md`.
+
+- **D-44** (2026-09-16) — **`VolumeProfileView` built and deployed
+  (compile/reflection-verified, not yet live-verified).** Scope
+  deliberately limited to the primitive itself, per D-36/D-37/D-43:
+  session-scoped POC/VAH/VAL/zones with the E-3 rotation fix, not
+  footprint (bar-scoped, separate build item) and not D-38's
+  `NamedLevel`/`NamedZone` triggers or D-39's ranking (both build on this
+  existing and being correct first — same validate-the-primitive-then-
+  layer-on-top sequencing that worked for the walking skeleton).
+
+  - `VolumeProfileView`/`ZoneView` (`flow-core/src/com/flow/flow/`) — no
+    SDK import, extends `Feature`.
+  - `Pipeline` now feeds every registered `Feature` on every event before
+    trigger evaluation (`Map<String,Feature>`, required explicitly at
+    construction — this is also what forced `ReplayHarness`'s signature
+    change in D-43).
+  - `SdkVolumeProfileFeature` (flow-runtime) — SDK `VolumeProfile` fed via
+    `TickAdapter`, rotated every 150 ticks or 3 minutes (v1 defaults
+    derived directly from E-3's ~1.1-1.2 MB/tick measurement, expected to
+    be revised once measured under this feature specifically), merging
+    each rotation's row volumes into a persistent `bucket -> [askVol,
+    bidVol]` map that never holds a raw tick. POC/VAH/VAL/HVN/LVN are
+    recomputed every tick from persistent-buckets-combined-with-the-
+    current-live-SDK-object's-rows — same value-area-expansion and
+    rolling-local-average algorithms as `FLOW/flow/features/
+    volume_profile.py` (already validated accurate on real data), ported
+    to Java, not reinvented. Zone identity (D-38's greedy largest-overlap
+    matching) is implemented and tracks ids across recomputes, though
+    nothing consumes zone-transition events yet (that's D-38's separate
+    trigger-layer pass).
+  - `TickAdapter`: found and worked around a **second** T-6-class
+    javadoc-vs-jar mismatch — `Tick.getPrice(Enums.BarData)` exists in
+    the compiled jar (confirmed via `javap`) but `Enums.BarData` is not
+    resolvable from source at all against this jar (`import
+    com.motivewave...Enums.BarData` itself fails to compile). Worked
+    around with a `java.lang.reflect.Proxy`-based `Tick` implementation
+    instead of `implements Tick` directly — the handler reads the
+    `BarData` argument via `java.lang.Enum.name()`, an ordinary
+    `java.lang` API, so `Enums.BarData` never needs to be named in source
+    anywhere. Worth remembering as a general technique the next time this
+    class of mismatch is hit, not just a one-off fix.
+
+  **Compiles clean, safety test passes, deployed. Live-verified 2026-09-16
+  (numbers only, not yet visually):** ran ~3 minutes clean on `@GC`
+  (`null_strategy_1789498983282_inst2112383200`), decimal POC/VAH/VAL
+  logged (`4344.9002`/`4346.5002`/`4344.5002`), zone ids confirmed stable
+  across many recomputes (e.g. `hvn-15`/`hvn-27` persisted for minutes
+  rather than getting reassigned each tick) — the zone-identity matching
+  works, not just compiles. Numeric comparison against the built-in
+  study's screenshot proved impractical (matching two tools' timestamps
+  by eye), so added chart drawing instead (same purpose as E-2's, this
+  time through the real pipeline): `FlowRuntimeStudy.redrawFigures()`
+  draws POC/VAH/VAL lines and LVN (orange)/HVN (green) zone boxes,
+  throttled to 1/sec, called from `onTick` — a MotiveWave-invoked
+  callback thread, never the drain thread. This forced one more real
+  design point: `SdkVolumeProfileFeature`'s state is drain-thread-only by
+  design (no synchronization, per the single-writer principle), but
+  MotiveWave's figure-drawing API only works called from a
+  platform-invoked callback, confirmed the hard way previously — two
+  genuinely different threads. Bridged with `VolumeProfileSnapshot`, an
+  immutable value published via a `volatile` field after every recompute
+  (textbook "publish immutable via volatile," the one exception to "no
+  synchronization anywhere in this class").
+
+  **Visual comparison confirmed 2026-09-16, with exact numbers** (with
+  the redeploy applied live -- no explicit remove/re-add needed this
+  time, MotiveWave picked up the rebuilt classes on its own): screenshot
+  after a few minutes shows **FLOW VAH 4341.9000 matching the built-in
+  study's dashed line at 4341.9 exactly**, **FLOW VAL 4339.4000 close to
+  its 4339.2** (2 ticks / 0.2 points off -- same order of "close, not
+  exact" parity D-37 already accepted), and **FLOW POC 4340.2000** sitting
+  on a real transition in the built-in histogram. This closes the loop
+  E-2 opened: the SDK engine's accuracy was already confirmed once
+  standalone; this confirms it holds through the actual rotation-fixed,
+  `Pipeline`-fed, journaled production path -- our own merge/recompute/
+  rotation logic on top of the SDK engine, not just the engine alone.
+  `VolumeProfileView` is now genuinely live-validated, not just
+  compile-clean.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
