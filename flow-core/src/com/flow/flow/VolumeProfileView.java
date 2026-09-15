@@ -20,6 +20,19 @@ import java.util.List;
  * against this feature without knowing it is volume-profile-specific.
  */
 public interface VolumeProfileView extends Feature, LevelSource, ZoneSource {
+  /**
+   * The feature id both FlowRuntimeStudy (registration) and any strategy
+   * declaring LevelCross/ZoneTransition triggers against this feature
+   * must agree on. One constant instead of two hardcoded string literals
+   * that could drift apart.
+   */
+  String FEATURE_ID = "volume_profile";
+
+  /** Level names levelValue() recognizes -- kept as constants for the same reason as FEATURE_ID. */
+  String POC = "POC";
+  String VAH = "VAH";
+  String VAL = "VAL";
+
   Integer poc();
   Integer vah();
   Integer val();
@@ -38,12 +51,10 @@ public interface VolumeProfileView extends Feature, LevelSource, ZoneSource {
 
   @Override
   default Integer levelValue(String levelName) {
-    return switch (levelName) {
-      case "POC" -> poc();
-      case "VAH" -> vah();
-      case "VAL" -> val();
-      default -> null;
-    };
+    if (POC.equals(levelName)) return poc();
+    if (VAH.equals(levelName)) return vah();
+    if (VAL.equals(levelName)) return val();
+    return null;
   }
 
   @Override

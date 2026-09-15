@@ -14,4 +14,15 @@ public sealed interface Event
   long seq();
   long eventTimeMs();
   long receiptTimeMs();
+
+  /**
+   * The price this event carries, or null if it doesn't (ClockEvent,
+   * DomEvent, ...). One place for this instead of duplicating it in
+   * TriggerEvaluator and Pipeline separately.
+   */
+  static Integer priceOf(Event e) {
+    if (e instanceof TickEvent te) return te.priceTicks();
+    if (e instanceof BarEvent be) return be.closeTicks();
+    return null;
+  }
 }

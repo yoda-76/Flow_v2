@@ -16,6 +16,7 @@ public final class StrategyRegistrations {
   public static StrategyRegistry buildDefault() {
     StrategyRegistry r = new StrategyRegistry();
     r.register("null_strategy", NullStrategy::new);
+    r.register("level_zone_observer", LevelZoneObserverStrategy::new);
     return r;
   }
 }

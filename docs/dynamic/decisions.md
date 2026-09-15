@@ -1158,6 +1158,50 @@ readable rather than being silently rewritten.
   synthetic sequences. That's the natural next check once a real
   strategy (or a throwaway diagnostic) exists to exercise it.
 
+- **D-46** (2026-09-16) — **`LevelZoneObserverStrategy` built: first
+  strategy to actually declare D-38's triggers, plus the "price trace"
+  journal record and chart labels for zones.** Not yet live-verified.
+
+  Same trading behaviour as `NullStrategy` (always `Intent.none()`,
+  nothing to arm) — deliberately still a pure observer, not a signal.
+  What's different: `triggers()` declares `LevelCross` for POC/VAH/VAL ×
+  {TOUCH, CROSS_ABOVE, CROSS_BELOW} and `ZoneTransition` for LVN/HVN ×
+  {ENTER, LEAVE, TOUCH} (16 triggers total, all against
+  `VolumeProfileView.FEATURE_ID`), so Pipeline's trigger/trace machinery
+  fires against real market data for the first time. `requires()` gates
+  on the volume-profile feature per D-22, even though nothing here trades
+  on it yet.
+
+  **The "price trace"**: `Pipeline.handle()` now journals a compact
+  `level_trace`/`zone_trace` decisions-tier record for every `LevelCross`/
+  `ZoneTransition` that fires, regardless of what the strategy does with
+  it — matches README's "the runtime owns trigger evaluation and journals
+  why the strategy was woken." This is deliberately the **foundational**
+  half of D-40's zone lifecycle journal only: `CREATED`/`MERGED`/`SPLIT`/
+  `DISSOLVED` and the `layer1Score`/`outcome`/`bounceRate` pairing D-40
+  described are D-39 (ranking) concepts that don't exist yet — not
+  skipped, just not buildable before D-39 is. `BarClose`/`EveryTick`/
+  `Throttle`/`PriceCross`/`BookChange` firing is deliberately **not**
+  traced this way (far more frequent, not what "trace through the
+  levels" means).
+
+  **Chart labels**: each zone box now gets a `Label` (kind + persistent
+  id, e.g. "LVN lvn-7") at its current midpoint, using the same id the
+  trace journal records — a box on the chart and a line in the journal
+  can be matched by eye, not just inferred by price.
+
+  A shared `VolumeProfileView.FEATURE_ID`/`POC`/`VAH`/`VAL` constant set
+  replaces what were two independently-hardcoded `"volume_profile"`
+  string literals (`FlowRuntimeStudy`'s registration, this strategy's
+  trigger declarations) — the kind of drift that would have been a
+  silent, hard-to-diagnose failure (triggers referencing a feature id
+  that's spelled differently from how it's registered).
+
+  Full rebuild clean (both test gates pass), replay-equivalence
+  regression still passes. **Not yet live-verified**: needs the user to
+  switch the runtime's `Strategy Id` setting to `level_zone_observer` and
+  re-add the study — next step.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

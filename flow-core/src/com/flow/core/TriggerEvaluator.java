@@ -48,7 +48,7 @@ final class TriggerEvaluator {
       return true;
     }
     if (t instanceof Trigger.PriceCross pc) {
-      Integer price = priceOf(e);
+      Integer price = Event.priceOf(e);
       if (price == null) return false;
       boolean above = price > pc.levelTicks();
       Boolean prev = lastAbove.put(t, above);
@@ -76,7 +76,7 @@ final class TriggerEvaluator {
    * tick), or both.
    */
   private boolean checkLevelCross(Trigger key, Trigger.LevelCross lc, Event e) {
-    Integer price = priceOf(e);
+    Integer price = Event.priceOf(e);
     if (price == null) return false;
     Feature f = features.get(lc.featureId());
     if (!(f instanceof LevelSource ls)) return false;
@@ -105,7 +105,7 @@ final class TriggerEvaluator {
    * than firing spurious ENTER/LEAVE pairs.
    */
   private boolean checkZoneTransition(Trigger key, Trigger.ZoneTransition zt, Event e) {
-    Integer price = priceOf(e);
+    Integer price = Event.priceOf(e);
     if (price == null) return false;
     Feature f = features.get(zt.featureId());
     if (!(f instanceof ZoneSource zs)) return false;
@@ -149,9 +149,4 @@ final class TriggerEvaluator {
     return zt.kind() == Trigger.ZoneTransition.TransitionKind.LEAVE;
   }
 
-  private static Integer priceOf(Event e) {
-    if (e instanceof TickEvent te) return te.priceTicks();
-    if (e instanceof BarEvent be) return be.closeTicks();
-    return null;
-  }
 }

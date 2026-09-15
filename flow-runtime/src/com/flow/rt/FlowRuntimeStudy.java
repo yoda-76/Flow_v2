@@ -23,8 +23,10 @@ import com.motivewave.platform.sdk.common.Tick;
 import com.motivewave.platform.sdk.common.TimeFrame;
 import com.motivewave.platform.sdk.common.desc.BooleanDescriptor;
 import com.motivewave.platform.sdk.common.desc.IntegerDescriptor;
+import com.motivewave.platform.sdk.common.Coordinate;
 import com.motivewave.platform.sdk.common.desc.StringDescriptor;
 import com.motivewave.platform.sdk.draw.Box;
+import com.motivewave.platform.sdk.draw.Label;
 import com.motivewave.platform.sdk.draw.Line;
 import com.motivewave.platform.sdk.order_mgmt.Order;
 import com.motivewave.platform.sdk.order_mgmt.OrderContext;
@@ -83,7 +85,6 @@ public class FlowRuntimeStudy extends Study {
   private static final String ARMED_KEY = "FLOW_ARMED";
   private static final String MODE_KEY = "FLOW_MODE";
   private static final String VP_RANGE_TICKS_KEY = "FLOW_VP_RANGE_TICKS";
-  private static final String VOLUME_PROFILE_FEATURE_ID = "volume_profile";
   private static final Path LOG_ROOT = Path.of("C:/yadvendra/trading/FLOW_V2/logs");
 
   private final int instanceId = System.identityHashCode(this);
@@ -155,8 +156,10 @@ public class FlowRuntimeStudy extends Study {
         .build());
 
     int rangeTicks = getSettings().getInteger(VP_RANGE_TICKS_KEY);
-    volumeProfile = new SdkVolumeProfileFeature(VOLUME_PROFILE_FEATURE_ID, instrument, priceCodec, rangeTicks);
-    Map<String, com.flow.core.Feature> features = Map.of(VOLUME_PROFILE_FEATURE_ID, volumeProfile);
+    volumeProfile = new SdkVolumeProfileFeature(
+        com.flow.flow.VolumeProfileView.FEATURE_ID, instrument, priceCodec, rangeTicks);
+    Map<String, com.flow.core.Feature> features =
+        Map.of(com.flow.flow.VolumeProfileView.FEATURE_ID, volumeProfile);
 
     IntentSink sink = this::onIntentChanged;
     pipeline = new Pipeline(strategy, journal, sink, features);
@@ -252,6 +255,14 @@ public class FlowRuntimeStudy extends Study {
       box.setFillColor(fill);
       box.setLineColor(fill);
       addFigure(box);
+
+      // Label each zone with its kind + persistent id (D-38), so which
+      // box is which is readable directly off the chart, not just from
+      // the log -- z.id() is the same id the trigger/trace journal (D-45)
+      // uses, so a chart label and a journal line can be matched by eye.
+      Label label = new Label(new Coordinate(now, (lo + hi) / 2.0), z.kind() + " " + z.id());
+      label.setLineColor(fill);
+      addFigure(label);
     }
   }
 

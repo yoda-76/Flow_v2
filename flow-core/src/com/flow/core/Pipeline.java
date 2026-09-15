@@ -103,6 +103,16 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     for (Trigger t : declared) {
       if (triggers.shouldWake(t, e, e.eventTimeMs())) {
         wake = true;
+        // The "price trace" -- journal every LevelCross/ZoneTransition
+        // firing regardless of what the strategy decides to do with it
+        // (README: "the runtime owns trigger evaluation and journals
+        // why the strategy was woken"). Deliberately not done for
+        // BarClose/EveryTick/Throttle/PriceCross/BookChange -- those
+        // fire far more often and aren't what "trace through the
+        // levels" means.
+        if (t instanceof Trigger.LevelCross || t instanceof Trigger.ZoneTransition) {
+          journal.writeDecision(e.seq(), traceLine(t, e));
+        }
       }
     }
     if (!wake) return;
@@ -130,6 +140,38 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
         && Objects.equals(a.stopPriceTicks(), b.stopPriceTicks())
         && Objects.equals(a.targetPriceTicks(), b.targetPriceTicks())
         && Objects.equals(a.reason(), b.reason());
+  }
+
+  /**
+   * The raw event half of D-40's zone lifecycle journal -- CREATED/
+   * MERGED/SPLIT/DISSOLVED and the layer1Score/outcome pairing described
+   * there are D-39 (ranking) concepts that don't exist yet; this is the
+   * foundational trace (what fired, where, when) that D-39's richer
+   * version will build on, not a shortcut past it.
+   */
+  private static String traceLine(Trigger t, Event e) {
+    Integer price = Event.priceOf(e);
+    if (t instanceof Trigger.LevelCross lc) {
+      return Json.object()
+          .field("type", "level_trace")
+          .field("seq", e.seq())
+          .field("featureId", lc.featureId())
+          .field("levelName", lc.levelName())
+          .field("kind", lc.kind().name())
+          .fieldOrNull("priceTicks", price)
+          .build();
+    }
+    if (t instanceof Trigger.ZoneTransition zt) {
+      return Json.object()
+          .field("type", "zone_trace")
+          .field("seq", e.seq())
+          .field("featureId", zt.featureId())
+          .field("zoneKind", zt.zoneKind().name())
+          .field("kind", zt.kind().name())
+          .fieldOrNull("priceTicks", price)
+          .build();
+    }
+    throw new IllegalArgumentException("traceLine called for a non-traceable trigger: " + t);
   }
 
   @Override

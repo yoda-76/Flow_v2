@@ -5,6 +5,28 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
+## Where we left off (2026-09-16 end of session)
+
+Walking skeleton (D-41), replay harness (D-42), `VolumeProfileView`
+(D-44, live-verified against the chart), and D-38's `NamedLevel`/
+`NamedZone` triggers (D-45) are all built and deployed. Latest addition,
+**not yet live-verified**: `LevelZoneObserverStrategy` (D-46) — declares
+all 16 `LevelCross`/`ZoneTransition` triggers, still `Intent.none()`
+always, plus the foundational "price trace" journal
+(`level_trace`/`zone_trace` records) and chart labels on LVN/HVN zones.
+
+**Immediate next step**: in MotiveWave, switch the runtime's `Strategy Id`
+setting from `null_strategy` to `level_zone_observer` and re-add the
+study, then check `decisions.jsonl` is actually filling with
+`level_trace`/`zone_trace` lines as price interacts with the levels/zones,
+and that the chart labels render correctly. That live check is what's
+pending before D-46 can be marked done rather than `[~]`.
+
+**After that's confirmed**, per `todo.md`'s own sequencing: D-39 (LVN/HVN
+reversal ranking, Layer 1 + Layer 2) is next, since it's what the
+`level_trace`/`zone_trace` records exist to eventually feed — then D-40's
+remaining half (pairing `layer1Score`/`outcome` onto those trace records).
+
 **Where the work happens:**
 
 - **Experiments run in `../motivewave` only.** Anything that needs a
@@ -338,15 +360,29 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   first trigger that fired, silently desyncing any other declared
   trigger's internal state for that event (e.g. a strategy watching both
   `ENTER` and `LEAVE` on the same zone kind).
+- [~] (2026-09-16) `LevelZoneObserverStrategy` (D-46): first strategy to
+  declare D-38's triggers (16 total: `LevelCross` × POC/VAH/VAL,
+  `ZoneTransition` × LVN/HVN), still `Intent.none()` always — a pure
+  observer proving the trigger/trace mechanism, not a signal yet.
+  Registered in `StrategyRegistrations`. **Not yet live-verified** — user
+  needs to switch `Strategy Id` to `level_zone_observer` and re-add the
+  study.
+- [x] (2026-09-16) Zone/level "price trace" — foundational half of D-40's
+  journal only (see D-46): `Pipeline` now journals a `level_trace`/
+  `zone_trace` decisions-tier record for every `LevelCross`/
+  `ZoneTransition` firing, regardless of strategy outcome. `CREATED`/
+  `MERGED`/`SPLIT`/`DISSOLVED` and the `layer1Score`/`outcome`/
+  `bounceRate` pairing (D-39-dependent) are the remaining, not-yet-built
+  half — see the next item.
 - [ ] LVN/HVN reversal ranking (D-39): Layer 1 intrinsic composite (void
   depth/width, shoulder strength, POC/VA position, confluence, formation
   delta, recency) blended with Layer 2 track record (touch/outcome
   counting off `ENTER`/`LEAVE`, session-scoped in-memory) via the
   Bayesian-style prior/empirical blend.
-- [ ] Zone lifecycle journal record kind (D-40): new record type in the
-  existing decisions-tier JSONL (D-15) for `CREATED`/`ENTER`/`LEAVE`/
-  `DISSOLVED`/`MERGED`/`SPLIT`, pairing `layer1Score` with `outcome` so
-  it can later validate/recalibrate the D-39 ranking weights.
+- [ ] Zone lifecycle journal record kind (D-40), remaining half: pair
+  `layer1Score` (D-39) with `outcome` on each trace record — the raw
+  `zone_trace`/`level_trace` records exist (above) but carry no ranking
+  fields yet since D-39 doesn't exist.
 - [ ] Session / prior-session levels, ATR, overnight high/low, VWAP
   (adapted from MotiveWave's published source per D-36, tick-weighted,
   method journaled)
