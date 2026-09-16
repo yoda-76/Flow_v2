@@ -1,5 +1,6 @@
 package com.flow.core;
 
+import com.flow.flow.LevelSource;
 import com.flow.journal.Json;
 import com.flow.journal.JournalWriter;
 
@@ -8,6 +9,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.IntToDoubleFunction;
 
 /**
  * The single-writer drain-thread handler (README "The event stream"):
@@ -34,6 +36,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   private final FlowStrategy strategy;
   private final IntentSink intentSink;
   private final Map<String, Feature> features;
+  private final IntToDoubleFunction priceDecoder; // nullable -- see constructor javadoc
 
   private final AtomicBoolean healthy = new AtomicBoolean(true);
   private final AtomicLong clockEventCount = new AtomicLong(0);
@@ -46,13 +49,23 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
    * currently has to pass Map.of() for anything SDK-engine-backed (D-43),
    * and that should never be silent. Also what TriggerEvaluator looks
    * features up in for D-38's LevelCross/ZoneTransition triggers.
+   *
+   * priceDecoder converts an integer tick offset to a decimal price, for
+   * human-readable trace output only -- the journal is one of D-21's two
+   * sanctioned decimal-conversion boundaries (ingest is the other), so
+   * doing it here doesn't violate "prices are integers throughout the
+   * core." Nullable: a live FlowRuntimeStudy always has one (its
+   * PriceCodec); ReplayHarness passes null since it has no live price
+   * context, and trace lines fall back to tick-offset-only in that case.
    */
-  public Pipeline(FlowStrategy strategy, JournalWriter journal, IntentSink intentSink, Map<String, Feature> features) {
+  public Pipeline(FlowStrategy strategy, JournalWriter journal, IntentSink intentSink,
+                   Map<String, Feature> features, IntToDoubleFunction priceDecoder) {
     this.strategy = strategy;
     this.journal = journal;
     this.intentSink = intentSink;
     this.features = Map.copyOf(features);
     this.triggers = new TriggerEvaluator(this.features);
+    this.priceDecoder = priceDecoder;
     this.lastIntent = Intent.none(strategy.id(), 0);
   }
 
@@ -110,8 +123,10 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
         // BarClose/EveryTick/Throttle/PriceCross/BookChange -- those
         // fire far more often and aren't what "trace through the
         // levels" means.
-        if (t instanceof Trigger.LevelCross || t instanceof Trigger.ZoneTransition) {
-          journal.writeDecision(e.seq(), traceLine(t, e));
+        if (t instanceof Trigger.LevelCross lc) {
+          journal.writeDecision(e.seq(), traceLine(t, e, lc.featureId()));
+        } else if (t instanceof Trigger.ZoneTransition zt) {
+          journal.writeDecision(e.seq(), traceLine(t, e, zt.featureId()));
         }
       }
     }
@@ -148,9 +163,21 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
    * there are D-39 (ranking) concepts that don't exist yet; this is the
    * foundational trace (what fired, where, when) that D-39's richer
    * version will build on, not a shortcut past it.
+   *
+   * relativeRow/priceDecimal are both best-effort: relativeRow is null
+   * if the feature doesn't implement it (LevelSource's default) or isn't
+   * ready; priceDecimal is null if this Pipeline has no priceDecoder
+   * (ReplayHarness). Neither absence is an error -- see their respective
+   * javadocs.
    */
-  private static String traceLine(Trigger t, Event e) {
+  private String traceLine(Trigger t, Event e, String featureId) {
     Integer price = Event.priceOf(e);
+    Integer relativeRow = null;
+    if (price != null && features.get(featureId) instanceof LevelSource ls) {
+      relativeRow = ls.relativeRow(price);
+    }
+    Double priceDecimal = (price != null && priceDecoder != null) ? priceDecoder.applyAsDouble(price) : null;
+
     if (t instanceof Trigger.LevelCross lc) {
       return Json.object()
           .field("type", "level_trace")
@@ -159,6 +186,8 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           .field("levelName", lc.levelName())
           .field("kind", lc.kind().name())
           .fieldOrNull("priceTicks", price)
+          .fieldOrNull("priceDecimal", priceDecimal)
+          .fieldOrNull("relativeRow", relativeRow)
           .build();
     }
     if (t instanceof Trigger.ZoneTransition zt) {
@@ -169,6 +198,8 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           .field("zoneKind", zt.zoneKind().name())
           .field("kind", zt.kind().name())
           .fieldOrNull("priceTicks", price)
+          .fieldOrNull("priceDecimal", priceDecimal)
+          .fieldOrNull("relativeRow", relativeRow)
           .build();
     }
     throw new IllegalArgumentException("traceLine called for a non-traceable trigger: " + t);

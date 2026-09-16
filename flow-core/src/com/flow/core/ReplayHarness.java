@@ -45,7 +45,9 @@ public final class ReplayHarness {
 
     List<Intent> collected = new ArrayList<>();
     IntentSink sink = (intent, event) -> collected.add(intent);
-    Pipeline pipeline = new Pipeline(strategy, journal, sink, features);
+    // null priceDecoder -- replay has no live price context (D-43); trace
+    // lines fall back to tick-offset-only when this runs.
+    Pipeline pipeline = new Pipeline(strategy, journal, sink, features, null);
 
     int eventsReplayed = 0;
     int gapsSkipped = 0;

@@ -1198,9 +1198,74 @@ readable rather than being silently rewritten.
   that's spelled differently from how it's registered).
 
   Full rebuild clean (both test gates pass), replay-equivalence
-  regression still passes. **Not yet live-verified**: needs the user to
-  switch the runtime's `Strategy Id` setting to `level_zone_observer` and
-  re-add the study — next step.
+  regression still passes.
+
+  **Live-verified 2026-09-16**: ran on `@GC` as `level_zone_observer`
+  (`level_zone_observer_1789569440133_inst287167897`), zero exceptions/
+  disarms. Of 330 decisions-tier lines, 96 were `level_trace` and 220
+  `zone_trace` — the mechanism is the dominant record type, not a rare
+  edge case. Sequence reads correctly: first tick has POC/VAH/VAL
+  coincide and all fire `TOUCH` together (correct degenerate case with
+  one traded price); as price develops, `CROSS_ABOVE` fires on VAL then
+  POC then VAH in order as price works up through the value area.
+  `ENTER`/`TOUCH` frequently coincide for zone events (62 ENTER, 35 LEAVE,
+  175 TOUCH) — expected, since `rangeTicks=1` zones are exactly one tick
+  wide, so entering one is almost always also touching its boundary. One
+  case worth recording rather than treating as a bug: at one point `POC
+  CROSS_BELOW` and `POC TOUCH` fired together at the same price — this is
+  D-38's cause-agnostic rule doing exactly what it says: POC itself moved
+  onto price's existing position, which is simultaneously "no longer
+  strictly above" and "exactly touching." `D-46` is now genuinely
+  live-verified, not just compile-clean and unit-tested.
+
+- **D-47** (2026-09-16) — **POC-relative row numbering for chart labels
+  and the price trace, per the user's explicit rule.** Not yet
+  live-verified.
+
+  Rule: POC = `0`. A level/zone's number is its row/bucket distance from
+  POC's row (row = tick-offset ÷ `rangeTicks`), positive above, negative
+  below, magnitude growing with distance — asked and confirmed: row
+  count, not raw ticks (stays meaningful if `rangeTicks` is ever widened
+  from its current default of 1), measured from a zone's **midpoint**
+  (not either edge). VAH/VAL get numbered the same way. A zone whose
+  range contains VAH or VAL is **forced** to that level's exact number
+  rather than computing its own and hoping it matches — the two are
+  computed from the same formula but rounding on a wide zone's midpoint
+  could otherwise disagree by one.
+
+  **Deliberately NOT the zone's internal identity.** `ZoneView.id()`
+  (e.g. `lvn-7`) is what D-38's matching algorithm uses to track "is this
+  the same zone across recomputes" and what D-39/D-40 will eventually
+  hang a track record on — a POC-relative number can't serve that role,
+  since it would change every time POC itself moves even if the zone
+  hasn't. This is purely a display value, computed fresh at draw/trace
+  time, never stored. Confirmed with the user before touching anything
+  load-bearing.
+
+  **Also added to the price trace** (a follow-on ask, not in the
+  original rule): `level_trace`/`zone_trace` records now carry
+  `relativeRow` and `priceDecimal` alongside the existing `priceTicks` —
+  the tick-offset alone isn't human-readable. This forced a real
+  architectural piece: `Pipeline` (`flow-core`, no SDK) had no way to
+  convert ticks to decimal, and D-21 only sanctions doing that at the
+  ingest and journal boundaries — the journal *is* one of those
+  boundaries, so doing it in `Pipeline` is correct, it just needed a
+  conduit. `Pipeline`'s constructor now takes a nullable
+  `IntToDoubleFunction priceDecoder` (`FlowRuntimeStudy` passes
+  `priceCodec::fromTicks`; `ReplayHarness` passes `null` — no live price
+  context, trace lines fall back to tick-offset-only under replay,
+  consistent with D-43's existing gap). `relativeRow` reuses the exact
+  same formula as the chart label, via a new `LevelSource.relativeRow(int)`
+  default method (null unless overridden) that `SdkVolumeProfileFeature`
+  implements directly against its own `poc`/`rangeTicks` fields — safe to
+  read there without going through the volatile snapshot, since
+  `Pipeline` calls it from the same drain thread that owns the feature;
+  explicitly **not** safe to call from `FlowRuntimeStudy`'s drawing code
+  (different thread), which is why the chart-side computation stays
+  local to `FlowRuntimeStudy` instead of reusing this same method.
+
+  Full rebuild clean (both test gates pass), replay-equivalence
+  regression still passes.
 
 ## Open questions (not yet decisions)
 

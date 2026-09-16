@@ -111,7 +111,7 @@ public class FlowRuntimeStudy extends Study {
     var sd = createSD();
     var tab = sd.addTab("Runtime");
     var grp = tab.addGroup("Strategy");
-    grp.addRow(new StringDescriptor(STRATEGY_ID_KEY, "Strategy Id", "null_strategy"));
+    grp.addRow(new StringDescriptor(STRATEGY_ID_KEY, "Strategy Id", "level_zone_observer"));
     grp.addRow(new BooleanDescriptor(ARMED_KEY, "Armed (no effect yet -- no order code exists)", false));
     grp.addRow(new StringDescriptor(MODE_KEY, "Mode", "DRY_RUN"));
     var vpGrp = tab.addGroup("Volume Profile");
@@ -162,7 +162,7 @@ public class FlowRuntimeStudy extends Study {
         Map.of(com.flow.flow.VolumeProfileView.FEATURE_ID, volumeProfile);
 
     IntentSink sink = this::onIntentChanged;
-    pipeline = new Pipeline(strategy, journal, sink, features);
+    pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks);
     sequencer = new Sequencer(pipeline::handle, pipeline);
     sequencer.start();
 
@@ -223,6 +223,19 @@ public class FlowRuntimeStudy extends Study {
     redrawFigures();
   }
 
+  /**
+   * All reads here go through VolumeProfileSnapshot (volatile-published)
+   * or this Study's own settings/final fields -- never SdkVolumeProfileFeature's
+   * mutable poc()/vah()/zones() directly, which are drain-thread-only.
+   * See VolumeProfileSnapshot's javadoc.
+   *
+   * Labeling rule (user-specified, 2026-09-16): POC is the zero
+   * reference. A level/zone's number is its row/bucket distance from
+   * POC's row -- positive above, negative below, magnitude growing with
+   * distance. A zone whose range contains VAH or VAL takes that level's
+   * own number exactly (forced equal, not independently computed and
+   * coincidentally close) rather than its own midpoint-based one.
+   */
   private void redrawFigures() {
     SdkVolumeProfileFeature vp = volumeProfile;
     PriceCodec codec = priceCodec;
@@ -230,19 +243,27 @@ public class FlowRuntimeStudy extends Study {
     VolumeProfileSnapshot snap = vp.snapshot();
     if (snap.poc() == null) return;
 
+    int rangeTicks = getSettings().getInteger(VP_RANGE_TICKS_KEY);
+    int pocTicks = snap.poc();
+
     clearFigures();
     long start = sessionStartMs;
     long now = System.currentTimeMillis();
 
-    addFigure(makeLine(start, codec.fromTicks(snap.poc()), now, codec.fromTicks(snap.poc()),
-        Color.YELLOW, "FLOW POC " + String.format("%.4f", codec.fromTicks(snap.poc()))));
+    addFigure(makeLine(start, codec.fromTicks(pocTicks), now, codec.fromTicks(pocTicks),
+        Color.YELLOW, "FLOW POC " + formatRelative(0) + " (" + String.format("%.4f", codec.fromTicks(pocTicks)) + ")"));
+
+    Integer vahRow = null;
+    Integer valRow = null;
     if (snap.vah() != null) {
+      vahRow = rowsFromPoc(snap.vah(), pocTicks, rangeTicks);
       addFigure(makeLine(start, codec.fromTicks(snap.vah()), now, codec.fromTicks(snap.vah()),
-          Color.CYAN, "FLOW VAH " + String.format("%.4f", codec.fromTicks(snap.vah()))));
+          Color.CYAN, "FLOW VAH " + formatRelative(vahRow) + " (" + String.format("%.4f", codec.fromTicks(snap.vah())) + ")"));
     }
     if (snap.val() != null) {
+      valRow = rowsFromPoc(snap.val(), pocTicks, rangeTicks);
       addFigure(makeLine(start, codec.fromTicks(snap.val()), now, codec.fromTicks(snap.val()),
-          Color.CYAN, "FLOW VAL " + String.format("%.4f", codec.fromTicks(snap.val()))));
+          Color.CYAN, "FLOW VAL " + formatRelative(valRow) + " (" + String.format("%.4f", codec.fromTicks(snap.val())) + ")"));
     }
 
     for (ZoneView z : snap.zones()) {
@@ -256,14 +277,29 @@ public class FlowRuntimeStudy extends Study {
       box.setLineColor(fill);
       addFigure(box);
 
-      // Label each zone with its kind + persistent id (D-38), so which
-      // box is which is readable directly off the chart, not just from
-      // the log -- z.id() is the same id the trigger/trace journal (D-45)
-      // uses, so a chart label and a journal line can be matched by eye.
-      Label label = new Label(new Coordinate(now, (lo + hi) / 2.0), z.kind() + " " + z.id());
+      int row;
+      if (vahRow != null && z.lowPriceTicks() <= snap.vah() && snap.vah() <= z.highPriceTicks()) {
+        row = vahRow;
+      } else if (valRow != null && z.lowPriceTicks() <= snap.val() && snap.val() <= z.highPriceTicks()) {
+        row = valRow;
+      } else {
+        int midTicks = Math.round((z.lowPriceTicks() + z.highPriceTicks()) / 2.0f);
+        row = rowsFromPoc(midTicks, pocTicks, rangeTicks);
+      }
+
+      Label label = new Label(new Coordinate(now, (lo + hi) / 2.0), z.kind() + " " + formatRelative(row));
       label.setLineColor(fill);
       addFigure(label);
     }
+  }
+
+  private static int rowsFromPoc(int levelTicks, int pocTicks, int rangeTicks) {
+    return Math.round((levelTicks - pocTicks) / (float) rangeTicks);
+  }
+
+  private static String formatRelative(int row) {
+    if (row == 0) return "0";
+    return row > 0 ? "+" + row : String.valueOf(row);
   }
 
   private Line makeLine(long startTime, double startValue, long endTime, double endValue, Color color, String label) {

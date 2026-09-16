@@ -5,27 +5,59 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
-## Where we left off (2026-09-16 end of session)
+## Where we left off (2026-09-16, session end — read this first, assume no memory of the conversation that produced it)
 
-Walking skeleton (D-41), replay harness (D-42), `VolumeProfileView`
-(D-44, live-verified against the chart), and D-38's `NamedLevel`/
-`NamedZone` triggers (D-45) are all built and deployed. Latest addition,
-**not yet live-verified**: `LevelZoneObserverStrategy` (D-46) — declares
-all 16 `LevelCross`/`ZoneTransition` triggers, still `Intent.none()`
-always, plus the foundational "price trace" journal
-(`level_trace`/`zone_trace` records) and chart labels on LVN/HVN zones.
+**Built, deployed, and live-verified against real `@GC` ticks**: walking
+skeleton (D-41: sequencer, two-tier journal, `NullStrategy`, all 15
+`OrderContext` safety hooks reflection-tested), replay harness (D-42:
+`ReplayHarness`/`ReplayEquivalenceTest`, PASS on the D-41 session),
+`VolumeProfileView` (D-44: SDK engine wrapped with the E-3 rotation fix,
+drawn POC/VAH/VAL matched the built-in study — VAH exact, VAL within 2
+ticks), D-38's `NamedLevel`/`NamedZone` triggers (D-45: `LevelCross`/
+`ZoneTransition`, found and fixed a real pre-existing bug in `Pipeline`'s
+trigger loop along the way), and `LevelZoneObserverStrategy` + the price
+trace (D-46: 96 `level_trace` + 220 `zone_trace` records fired correctly,
+zero exceptions).
 
-**Immediate next step**: in MotiveWave, switch the runtime's `Strategy Id`
-setting from `null_strategy` to `level_zone_observer` and re-add the
-study, then check `decisions.jsonl` is actually filling with
-`level_trace`/`zone_trace` lines as price interacts with the levels/zones,
-and that the chart labels render correctly. That live check is what's
-pending before D-46 can be marked done rather than `[~]`.
+**Built and deployed, NOT yet live-verified**: D-47 — POC-relative row
+numbering (POC=`0`, `+`/`-` rows scaled by distance, a zone overlapping
+VAH/VAL forced to that level's exact number) on chart labels and in the
+price trace (`relativeRow`/`priceDecimal` fields added to
+`level_trace`/`zone_trace`). Needs the study removed and re-added once
+more to confirm live — full rebuild and replay regression were clean,
+just never watched running against real ticks.
 
-**After that's confirmed**, per `todo.md`'s own sequencing: D-39 (LVN/HVN
-reversal ranking, Layer 1 + Layer 2) is next, since it's what the
-`level_trace`/`zone_trace` records exist to eventually feed — then D-40's
-remaining half (pairing `layer1Score`/`outcome` onto those trace records).
+**Open observation, action deferred, not a bug report**: HVN/LVN
+classification may be too dense (see the todo item a few lines below
+this one for the full writeup) — but the screenshot comparison that
+surfaced it wasn't apples-to-apples (ours was `rangeTicks=1`, the manual
+comparison was a 4-tick VP), so the real next step there is rerunning the
+comparison at matched granularity before concluding anything, not tuning
+blind.
+
+**D-39 (LVN/HVN reversal ranking) was about to start and was deliberately
+NOT started.** The user's own call, stated directly: further building
+from this point means making ranking-model decisions (Layer 1 factor
+weights, whether/how to scope "confluence" given its dependency features
+don't exist yet, the Bayesian blend's prior-weight constant) that get
+harder to reverse once anything downstream depends on them, and D-39 is
+exactly that kind of decision — better to stop at a clean, validated
+boundary than lock in a ranking model on guesses. This was a deliberate
+pause, not a blocker or an unfinished task.
+
+**When resuming, in order of what's cheapest to close first:**
+1. Live-verify D-47 (remove/re-add the study, confirm the chart labels
+   and trace `relativeRow`/`priceDecimal` fields look right).
+2. Rerun the HVN/LVN density comparison with our `rangeTicks` set to 4
+   (matching the manual comparison), before deciding whether the
+   classifier actually needs tuning.
+3. Resume D-39 — two open sub-decisions were on the table when this
+   session stopped, neither answered yet: (a) build Layer 1 now without
+   a working confluence factor (returns neutral until swing
+   points/big-trades/session-levels exist), or pause D-39 to build those
+   dependencies first; (b) pick a default Bayesian prior-weight constant
+   now (e.g. ~3 "virtual touches") vs. the user specifying one. Don't
+   assume either answer — ask again if picking this back up.
 
 **Where the work happens:**
 
@@ -360,13 +392,12 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   first trigger that fired, silently desyncing any other declared
   trigger's internal state for that event (e.g. a strategy watching both
   `ENTER` and `LEAVE` on the same zone kind).
-- [~] (2026-09-16) `LevelZoneObserverStrategy` (D-46): first strategy to
+- [x] (2026-09-16) `LevelZoneObserverStrategy` (D-46): first strategy to
   declare D-38's triggers (16 total: `LevelCross` × POC/VAH/VAL,
   `ZoneTransition` × LVN/HVN), still `Intent.none()` always — a pure
   observer proving the trigger/trace mechanism, not a signal yet.
-  Registered in `StrategyRegistrations`. **Not yet live-verified** — user
-  needs to switch `Strategy Id` to `level_zone_observer` and re-add the
-  study.
+  **Live-verified**: ran on `@GC`, 96 `level_trace` + 220 `zone_trace`
+  records fired correctly, zero exceptions.
 - [x] (2026-09-16) Zone/level "price trace" — foundational half of D-40's
   journal only (see D-46): `Pipeline` now journals a `level_trace`/
   `zone_trace` decisions-tier record for every `LevelCross`/
@@ -374,6 +405,40 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   `MERGED`/`SPLIT`/`DISSOLVED` and the `layer1Score`/`outcome`/
   `bounceRate` pairing (D-39-dependent) are the remaining, not-yet-built
   half — see the next item.
+- [~] (2026-09-16) POC-relative row numbering (D-47): chart labels and
+  `level_trace`/`zone_trace` (`relativeRow`, `priceDecimal` fields) both
+  use it — POC=0, +/- rows scaled by distance, zones overlapping VAH/VAL
+  forced to that level's exact number. Full rebuild + replay regression
+  clean. **Not yet live-verified** — needs the study re-added.
+- [ ] **HVN/LVN classification may be too dense — needs a fair
+  same-granularity comparison before concluding anything, then tuning if
+  still warranted.** Visual observation, 2026-09-16 (screenshots
+  `Screenshot 2026-09-16 203513.png` = ours, `.../203835.png` = the
+  user's manual read, both `C:\yadvendra\New folder\`, not committed to
+  the repo): on a consolidation/low-volume chunk of `@GC`, our LVN/HVN
+  bands covered almost the entire visible price range with barely any
+  gaps, while the user's own manual read of the same chunk picked out
+  only a handful of distinct, separated zones. **Confound found
+  2026-09-16, not yet controlled for**: the two weren't at the same
+  granularity — ours was `rangeTicks=1` (finer rows, mechanically more of
+  them to classify), the manual read was against a 4-tick VP (coarser).
+  The density gap could be mostly or entirely explained by that alone.
+  **Next step before any tuning**: rerun the same comparison with our
+  `rangeTicks` setting also set to 4, same chunk, then judge whether a
+  real over-classification problem remains. Current classifier is
+  `hvn_threshold=1.5`/`lvn_threshold=0.5` against a `window=5` rolling
+  local average (`SdkVolumeProfileFeature`, ported from
+  `FLOW/flow/features/volume_profile.py`) — if the gap persists at equal
+  granularity, plausible causes worth checking: thresholds too
+  permissive, window too small/local (contrasting each row only against
+  its 5 nearest neighbors rather than a wider or session-level baseline),
+  or the local-contrast approach itself needing a minimum-separation/
+  clustering step so adjacent marginal rows don't each independently
+  qualify. Matters beyond cosmetics: D-39's Layer 1 "void depth" score
+  and the zone-identity/trigger system (D-38) both operate per-zone, so
+  an over-dense classification means more, noisier, less meaningful
+  zones everywhere downstream. Not started — observation only, no
+  decision or approach chosen yet.
 - [ ] LVN/HVN reversal ranking (D-39): Layer 1 intrinsic composite (void
   depth/width, shoulder strength, POC/VA position, confluence, formation
   delta, recency) blended with Layer 2 track record (touch/outcome

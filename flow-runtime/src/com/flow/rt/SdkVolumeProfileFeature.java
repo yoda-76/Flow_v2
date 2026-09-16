@@ -397,6 +397,21 @@ final class SdkVolumeProfileFeature implements VolumeProfileView {
     return poc;
   }
 
+  /**
+   * Reads the mutable `poc`/`rangeTicks` fields directly, not through the
+   * volatile snapshot -- safe ONLY because this is called by Pipeline's
+   * trace journaling, which runs on the same drain thread that owns this
+   * feature's state (see the class javadoc). NOT safe to call from
+   * FlowRuntimeStudy's drawing code, which runs on a different thread --
+   * that path goes through VolumeProfileSnapshot instead.
+   */
+  @Override
+  public Integer relativeRow(int priceTicks) {
+    Integer p = poc;
+    if (p == null) return null;
+    return Math.round((priceTicks - p) / (float) rangeTicks);
+  }
+
   @Override
   public Integer vah() {
     return vah;

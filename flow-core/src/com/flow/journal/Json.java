@@ -60,6 +60,13 @@ public final class Json {
     return this;
   }
 
+  public Json fieldOrNull(String name, Double value) {
+    comma();
+    sb.append('"').append(escape(name)).append("\":");
+    sb.append(value == null ? "null" : value.toString());
+    return this;
+  }
+
   public String build() {
     return sb.append('}').toString();
   }
