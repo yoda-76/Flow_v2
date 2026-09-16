@@ -1267,6 +1267,42 @@ readable rather than being silently rewritten.
   Full rebuild clean (both test gates pass), replay-equivalence
   regression still passes.
 
+- **D-48** (2026-09-17) — **Price trace now records the level's own
+  value and a zone's own low/high, not just the current market price,
+  per the user's explicit request.** Not yet live-verified.
+
+  `level_trace` gains `levelPriceTicks`/`levelPriceDecimal` — the
+  level's (POC/VAH/VAL) own value at fire time, distinct from
+  `priceTicks`/`priceDecimal` (the current market price). These can
+  genuinely differ: D-38's cross is cause-agnostic, so a `CROSS_BELOW`
+  can fire because the *level* moved onto a stationary price, not price
+  moving through the level — recording both makes that visible in the
+  trace instead of only inferable.
+
+  `zone_trace` gains `zoneLowTicks`/`zoneHighTicks` (+ their decimal
+  forms) — the specific zone's range, not just which kind (LVN/HVN)
+  fired. Since `ZoneTransition` wakes on *any* zone of a kind (D-38, by
+  design — a strategy inspects `ZoneSource.zonesOfKind()` itself to see
+  which one), the trace previously had no way to say which zone was
+  actually involved.
+
+  **The real wrinkle**: getting a zone's range into the trace needed
+  more than reading current state, because a `LEAVE` fires *after* price
+  has already left the zone — by then, "which zone contains the current
+  price" no longer answers the question for the zone being left.
+  `TriggerEvaluator` already tracked this internally
+  (`lastZoneRange`/`lastZoneId`) but cleared it right before returning
+  `true` for a `LEAVE`. Added `lastFiredZoneRange(Trigger)`: a separate,
+  fire-time snapshot captured for `ENTER`/`LEAVE`/`TOUCH` alike, read by
+  `Pipeline` immediately after a true `shouldWake()` — the zone as it was
+  known at the moment of the event, not whatever state has been cleared
+  to since.
+
+  Full rebuild clean (both test gates pass, including the pre-existing
+  `TriggerEvaluatorTest` — the `checkZoneTransition` control-flow change
+  needed to add the capture points didn't change any of its behavior),
+  replay-equivalence regression still passes.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

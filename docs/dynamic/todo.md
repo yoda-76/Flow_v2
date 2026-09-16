@@ -5,7 +5,7 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
-## Where we left off (2026-09-16, session end — read this first, assume no memory of the conversation that produced it)
+## Where we left off (2026-09-17, updated — read this first, assume no memory of the conversation that produced it)
 
 **Built, deployed, and live-verified against real `@GC` ticks**: walking
 skeleton (D-41: sequencer, two-tier journal, `NullStrategy`, all 15
@@ -23,9 +23,13 @@ zero exceptions).
 numbering (POC=`0`, `+`/`-` rows scaled by distance, a zone overlapping
 VAH/VAL forced to that level's exact number) on chart labels and in the
 price trace (`relativeRow`/`priceDecimal` fields added to
-`level_trace`/`zone_trace`). Needs the study removed and re-added once
-more to confirm live — full rebuild and replay regression were clean,
-just never watched running against real ticks.
+`level_trace`/`zone_trace`). D-48 — the trace now also carries the
+level's own value (`levelPriceTicks`/`levelPriceDecimal`, distinct from
+current price) on `level_trace`, and a zone's own low/high
+(`zoneLowTicks`/`zoneHighTicks` + decimals) on `zone_trace`, per the
+user's explicit request. Both built same day, full rebuild and replay
+regression clean for both — needs the study removed and re-added once to
+confirm either live, never watched running against real ticks since.
 
 **Open observation, action deferred, not a bug report**: HVN/LVN
 classification may be too dense (see the todo item a few lines below
@@ -46,8 +50,10 @@ boundary than lock in a ranking model on guesses. This was a deliberate
 pause, not a blocker or an unfinished task.
 
 **When resuming, in order of what's cheapest to close first:**
-1. Live-verify D-47 (remove/re-add the study, confirm the chart labels
-   and trace `relativeRow`/`priceDecimal` fields look right).
+1. Live-verify D-47/D-48 together (remove/re-add the study once, confirm
+   the chart labels and all the new trace fields — `relativeRow`,
+   `priceDecimal`, `levelPriceTicks`/`levelPriceDecimal`,
+   `zoneLowTicks`/`zoneHighTicks` + decimals — look right).
 2. Rerun the HVN/LVN density comparison with our `rangeTicks` set to 4
    (matching the manual comparison), before deciding whether the
    classifier actually needs tuning.
@@ -410,6 +416,16 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   use it — POC=0, +/- rows scaled by distance, zones overlapping VAH/VAL
   forced to that level's exact number. Full rebuild + replay regression
   clean. **Not yet live-verified** — needs the study re-added.
+- [~] (2026-09-17) Price trace carries level/zone identity, not just
+  current price (D-48): `level_trace` gains `levelPriceTicks`/
+  `levelPriceDecimal` (the level's own value, can differ from current
+  price under D-38's cause-agnostic cross); `zone_trace` gains
+  `zoneLowTicks`/`zoneHighTicks` + decimals (which specific zone fired,
+  not just its kind). Needed `TriggerEvaluator.lastFiredZoneRange()` — a
+  fire-time snapshot, since a `LEAVE`'s zone range is already cleared
+  from the normal tracking state by the time `Pipeline` would otherwise
+  read it. Full rebuild + replay regression clean. **Not yet
+  live-verified**.
 - [ ] **HVN/LVN classification may be too dense — needs a fair
   same-granularity comparison before concluding anything, then tuning if
   still warranted.** Visual observation, 2026-09-16 (screenshots

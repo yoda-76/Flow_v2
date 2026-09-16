@@ -27,11 +27,25 @@ final class TriggerEvaluator {
   private final Map<Trigger, Double> lastBookSize = new HashMap<>();
   private final Map<Trigger, String> lastZoneId = new HashMap<>();
   private final Map<Trigger, int[]> lastZoneRange = new HashMap<>();
+  private final Map<Trigger, int[]> lastFiredZoneRange = new HashMap<>();
 
   private final Map<String, Feature> features;
 
   TriggerEvaluator(Map<String, Feature> features) {
     this.features = features;
+  }
+
+  /**
+   * The [low, high] range of the zone involved in the most recent true
+   * result from shouldWake() for this exact ZoneTransition trigger --
+   * captured at fire time, so it's still available for a LEAVE even
+   * though lastZoneRange itself gets cleared right before returning.
+   * Null if this trigger has never fired. Called by Pipeline immediately
+   * after a true shouldWake(), for the price trace (D-40's zone
+   * low/high, per the user's own request).
+   */
+  int[] lastFiredZoneRange(Trigger key) {
+    return lastFiredZoneRange.get(key);
   }
 
   boolean shouldWake(Trigger t, Event e, long nowMs) {
@@ -113,7 +127,10 @@ final class TriggerEvaluator {
 
     if (zt.kind() == Trigger.ZoneTransition.TransitionKind.TOUCH) {
       for (ZoneView z : candidates) {
-        if (price == z.lowPriceTicks() || price == z.highPriceTicks()) return true;
+        if (price == z.lowPriceTicks() || price == z.highPriceTicks()) {
+          lastFiredZoneRange.put(key, new int[]{z.lowPriceTicks(), z.highPriceTicks()});
+          return true;
+        }
       }
       return false;
     }
@@ -132,7 +149,11 @@ final class TriggerEvaluator {
       boolean isNewMembership = !Objects.equals(containing.id(), prevId);
       lastZoneId.put(key, containing.id());
       lastZoneRange.put(key, new int[]{containing.lowPriceTicks(), containing.highPriceTicks()});
-      return isNewMembership && zt.kind() == Trigger.ZoneTransition.TransitionKind.ENTER;
+      if (isNewMembership && zt.kind() == Trigger.ZoneTransition.TransitionKind.ENTER) {
+        lastFiredZoneRange.put(key, new int[]{containing.lowPriceTicks(), containing.highPriceTicks()});
+        return true;
+      }
+      return false;
     }
 
     // price is outside every current zone of this kind
@@ -146,7 +167,11 @@ final class TriggerEvaluator {
     }
     lastZoneId.remove(key);
     lastZoneRange.remove(key);
-    return zt.kind() == Trigger.ZoneTransition.TransitionKind.LEAVE;
+    if (zt.kind() == Trigger.ZoneTransition.TransitionKind.LEAVE) {
+      lastFiredZoneRange.put(key, prevRange); // the zone as it was known before this LEAVE, not "outside"
+      return true;
+    }
+    return false;
   }
 
 }

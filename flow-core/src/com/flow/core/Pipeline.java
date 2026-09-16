@@ -164,21 +164,30 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
    * foundational trace (what fired, where, when) that D-39's richer
    * version will build on, not a shortcut past it.
    *
-   * relativeRow/priceDecimal are both best-effort: relativeRow is null
-   * if the feature doesn't implement it (LevelSource's default) or isn't
-   * ready; priceDecimal is null if this Pipeline has no priceDecoder
-   * (ReplayHarness). Neither absence is an error -- see their respective
-   * javadocs.
+   * Per the user's own request (2026-09-17): a level_trace records not
+   * just the current price but the level's own value at that moment
+   * (they can differ -- D-38's cause-agnostic cross means the level
+   * itself can have moved onto a stationary price); a zone_trace records
+   * the specific zone's low/high, not just which kind (LVN/HVN) fired --
+   * fetched from TriggerEvaluator.lastFiredZoneRange(), captured at fire
+   * time since a LEAVE's zone is no longer "current" by the time this
+   * runs (see that method's javadoc).
+   *
+   * relativeRow/priceDecimal/levelPriceDecimal/zoneLow-HighDecimal are
+   * all best-effort: the *Row fields are null if the feature doesn't
+   * implement LevelSource.relativeRow() or isn't ready; the *Decimal
+   * fields are null if this Pipeline has no priceDecoder (ReplayHarness).
+   * Neither absence is an error.
    */
   private String traceLine(Trigger t, Event e, String featureId) {
     Integer price = Event.priceOf(e);
-    Integer relativeRow = null;
-    if (price != null && features.get(featureId) instanceof LevelSource ls) {
-      relativeRow = ls.relativeRow(price);
-    }
+    LevelSource ls = features.get(featureId) instanceof LevelSource s ? s : null;
+    Integer relativeRow = (price != null && ls != null) ? ls.relativeRow(price) : null;
     Double priceDecimal = (price != null && priceDecoder != null) ? priceDecoder.applyAsDouble(price) : null;
 
     if (t instanceof Trigger.LevelCross lc) {
+      Integer levelValue = ls != null ? ls.levelValue(lc.levelName()) : null;
+      Double levelDecimal = (levelValue != null && priceDecoder != null) ? priceDecoder.applyAsDouble(levelValue) : null;
       return Json.object()
           .field("type", "level_trace")
           .field("seq", e.seq())
@@ -187,10 +196,17 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           .field("kind", lc.kind().name())
           .fieldOrNull("priceTicks", price)
           .fieldOrNull("priceDecimal", priceDecimal)
+          .fieldOrNull("levelPriceTicks", levelValue)
+          .fieldOrNull("levelPriceDecimal", levelDecimal)
           .fieldOrNull("relativeRow", relativeRow)
           .build();
     }
     if (t instanceof Trigger.ZoneTransition zt) {
+      int[] range = triggers.lastFiredZoneRange(t);
+      Integer zoneLow = range != null ? range[0] : null;
+      Integer zoneHigh = range != null ? range[1] : null;
+      Double zoneLowDecimal = (zoneLow != null && priceDecoder != null) ? priceDecoder.applyAsDouble(zoneLow) : null;
+      Double zoneHighDecimal = (zoneHigh != null && priceDecoder != null) ? priceDecoder.applyAsDouble(zoneHigh) : null;
       return Json.object()
           .field("type", "zone_trace")
           .field("seq", e.seq())
@@ -199,6 +215,10 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           .field("kind", zt.kind().name())
           .fieldOrNull("priceTicks", price)
           .fieldOrNull("priceDecimal", priceDecimal)
+          .fieldOrNull("zoneLowTicks", zoneLow)
+          .fieldOrNull("zoneHighTicks", zoneHigh)
+          .fieldOrNull("zoneLowDecimal", zoneLowDecimal)
+          .fieldOrNull("zoneHighDecimal", zoneHighDecimal)
           .fieldOrNull("relativeRow", relativeRow)
           .build();
     }
