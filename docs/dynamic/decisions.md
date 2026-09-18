@@ -1829,6 +1829,161 @@ readable rather than being silently rewritten.
   once VWAP gets a chart line, same as every other construct's
   built-in-study comparison pattern.
 
+- **D-58** (2026-09-18) — **Liquidity map built: live MBO DOM stream →
+  aggregate-only in-memory book → periodic bounded-window journal
+  snapshot, no raw DOM persistence at all.** Fifth and last construct in
+  the 2026-09-18 breadth-first order (footprint → big trades → VWAP →
+  market structure *(deferred, picked up later)* → **liquidity map**,
+  brought forward ahead of market structure per direct instruction).
+
+  **Design driven directly by the user (2026-09-18), not derived from
+  the SDK docs alone**: D-35 already proved full per-order DOM detail at
+  native update rate is ~31.5 GB/hour — not storable, full stop. The
+  user's own proposal: maintain a live, continuously-updating aggregate
+  order-book instance fed by the raw DOM stream, and let a periodic
+  (~10s) snapshot of *that derived state*, bounded to a window around
+  price, be the only thing that ever reaches disk. This is a fourth
+  option beyond D-35's original three (top-of-book-only / delta encoding
+  / shorter full-detail window) and the one actually built.
+
+  **Explicit, accepted consequence for D-11**: replay (bit-identical to
+  live) does not extend to `LiquidityMapFeature` at update granularity —
+  full per-update DOM detail is never in the raw journal at all (see
+  `DomEvent`'s javadoc), so there is nothing for replay to reconstruct
+  it from below the periodic snapshot. Flagged to the user directly
+  before building, not discovered after.
+
+  **Three design questions asked and answered directly by the user**
+  before writing code:
+  1. **Aggregate rows only, not per-order** — no individual resting
+     order id/size/age tracking. Explicitly **not** ruled out forever:
+     the user asked for a deferred experimentation item (see todo.md)
+     covering both whether that per-order data is even reliably
+     available on this feed, and, if so, whether it can actually support
+     intent analysis (iceberg/manipulation/hindsight-movement
+     detection) — a real research question, not assumed either way.
+  2. **Bounded window around price for the periodic snapshot**, not the
+     full book every time — matches what a heatmap actually displays
+     and keeps storage predictable regardless of how wide the live book
+     gets. The *live* in-memory state still holds the full book (cheap —
+     see below); only the persisted snapshot is windowed.
+  3. **Same JVM, clock-triggered** — no new concurrency model. Reuses
+     the existing 100ms `ClockEvent` cadence and the existing async
+     `JournalWriter`, exactly like the heartbeat mechanism already does,
+     just as its own independently-named cadence (currently the same
+     period by coincidence, not by design, since the two serve unrelated
+     purposes and may want to diverge once real storage numbers are in).
+
+  **Mechanism**:
+  - `DomEvent` (flow-core) grows the depth array its own original
+    comment already anticipated: `bidRows`/`askRows` (full resting book
+    per update), alongside the existing top-of-book convenience fields.
+  - `RawEventCodec.encode()` for the `"dom"` record type is **left
+    unchanged** — it only ever wrote top-of-book fields, so full-update
+    depth structurally never reaches the raw journal, by construction,
+    not by a special-cased skip anywhere in `Pipeline`. `decode()`
+    reconstructs `DomEvent` with empty row lists (that detail was never
+    recorded) — the accepted D-11 gap made concrete.
+  - `LiquidityMapFeature` (flow-core, zero SDK dependency, same
+    realization as `BigTradeFeature`/`VWAPFeature`): each `DomEvent`
+    **replaces** `bidRows`/`askRows` wholesale, O(1) per update — the SDK
+    hands back the full current book every time, not a delta (confirmed
+    live), so unlike `VolumeProfileView` this needs **no rotation/
+    memory-management machinery at all**; live state is always exactly
+    the current book's size, never accumulates. Reads (`bestBidTicks`,
+    `bidSizeAt`, `bidRowsWithin`) are a deliberate O(n) linear scan over
+    the stored list rather than a maintained sorted structure — correct
+    tradeoff given writes happen at DOM-update rate (measured 32-172/sec,
+    D-35) and reads only happen at the ~10s snapshot cadence or a
+    strategy's own much slower trigger cadence.
+  - `Pipeline` gets a second clock-triggered periodic action alongside
+    the existing heartbeat: `maybeDomSnapshot()`, same `ClockEvent`
+    counter mechanism, writes a new `liquidity_snapshot` decisions-tier
+    record (`Json.fieldRaw()` added to embed the row arrays — the first
+    decisions-tier record needing anything beyond flat primitive
+    fields). v1 defaults, explicitly flagged as revisit-from-measurement
+    like `SdkVolumeProfileFeature`'s `ROTATE_EVERY_TICKS` already is:
+    100 clock events (~10s) cadence, ±100 ticks window.
+  - `FlowRuntimeStudy` implements `DOMListener` (same proven pattern as
+    `../../motivewave/experiments/src/flow_diag/DomDetailCapture.java`
+    and `SdkCapabilityProbe.java`, including that pattern's
+    `removeListener` in `destroy()` — an un-removed listener is exactly
+    what turns a "removed" study instance into a DOM-fed zombie, per
+    that experiment's own finding). Subscribes only after the sequencer
+    is already running, avoiding the null-sequencer race rather than
+    just tolerating it the way `onTick()`'s defensive null check does.
+    No exchange timestamp exists for a DOM update at all (confirmed from
+    the actual jar — neither `DOM` nor `DOMListener.update()` carry one,
+    unlike `Tick.getTime()`) — local receipt time stands in for both
+    `eventTimeMs` and `receiptTimeMs`, a permanent characteristic of
+    this data source, not a gap to close later.
+
+  **Liquidity-heatmap visual check (the one item flagged open in
+  today's earlier assessment) — explicitly declined by the user, not
+  skipped by oversight**: "any motivewave heatmap study is not
+  accurate. whatever we will build will be more accurate and i
+  currently dont have bookmap subscription to test against it so we
+  just gonna trust our process." Closed as *won't-do*, not left open.
+
+  Full rebuild clean (both test gates pass), redeployed. **Live-verified
+  end to end, immediately**: real MBO data flowing (~920-930 bid rows,
+  ~865-870 ask rows on `@GC`, both sides updating roughly once a
+  second), best bid/ask tracked correctly (spread ~4 ticks, sane), zero
+  `DISARM`s, and the periodic snapshot fired on schedule — three
+  `liquidity_snapshot` records in the first ~30 seconds, well-formed
+  JSON, ~3.6 KB each. **Real measured storage cost, not estimated**:
+  ~3.6 KB/snapshot × 360 snapshots/hour (10s cadence) ≈ **~1.3 MB/hour,
+  ~31 MB/day** — comfortably in D-35's "cheap" tier, nowhere near the
+  per-order-detail numbers that made this whole design necessary in the
+  first place.
+
+- **D-59** (2026-09-18) — **Liquidity map drawn on chart for a live
+  visual test: one colored Box per DOM row in the draw window, deep
+  blue → light blue → white → yellow → orange → red → deep red by
+  resting size, both sides on the same scale.** Requested directly by
+  the user right after D-58 landed, exact color sequence and "both
+  sides of current price on the same scale" (not a separate color
+  family per side) specified directly, not inferred.
+
+  **Retrofitted `LiquidityMapFeature` for cross-thread safety first**:
+  `bidRows`/`askRows` marked `volatile` (D-58's own javadoc had already
+  flagged this as needed once drawing existed, same lesson
+  `BigTradeFeature` taught, D-54) — but unlike `BigTradeFeature`'s fix,
+  this one was free: `onEvent()` already just reassigns these fields to
+  `DomEvent`'s own already-immutable `List`s, so marking them `volatile`
+  is a plain-write-to-volatile-write change, not a new allocation on the
+  DOM-update hot path. No "throttle the publish rate" mechanism needed,
+  unlike what the class's own javadoc had speculated a drawing pass
+  would require.
+
+  **Historical stamp at "now," not a scrolling heatmap across time** —
+  there is no per-row history to draw beyond the live state (D-58: raw
+  DOM detail is never persisted, only periodic bounded snapshots), so a
+  classic Bookmap-style heatmap scrolling across the chart's time axis
+  is explicitly not attempted; each redraw shows a thin trailing column
+  positioned at the current time, cleared and redrawn from scratch every
+  cycle like every other construct's drawing here.
+
+  **Normalization: plain linear min-max across the combined bid+ask
+  window, every redraw** — simplest defensible v1 for a first visual
+  test, not tuned. Known, stated limitation: one very large resting
+  order in the window would compress everything else toward the cold
+  end of the scale. Not addressed pre-emptively — revisit from what the
+  live picture actually looks like, not a guessed fix.
+
+  New settings: `Liquidity Map > Draw Window (ticks each side)` (default
+  50, separate from `Pipeline`'s own `DOM_SNAPSHOT_WINDOW_TICKS` — one
+  controls the journal snapshot, this one only the drawing, no storage
+  relationship between them) and `Liquidity Map > Draw on Chart`
+  (default **true** — the user asked to see this immediately, same
+  reasoning D-51/D-54 already used for "just built, default on").
+
+  Full rebuild clean (both test gates pass), redeployed, session stayed
+  healthy (zero `DISARM`s) immediately after. **Live-verified** — user
+  confirmed directly: "yes working fine." Follow-up request right after
+  (heatmap history behind the candles, not just the live trailing
+  column) recorded in `todo.md`, explicitly not picked up now.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

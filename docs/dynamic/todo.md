@@ -237,9 +237,124 @@ enough live evidence (DOM/MBO capture, heatmap visual check) to build
 from, or whether more experiments are needed first, before writing any
 code.
 
-**Next concrete step**: commit + push, then investigate what
-`../motivewave/experiments/` already has for liquidity map / DOM
-heatmap before starting to build it.
+**Commit + push done, 2026-09-18** — both `FLOW_V2` (D-53–D-57's work)
+and `../motivewave` (the `AggregateFilter` cast finding) are pushed to
+their `origin` remotes.
+
+**Liquidity map experiment coverage, checked 2026-09-18 — verdict:
+enough to start building, one cheap open item worth closing first.**
+What already exists, all `[LIVE]` unless noted:
+
+- **True MBO confirmed, not just top-of-book MBP** — the 2026-09-11
+  finding (`../../motivewave/docs/dynamic/findings.md`): 50,988 real,
+  distinct `DOMOrder` entries across 20 DOM updates on `@GC`, ~595-720
+  price rows per side (the whole resting book).
+- **Update cadence and data volume already measured**, twice, from two
+  different capture strategies — `TickDomLogger.java` (top-of-book,
+  long sample): ~171,600 DOM updates/hr. `DomDetailCapture.java` (full
+  per-order detail, 6,000-update bounded sample): 32.76 updates/sec,
+  2,747.6 `DOMOrder` entries/update. This is what D-35's retention
+  numbers (Q-10) are built from — not a separate unknown.
+- **A working `DOMListener` reference implementation already exists**
+  and runs live: `DomDetailCapture.java implements DOMListener`,
+  `update(DOM dom)` — directly reusable as the pattern for finally
+  wiring `DomEvent` into `FLOW_V2`'s own pipeline (§2 above,
+  "`DOMListener` not wired" is implementation work at this point, not
+  an open experiment).
+- `sdk-capability-findings.md` §2.8 already reasoned through *why*
+  build-custom over built-in: the built-in `Order Heatmap`/`DOM Power`
+  studies are 1-second/bar-close aggregate snapshots accumulated from
+  whenever a DOM panel was opened — not Bookmap-grade, no per-order
+  resolution, no sub-second timeline. Doc-level reasoning, not yet
+  visually confirmed.
+
+**One real gap, cheap to close, not a blocker**: the **liquidity
+heatmap visual check** (§1b above) — actually adding the built-in
+`Order Heatmap`/`DOM Power` studies to a chart and looking — has been
+flagged open since 2026-09-16 and never done. Worth doing before or
+alongside starting the build, same self-honesty check that changed the
+plan for volume profile (D-36) — cheap enough that skipping it would be
+skipping validation for no real reason, even though the doc-level case
+for custom-build is already fairly strong on its own.
+
+**Not a blocker either**: E-9 (`getDOMHistory()`'s actual shape/
+retention on our feed, whether it's permission-gated) — only matters
+for the "warm start on attach" nice-to-have (§2.8's point (a)), not the
+core live construction. Every other construct here (VP, footprint,
+VWAP) already accepted "forward-only from attach, no historical
+warm-start" (D-37's pattern) — the same default applies to liquidity
+map without needing E-9 answered first.
+
+**User decided: skip the visual check, build directly** — "any
+motivewave heatmap study is not accurate. whatever we will build will
+be more accurate and i currently dont have bookmap subscription to
+test against it so we just gonna trust our process." Then gave the
+actual storage design directly (see D-58): live aggregate book,
+never-persist-raw-DOM, periodic bounded-window snapshot instead. Three
+follow-up design questions asked and answered (aggregate-only rows,
+bounded snapshot window, same-JVM clock-triggered mechanism) before any
+code — **liquidity map is now built, deployed, and live-verified** (D-58)
+— full detail in `decisions.md`. All five constructs from the
+2026-09-18 breadth-first redirect are now done except market structure,
+which stays explicitly deferred per the user's own call.
+
+**Liquidity map drawn on chart for a live visual test (D-59)**, same
+session, right after D-58 landed — user asked directly. One colored
+`Box` per DOM row in a draw window (separate setting from the journal
+snapshot's own window, no storage relationship), deep blue → light
+blue → white → yellow → orange → red → deep red by resting size, both
+sides of price on the *same* scale (not a separate color family per
+side) — exact gradient and "same scale both sides" spec given directly
+by the user, not inferred. Positioned as a thin trailing column at
+"now," not a scrolling heatmap across time — there's no per-row history
+to draw (D-58: raw DOM detail is never persisted, only periodic bounded
+snapshots). Plain linear min-max normalization across the combined
+bid+ask window each redraw — simplest v1, known limitation stated
+directly: one very large resting order would compress everything else
+toward the cold end; not pre-emptively fixed, revisit from what the
+live picture actually looks like. Required retrofitting
+`LiquidityMapFeature.bidRows`/`askRows` to `volatile` for cross-thread
+drawing reads (D-58's own javadoc had already flagged this as coming) —
+free this time, since `onEvent()` already just reassigns to
+`DomEvent`'s own immutable Lists, no new allocation needed. Full
+rebuild clean, redeployed, session stayed healthy. **Not yet visually
+confirmed** — same as every other construct's drawing, this runs
+outside `Pipeline` entirely, so a rendering bug wouldn't show up in any
+journal. Needs the user to look at the chart.
+
+**Heatmap confirmed live (D-59)**: "yes working fine." Follow-up request
+— heatmap history rendered behind the candles across time, not just the
+live trailing column — recorded above and in §4, explicitly deferred,
+not picked up now.
+
+**Market structure is next, and its actual definition just changed
+significantly** (2026-09-18): the earlier plan ("builds on
+`DataSeries.calcSwingPoints`," E-7/E-10) is superseded by a much more
+specific system the user provided directly — a trend-state machine with
+pullback validation, TJL1/TJL2 zone formation, trend-flip detection, and
+post-flip role reassignment (A+/SBR/RBS/DT/DB). Per the user's explicit
+instruction, **no code gets written yet**: the full rule system was
+distilled into `docs/dynamic/marketStructureRules.md` first, with 7
+`⚠️ AMBIGUOUS` points flagged inline (CHOCH's exact price basis, how the
+2-candle pullback check behaves past a 3rd counter-trend candle, whether
+a pullback's candle range keeps growing until continuation, what "1%"
+is measured against, what flip-watch keys off after the first flip
+before a real TJL pair exists, the exact window for "highest/lowest
+point after A+," and whether CHOCH is ever revisited after the first
+real TJL pair forms). **User is reviewing that file** before any
+implementation work starts or any architecture-mapping discussion
+happens (how this maps onto `MarketState`/`Feature`/event types is
+explicitly next-step work, not done yet).
+
+**Next concrete step**: wait for the user's review of
+`marketStructureRules.md` — do not start implementation, and do not
+assume answers to the flagged ambiguities. Once reviewed/corrected, per
+the original redirect: wire one simple strategy that uses every core
+construct and actually places Sim orders, to prove the full pipeline
+end-to-end — market structure is the one construct still missing
+before that's fully true, though the user may choose to go straight to
+that end-to-end wiring first and treat market structure as parallel/
+later work. Ask before assuming which.
 
 **Where the work happens:**
 
@@ -425,12 +540,12 @@ audit's numbering).
   does have real usage (4 studies).
 - [x] (2026-09-14) **E-11** = Q-03, done → D-35.
 - [x] (2026-09-14) **E-12** = Q-02(a), done → D-31.
-- [ ] **Liquidity heatmap visual check** (the user's own idea, not
-  originally in the E-numbered list) — add the built-in `Order Heatmap`
-  and/or `DOM Power` study, judge whether its quality is good enough to
-  skip building a custom MBO-fed heatmap. Not yet done — the two studies
-  were added to a chart early in this effort but no follow-up comparison
-  happened.
+- [-] (2026-09-18) **Liquidity heatmap visual check** — dropped, not
+  done, by explicit user call rather than left open by oversight: "any
+  motivewave heatmap study is not accurate. whatever we will build will
+  be more accurate and i currently dont have bookmap subscription to
+  test against it so we just gonna trust our process." Custom build
+  (D-58) went ahead without this comparison.
 
 ## 2. Walking skeleton `[BUILD]` — waiting on explicit go
 
@@ -738,11 +853,63 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   once per full 24h day — just not *detected* anywhere in running code
   yet). Build once, shared, when the first of these actually needs it
   live rather than four one-off reimplementations.
-- [ ] Liquidity map, heatmap, and book imbalance (derived DOM views only
-  — raw DOM never crosses `MarketState`): still ours to build from the
-  live MBO DOM stream (`sdk-capability-findings.md` §2.8) unless the
-  built-in visual check (§1b above) says the built-in `Order Heatmap`/
-  `DOM Power` is good enough — not yet done
+- [x] (2026-09-18) Liquidity map (D-58): `DOMListener` finally wired
+  into `FlowRuntimeStudy` (`DomEvent` grows `bidRows`/`askRows`, its own
+  original comment's anticipated evolution). `LiquidityMapFeature`
+  (flow-core, zero SDK dependency): each DOM update replaces the live
+  aggregate book wholesale (O(1), no rotation needed — unlike
+  `VolumeProfileView` this never accumulates). Per the user's own design
+  (2026-09-18): raw DOM updates are **never** persisted at all
+  (`RawEventCodec` stays top-of-book-only by construction) — only a
+  periodic (~10s), bounded-window (±100 ticks) snapshot of the live
+  state reaches the journal, a new `Pipeline`-owned clock-triggered
+  mechanism (`liquidity_snapshot` records). Accepted consequence:
+  replay (D-11) can't reconstruct this construct at update granularity,
+  only at snapshot granularity — flagged to the user before building.
+  Aggregate rows only, no per-order tracking (see the deferred
+  experimentation item below). Liquidity-heatmap visual check explicitly
+  declined (see §1b). **Live-verified immediately**: real MBO data
+  flowing (~920-930 bid rows / ~865-870 ask rows on `@GC`), zero
+  DISARMs, periodic snapshots firing on schedule, **measured** (not
+  estimated) storage cost ~3.6 KB/snapshot → ~1.3 MB/hour, ~31 MB/day.
+- [x] (2026-09-18) Liquidity map drawing (D-59): heatmap test draw per
+  direct request — one `Box` per DOM row in a draw window, deep blue →
+  light blue → white → yellow → orange → red → deep red by resting
+  size, both sides on the same scale. Thin trailing column at "now,"
+  not scrolling across time (no per-row history exists to draw). Plain
+  linear min-max normalization, known outlier-compression limitation
+  stated, not fixed. Retrofitted `LiquidityMapFeature`'s row fields to
+  `volatile` for this (free, no new allocation). Full rebuild clean,
+  redeployed, session healthy. **User-confirmed live: "yes working
+  fine."**
+- [ ] **Heatmap history on chart, as a background layer below the
+  candles** (raised by the user right after confirming D-59's live
+  column works, 2026-09-18) — explicitly **not being picked up now**.
+  Current drawing (D-59) only shows a single trailing column at "now";
+  the user wants the heatmap's history rendered across the chart's time
+  axis too, sitting visually behind the candles (a real scrolling
+  Bookmap-style heatmap, not just the live edge). This needs actual
+  historical per-time liquidity data to draw from, which today only
+  exists as the periodic `liquidity_snapshot` records (D-58, ~10s
+  cadence, bounded window) — the resolution and retention of those
+  snapshots would directly determine how detailed/how far back this
+  history view could go. Not started, not designed — revisit deliberately
+  later, same as every other `[DESIGN ONLY]`/deferred item here.
+- [ ] **Deferred experimentation item, per-order DOM detail (raised by
+  the user alongside declining per-order tracking in D-58)**: two
+  linked questions, not yet started. (1) Do we even reliably get real
+  order ids/size/age from individual resting orders on this feed, at
+  useful fidelity — `DOMOrder.getExchangeOrderId()`/`getQuantity()`
+  exist in the SDK and MBO itself is confirmed real (2026-09-11
+  finding), but resting-order-level reliability over time hasn't been
+  specifically checked. (2) If that data is available and reliable, can
+  it actually support identifying institutional intent — icebergs,
+  manipulation, hindsight market-mover analysis, etc. — or does it turn
+  out too noisy/ambiguous to be useful. A real research question, not
+  assumed either way; not started.
+- [ ] Book imbalance (derived DOM view — near-price bid/ask size ratio,
+  reads through `LiquidityMapView` now that it exists): not yet built,
+  README's original plan for it, no code yet.
 - [x] (2026-09-18) Big trades: see the D-53 entry above (§4's own big
   trades item) — built as `BigTradeFeature` directly against `TickEvent`,
   not `AggregateFilter`, after the wrapped-engine plan broke live. Fixed

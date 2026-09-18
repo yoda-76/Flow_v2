@@ -18,6 +18,9 @@ import com.flow.journal.JournalWriter;
 import com.motivewave.platform.sdk.common.DataContext;
 import com.motivewave.platform.sdk.common.DataSeries;
 import com.motivewave.platform.sdk.common.Defaults;
+import com.motivewave.platform.sdk.common.DOM;
+import com.motivewave.platform.sdk.common.DOMListener;
+import com.motivewave.platform.sdk.common.DOMRow;
 import com.motivewave.platform.sdk.common.Instrument;
 import com.motivewave.platform.sdk.common.Tick;
 import com.motivewave.platform.sdk.common.TimeFrame;
@@ -81,7 +84,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
     requiresBarUpdates = true,
     supportsBarUpdates = true,
     barUpdatesByDefault = true)
-public class FlowRuntimeStudy extends Study {
+public class FlowRuntimeStudy extends Study implements DOMListener {
   private static final String STRATEGY_ID_KEY = "FLOW_STRATEGY_ID";
   private static final String ARMED_KEY = "FLOW_ARMED";
   private static final String MODE_KEY = "FLOW_MODE";
@@ -100,6 +103,12 @@ public class FlowRuntimeStudy extends Study {
   private static final String DRAW_VP_KEY = "FLOW_DRAW_VP";
   private static final String DRAW_FP_KEY = "FLOW_DRAW_FP";
   private static final String DRAW_BT_KEY = "FLOW_DRAW_BT";
+  // D-59: heatmap test draw -- one colored Box per DOM row within the
+  // window, blue (thin) -> red (thick) by resting size. Separate from
+  // Pipeline's own DOM_SNAPSHOT_WINDOW_TICKS (journal snapshot width) --
+  // this one only controls what gets drawn, cosmetic, no storage impact.
+  private static final String DRAW_LM_KEY = "FLOW_DRAW_LM";
+  private static final String LM_DRAW_WINDOW_TICKS_KEY = "FLOW_LM_DRAW_WINDOW_TICKS";
   // Big trades (D-53): built directly against our own TickEvent stream,
   // not a wrapper around AggregateFilter (that engine casts its Tick
   // argument to an internal concrete class -- crashed live the moment it
@@ -133,6 +142,13 @@ public class FlowRuntimeStudy extends Study {
   private volatile java.io.PrintWriter vwapLog;
   private volatile long lastVwapLogTime = 0;
   private static final long VWAP_LOG_INTERVAL_MS = 1000;
+  // D-58: liquidity map, built from the live MBO DOM stream (DOMListener,
+  // subscribed once the instrument is known -- same pattern already
+  // proven in ../../motivewave/experiments/src/flow_diag/DomDetailCapture.java).
+  private volatile com.flow.flow.LiquidityMapFeature liquidityMap;
+  private volatile java.io.PrintWriter domLog;
+  private volatile long lastDomLogTime = 0;
+  private static final long DOM_LOG_INTERVAL_MS = 1000;
   private volatile long sessionStartMs;
 
   // Redraw throttling -- called from onTick, a MotiveWave-invoked
@@ -160,6 +176,9 @@ public class FlowRuntimeStudy extends Study {
     btGrp.addRow(new IntegerDescriptor(BT_MIN_SIZE_KEY, "Min Size (contracts, fixed threshold)", 10, 1, 99999, 1));
     btGrp.addRow(new IntegerDescriptor(BT_AGG_PERIOD_MS_KEY, "Agg Period (ms, same price+side window)", 20, 0, 60000, 1));
     btGrp.addRow(new BooleanDescriptor(DRAW_BT_KEY, "Draw on Chart", true));
+    var lmGrp = tab.addGroup("Liquidity Map");
+    lmGrp.addRow(new IntegerDescriptor(LM_DRAW_WINDOW_TICKS_KEY, "Draw Window (ticks each side)", 50, 1, 500, 1));
+    lmGrp.addRow(new BooleanDescriptor(DRAW_LM_KEY, "Draw on Chart", true));
     createRD();
   }
 
@@ -228,12 +247,24 @@ public class FlowRuntimeStudy extends Study {
     } catch (IOException e) {
       vwapLog = null;
     }
+    // D-58: liquidity map, fed by the DOMListener subscription below.
+    // Aggregate rows only, no per-order detail (deferred, see todo.md).
+    liquidityMap = new com.flow.flow.LiquidityMapFeature(com.flow.flow.LiquidityMapView.FEATURE_ID);
+    try {
+      domLog = new java.io.PrintWriter(new java.io.FileWriter(
+          "C:/yadvendra/trading/FLOW_V2/logs/liquidity_map_feature.log", true));
+      domLog.println("# feature start " + System.currentTimeMillis() + " id=liquidity_map");
+      domLog.flush();
+    } catch (IOException e) {
+      domLog = null;
+    }
     Map<String, com.flow.core.Feature> features = Map.of(
         com.flow.flow.VolumeProfileView.FEATURE_ID, volumeProfile,
         com.flow.flow.FootprintView.FEATURE_ID, footprint,
         com.flow.flow.BigTradeView.FEATURE_ID, bigTrades,
         com.flow.flow.OrderRepeatView.FEATURE_ID, orderRepeats,
-        com.flow.flow.VWAPView.FEATURE_ID, vwap);
+        com.flow.flow.VWAPView.FEATURE_ID, vwap,
+        com.flow.flow.LiquidityMapView.FEATURE_ID, liquidityMap);
 
     IntentSink sink = this::onIntentChanged;
     pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks);
@@ -252,6 +283,14 @@ public class FlowRuntimeStudy extends Study {
         s.publish((seq, et, rt) -> new com.flow.core.ClockEvent(seq, et, rt), now);
       }
     }, 100, 100, TimeUnit.MILLISECONDS);
+
+    // Subscribed last, once the sequencer is already running -- update(DOM)
+    // below no-ops safely if sequencer is still null (same defensive check
+    // onTick() already has), but starting the subscription only after
+    // everything else is ready avoids that race altogether rather than
+    // just tolerating it.
+    instrument.addListener(this);
+    logLine("SUBSCRIBED_DOM symbol=" + instrument.getSymbol());
 
     logLine("SESSION_START strategyId=" + strategyId + " symbol=" + instrument.getSymbol());
   }
@@ -302,6 +341,90 @@ public class FlowRuntimeStudy extends Study {
     w.flush();
   }
 
+  /**
+   * D-58: DOMListener callback -- a different MotiveWave-invoked thread
+   * than onTick()'s (per README "The event stream"), not the sequencer's
+   * drain thread either. Converts the full resting book into DomRows and
+   * publishes one DomEvent through the sequencer, same single-writer
+   * discipline as ticks/bars -- LiquidityMapFeature only ever mutates on
+   * the drain thread, this callback just builds the immutable payload.
+   *
+   * No exchange timestamp is available from the SDK for a DOM update
+   * (DOM/DOMListener.update() carry none, confirmed from the actual jar,
+   * unlike Tick.getTime()) -- local receipt time is used for both
+   * eventTimeMs and receiptTimeMs, an accepted limitation, not a
+   * placeholder to fix later.
+   */
+  @Override
+  public void update(DOM dom) {
+    Sequencer s = sequencer;
+    PriceCodec codec = priceCodec;
+    if (s == null || codec == null) return;
+    List<com.flow.core.DomRow> bidRows = convertDomRows(dom.getBidRows(), codec);
+    List<com.flow.core.DomRow> askRows = convertDomRows(dom.getAskRows(), codec);
+    int bestBidTicks = maxPriceTicks(bidRows);
+    double bestBidSize = sizeAtMax(bidRows, bestBidTicks);
+    int bestAskTicks = minPriceTicks(askRows);
+    double bestAskSize = sizeAtMin(askRows, bestAskTicks);
+    long now = System.currentTimeMillis();
+    s.publish((seq, et, rt) -> new com.flow.core.DomEvent(seq, et, rt,
+        bestBidTicks, bestBidSize, bestAskTicks, bestAskSize, bidRows, askRows), now);
+    maybeLogDom(bidRows, askRows);
+  }
+
+  @SuppressWarnings("unchecked") // DOM.getBidRows()/getAskRows() return a raw List in this jar -- same T-6-class mismatch as VolumeProfile.getRows()
+  private static List<com.flow.core.DomRow> convertDomRows(java.util.List rawRows, PriceCodec codec) {
+    List<com.flow.core.DomRow> out = new java.util.ArrayList<>(rawRows.size());
+    for (Object o : rawRows) {
+      DOMRow row = (DOMRow) o;
+      out.add(new com.flow.core.DomRow(codec.toTicks(row.getPrice()), row.getSize()));
+    }
+    return List.copyOf(out); // immutable -- LiquidityMapFeature stores this reference directly, never copies it again
+  }
+
+  private static int maxPriceTicks(List<com.flow.core.DomRow> rows) {
+    int max = 0;
+    boolean any = false;
+    for (com.flow.core.DomRow r : rows) {
+      if (!any || r.priceTicks() > max) { max = r.priceTicks(); any = true; }
+    }
+    return max;
+  }
+
+  private static int minPriceTicks(List<com.flow.core.DomRow> rows) {
+    int min = 0;
+    boolean any = false;
+    for (com.flow.core.DomRow r : rows) {
+      if (!any || r.priceTicks() < min) { min = r.priceTicks(); any = true; }
+    }
+    return min;
+  }
+
+  private static double sizeAtMax(List<com.flow.core.DomRow> rows, int priceTicks) {
+    for (com.flow.core.DomRow r : rows) if (r.priceTicks() == priceTicks) return r.size();
+    return 0;
+  }
+
+  private static double sizeAtMin(List<com.flow.core.DomRow> rows, int priceTicks) {
+    return sizeAtMax(rows, priceTicks);
+  }
+
+  /** Diagnostic-only live-validation log, same discipline as every other construct's first pass. */
+  private void maybeLogDom(List<com.flow.core.DomRow> bidRows, List<com.flow.core.DomRow> askRows) {
+    java.io.PrintWriter w = domLog;
+    PriceCodec codec = priceCodec;
+    if (w == null || codec == null) return;
+    long now = System.currentTimeMillis();
+    if (now - lastDomLogTime < DOM_LOG_INTERVAL_MS) return;
+    lastDomLogTime = now;
+    int bestBidTicks = maxPriceTicks(bidRows);
+    int bestAskTicks = minPriceTicks(askRows);
+    w.println(now + " bidRowCount=" + bidRows.size() + " askRowCount=" + askRows.size()
+        + " bestBid=" + String.format("%.4f", codec.fromTicks(bestBidTicks))
+        + " bestAsk=" + String.format("%.4f", codec.fromTicks(bestAskTicks)));
+    w.flush();
+  }
+
   // Drawing, for visual comparison against the chart's built-in Volume
   // Profile study (same purpose as E-2). Called from onTick -- a
   // MotiveWave-invoked callback thread -- never from the sequencer's own
@@ -331,6 +454,7 @@ public class FlowRuntimeStudy extends Study {
     if (getSettings().getBoolean(DRAW_VP_KEY)) redrawVolumeProfileFigures();
     if (getSettings().getBoolean(DRAW_FP_KEY)) redrawFootprintFigures();
     if (getSettings().getBoolean(DRAW_BT_KEY)) redrawBigTradeFigures();
+    if (getSettings().getBoolean(DRAW_LM_KEY)) redrawLiquidityMapFigures();
   }
 
   /**
@@ -495,6 +619,81 @@ public class FlowRuntimeStudy extends Study {
     }
   }
 
+  /**
+   * D-59, test drawing per direct request: one colored Box per DOM row
+   * within the draw window (bid and ask both read through the SAME
+   * gradient, not separate color families -- "according to the resting
+   * order... on both sides", not by side). Positioned as a thin trailing
+   * column at "now", not spread across history -- there is no historical
+   * per-row data to draw beyond the live state (D-58: raw DOM updates are
+   * never persisted, only periodic bounded snapshots), so a scrolling
+   * Bookmap-style heatmap across time is not attempted here.
+   *
+   * Normalization is a plain linear min-max across the combined bid+ask
+   * window at each redraw -- simplest defensible v1 for a first visual
+   * test. A single very large resting order would compress everything
+   * else toward the cold end; not addressed here, revisit from what the
+   * live picture actually looks like rather than guessing a fix now.
+   */
+  private void redrawLiquidityMapFigures() {
+    com.flow.flow.LiquidityMapFeature lm = liquidityMap;
+    PriceCodec codec = priceCodec;
+    if (lm == null || codec == null) return;
+    int windowTicks = getSettings().getInteger(LM_DRAW_WINDOW_TICKS_KEY);
+    List<com.flow.core.DomRow> bidRows = lm.bidRowsWithin(windowTicks);
+    List<com.flow.core.DomRow> askRows = lm.askRowsWithin(windowTicks);
+    if (bidRows.isEmpty() && askRows.isEmpty()) return;
+
+    double minSize = Double.MAX_VALUE, maxSize = -Double.MAX_VALUE;
+    for (var r : bidRows) { minSize = Math.min(minSize, r.size()); maxSize = Math.max(maxSize, r.size()); }
+    for (var r : askRows) { minSize = Math.min(minSize, r.size()); maxSize = Math.max(maxSize, r.size()); }
+
+    long now = System.currentTimeMillis();
+    drawHeatRows(bidRows, codec, minSize, maxSize, now);
+    drawHeatRows(askRows, codec, minSize, maxSize, now);
+  }
+
+  private void drawHeatRows(List<com.flow.core.DomRow> rows, PriceCodec codec, double minSize, double maxSize, long now) {
+    long columnHalfWidthMs = 15_000; // arbitrary v1 visual width, not tied to bar interval
+    for (com.flow.core.DomRow r : rows) {
+      double t = maxSize > minSize ? (r.size() - minSize) / (maxSize - minSize) : 0.5;
+      Color color = heatColor(t);
+      double lo = codec.fromTicks(r.priceTicks());
+      double hi = lo + instrument.getTickSize();
+      Box box = new Box(now - columnHalfWidthMs, lo, now, hi);
+      box.setFillColor(color);
+      box.setLineColor(color);
+      addFigure(box);
+    }
+  }
+
+  /**
+   * Deep blue -> light blue -> white -> yellow -> orange -> red -> deep
+   * red, per the user's exact spec (2026-09-18). t in [0,1], clamped;
+   * piecewise-linear interpolation between the 7 stops.
+   */
+  private static Color heatColor(double t) {
+    t = Math.max(0, Math.min(1, t));
+    Color[] stops = {
+        new Color(0, 0, 139),     // deep blue
+        new Color(173, 216, 230), // light blue
+        new Color(255, 255, 255), // white
+        new Color(255, 255, 0),   // yellow
+        new Color(255, 165, 0),   // orange
+        new Color(255, 0, 0),     // red
+        new Color(139, 0, 0)      // deep red
+    };
+    double scaled = t * (stops.length - 1);
+    int idx = (int) Math.floor(scaled);
+    if (idx >= stops.length - 1) return stops[stops.length - 1];
+    double frac = scaled - idx;
+    Color a = stops[idx], b = stops[idx + 1];
+    int r = (int) Math.round(a.getRed() + (b.getRed() - a.getRed()) * frac);
+    int g = (int) Math.round(a.getGreen() + (b.getGreen() - a.getGreen()) * frac);
+    int bch = (int) Math.round(a.getBlue() + (b.getBlue() - a.getBlue()) * frac);
+    return new Color(r, g, bch);
+  }
+
   private static int rowsFromPoc(int levelTicks, int pocTicks, int rangeTicks) {
     return Math.round((levelTicks - pocTicks) / (float) rangeTicks);
   }
@@ -575,6 +774,17 @@ public class FlowRuntimeStudy extends Study {
       vwLog.flush();
       vwLog.close();
       vwapLog = null;
+    }
+    Instrument instr = instrument;
+    if (instr != null) {
+      instr.removeListener(this); // matches SdkCapabilityProbe.java's proven pattern -- an un-removed listener keeps a "removed" instance running as a DOM-fed zombie
+    }
+    liquidityMap = null;
+    java.io.PrintWriter dLog = domLog;
+    if (dLog != null) {
+      dLog.flush();
+      dLog.close();
+      domLog = null;
     }
   }
 

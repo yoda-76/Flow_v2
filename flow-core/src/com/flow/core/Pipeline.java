@@ -30,6 +30,15 @@ import java.util.function.IntToDoubleFunction;
  */
 public final class Pipeline implements Sequencer.ExceptionHandler {
   private static final long HEARTBEAT_EVERY_CLOCK_EVENTS = 100; // ~10s at the 100ms clock cadence
+  // D-58: liquidity-map periodic snapshot cadence -- v1 defaults, same
+  // "reasonable now, revisit from real storage measurement" stance as
+  // SdkVolumeProfileFeature's ROTATE_EVERY_TICKS. Currently the same
+  // period as the heartbeat above by coincidence, not by design -- kept
+  // as its own named constant since the two serve unrelated purposes and
+  // may want to diverge later (the user's own framing: "granularity will
+  // be decided later on the basis of how much storage is being consumed").
+  private static final long DOM_SNAPSHOT_EVERY_CLOCK_EVENTS = 100; // ~10s
+  private static final int DOM_SNAPSHOT_WINDOW_TICKS = 100; // bounded window around mid-price
 
   private final MutableMarketState marketState = new MutableMarketState();
   private final TriggerEvaluator triggers;
@@ -90,8 +99,10 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     }
     journal.writeRaw(e.seq(), RawEventCodec.encode(e));
 
-    if (e instanceof ClockEvent && clockEventCount.incrementAndGet() % HEARTBEAT_EVERY_CLOCK_EVENTS == 0) {
-      heartbeat(e);
+    if (e instanceof ClockEvent) {
+      long count = clockEventCount.incrementAndGet();
+      if (count % HEARTBEAT_EVERY_CLOCK_EVENTS == 0) heartbeat(e);
+      if (count % DOM_SNAPSHOT_EVERY_CLOCK_EVENTS == 0) maybeDomSnapshot(e);
     }
 
     if (journal.decisionsOverflowed() && healthy.compareAndSet(true, false)) {
@@ -253,6 +264,45 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
         .field("healthy", healthy.get())
         .field("lastIntentReason", lastIntent.reason())
         .build());
+  }
+
+  /**
+   * D-58: the only historical record this construct keeps -- per-DOM-
+   * update detail is deliberately never persisted (DomEvent's javadoc),
+   * so this periodic, bounded-window snapshot of LiquidityMapFeature's
+   * live state is what makes any later heatmap reconstruction possible
+   * at all, combined with historical OHLC (the user's own plan,
+   * 2026-09-18). Silently a no-op if no liquidity-map feature is
+   * registered or it isn't ready yet (e.g. DOMListener not wired, or no
+   * DOM update has arrived) -- same "features is what it is, act on
+   * what's actually there" stance the trace journaling already takes for
+   * missing LevelSource/ZoneSource features.
+   */
+  private void maybeDomSnapshot(Event e) {
+    if (!(features.get(com.flow.flow.LiquidityMapView.FEATURE_ID) instanceof com.flow.flow.LiquidityMapView lm)
+        || !lm.isReady()) {
+      return;
+    }
+    journal.writeDecision(e.seq(), Json.object()
+        .field("type", "liquidity_snapshot")
+        .field("seq", e.seq())
+        .field("exchangeTimeMs", marketState.exchangeTimeMs())
+        .fieldOrNull("bestBidTicks", lm.bestBidTicks())
+        .fieldOrNull("bestAskTicks", lm.bestAskTicks())
+        .field("windowTicks", DOM_SNAPSHOT_WINDOW_TICKS)
+        .fieldRaw("bidRows", domRowsJson(lm.bidRowsWithin(DOM_SNAPSHOT_WINDOW_TICKS)))
+        .fieldRaw("askRows", domRowsJson(lm.askRowsWithin(DOM_SNAPSHOT_WINDOW_TICKS)))
+        .build());
+  }
+
+  private static String domRowsJson(java.util.List<com.flow.core.DomRow> rows) {
+    StringBuilder sb = new StringBuilder("[");
+    for (int i = 0; i < rows.size(); i++) {
+      if (i > 0) sb.append(',');
+      com.flow.core.DomRow r = rows.get(i);
+      sb.append("{\"p\":").append(r.priceTicks()).append(",\"s\":").append(r.size()).append('}');
+    }
+    return sb.append(']').toString();
   }
 
   private static String intentChangeLine(Intent intent, long seq) {

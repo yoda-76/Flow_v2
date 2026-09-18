@@ -74,6 +74,20 @@ public final class Json {
     return this;
   }
 
+  /**
+   * Embeds a pre-built JSON fragment (array or object) verbatim, not as
+   * an escaped string value -- added for D-58's liquidity snapshot
+   * record, the first decisions-tier record needing anything beyond a
+   * flat set of primitive fields (bidRows/askRows, each a JSON array of
+   * {"p":...,"s":...} objects). Caller is responsible for rawJson being
+   * valid JSON; this class has no parser to check it.
+   */
+  public Json fieldRaw(String name, String rawJson) {
+    comma();
+    sb.append('"').append(escape(name)).append("\":").append(rawJson);
+    return this;
+  }
+
   public String build() {
     return sb.append('}').toString();
   }

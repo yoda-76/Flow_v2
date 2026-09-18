@@ -3,6 +3,8 @@ package com.flow.core;
 import com.flow.journal.Json;
 import com.flow.journal.JsonObject;
 
+import java.util.List;
+
 /**
  * Event <-> raw-tier JSON line, in one place on purpose. Pipeline.handle()
  * calls encode() when writing the raw journal live; ReplayHarness calls
@@ -38,6 +40,10 @@ public final class RawEventCodec {
           .field("closeTicks", be.closeTicks())
           .field("volume", be.volume());
     } else if (e instanceof DomEvent de) {
+      // Deliberately top-of-book only -- de.bidRows()/askRows() (full
+      // depth) are never encoded here. See DomEvent's javadoc (D-58):
+      // this is how full-update DOM detail stays out of the raw journal
+      // entirely, by construction, not a size limit anyone has to remember.
       j.field("type", "dom")
           .field("bestBidTicks", de.bestBidTicks())
           .field("bestBidSize", de.bestBidSize())
@@ -80,9 +86,14 @@ public final class RawEventCodec {
           BarPhase.valueOf(o.getString("phase")),
           o.getInt("openTicks"), o.getInt("highTicks"), o.getInt("lowTicks"), o.getInt("closeTicks"),
           o.getLong("volume"));
+      // bidRows/askRows reconstruct empty -- that detail was never
+      // written to the raw journal (see encode() and DomEvent's
+      // javadoc, D-58), so replay cannot exercise LiquidityMapFeature
+      // at update granularity. Accepted, documented gap.
       case "dom" -> new DomEvent(seq, eventTimeMs, receiptTimeMs,
           o.getInt("bestBidTicks"), o.getDouble("bestBidSize"),
-          o.getInt("bestAskTicks"), o.getDouble("bestAskSize"));
+          o.getInt("bestAskTicks"), o.getDouble("bestAskSize"),
+          List.of(), List.of());
       case "clock" -> new ClockEvent(seq, eventTimeMs, receiptTimeMs);
       case "order" -> new OrderEvent(seq, eventTimeMs, receiptTimeMs, o.getString("orderId"), o.getString("status"));
       case "fill" -> new FillEvent(seq, eventTimeMs, receiptTimeMs, o.getString("orderId"),
