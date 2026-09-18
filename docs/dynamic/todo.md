@@ -341,20 +341,47 @@ a pullback's candle range keeps growing until continuation, what "1%"
 is measured against, what flip-watch keys off after the first flip
 before a real TJL pair exists, the exact window for "highest/lowest
 point after A+," and whether CHOCH is ever revisited after the first
-real TJL pair forms). **User is reviewing that file** before any
-implementation work starts or any architecture-mapping discussion
-happens (how this maps onto `MarketState`/`Feature`/event types is
-explicitly next-step work, not done yet).
+real TJL pair forms). **Review deferred by the user** ("currently i
+dont have time to review... fill the ambiguity with whatever u feel
+good and move ahead... and complete the market structure part") — build
+proceeded without waiting, per explicit instruction.
 
-**Next concrete step**: wait for the user's review of
-`marketStructureRules.md` — do not start implementation, and do not
-assume answers to the flagged ambiguities. Once reviewed/corrected, per
-the original redirect: wire one simple strategy that uses every core
-construct and actually places Sim orders, to prove the full pipeline
-end-to-end — market structure is the one construct still missing
-before that's fully true, though the user may choose to go straight to
-that end-to-end wiring first and treat market structure as parallel/
-later work. Ask before assuming which.
+**⚠️ IMPORTANT — COME BACK TO THIS**: all 7 ambiguities were resolved
+by best guess, not confirmed, recorded in
+`docs/dynamic/marketStructureRulesTemp.md` (CHOCH = first bar's close;
+pullback validity anchored to the run's first candle; a valid
+pullback's range keeps growing until continuation; "1%" = 1% of that
+candle's own high-low range; SBR/RBS plays CHOCH's bootstrap role after
+the first flip; the DT/DB scan window is `[A+ candle, flip-confirming
+candle]`; CHOCH is retired permanently once any real TJL pair forms).
+**`MarketStructureFeature` (D-60) is built and deployed against these
+guesses.** When the user does review `marketStructureRules.md`, any
+answer that contradicts `marketStructureRulesTemp.md` means the
+*already-built* feature needs to change, not just a doc — this is a
+real, load-bearing gap between "built" and "confirmed correct," not a
+formality.
+
+**Market structure built (D-60)**: `MarketStructureFeature` (flow-core,
+zero SDK dependency — pure bar OHLC logic), bar-close-triggered only.
+Full state machine per the rules: trend, pullback tracking (anchored,
+growing), TJL1/TJL2 formation on confirmed continuation, flip-watch
+(independent of pullback state, checked every bar), and post-flip
+A+/SBR/RBS/DT/DB role reassignment, including the simpler CHOCH-only
+initial-transition case (no A+ exists yet, so no role reassignment
+happens on that specific flip). Log-only
+(`logs/market_structure_feature.log`), no drawing, no settings. Full
+rebuild clean, redeployed, session stayed healthy. **Not yet
+live-verified beyond "doesn't crash"** — no bar had closed in the short
+window checked right after redeploy, so no pullback/TJL/flip event has
+fired yet against real data.
+
+**Next concrete step**: check `market_structure_feature.log` after a
+few real 1-minute bars have closed, to confirm the logic actually fires
+sensibly (not just crash-free) — then, whenever the user gets time,
+review `marketStructureRules.md` against what's actually running. Once
+that's settled, per the original redirect: wire one simple strategy
+that uses every core construct and actually places Sim orders, to
+prove the full pipeline end-to-end.
 
 **Where the work happens:**
 

@@ -149,6 +149,9 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   private volatile java.io.PrintWriter domLog;
   private volatile long lastDomLogTime = 0;
   private static final long DOM_LOG_INTERVAL_MS = 1000;
+  // D-60: unreviewed rule resolutions, see docs/dynamic/marketStructureRulesTemp.md
+  private volatile com.flow.flow.MarketStructureFeature marketStructure;
+  private volatile MarketStructureFileLogger marketStructureLogger;
   private volatile long sessionStartMs;
 
   // Redraw throttling -- called from onTick, a MotiveWave-invoked
@@ -258,13 +261,19 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     } catch (IOException e) {
       domLog = null;
     }
+    // D-60: unreviewed rule resolutions -- see docs/dynamic/marketStructureRulesTemp.md.
+    marketStructureLogger = new MarketStructureFileLogger(priceCodec);
+    marketStructure = new com.flow.flow.MarketStructureFeature(
+        com.flow.flow.MarketStructureView.FEATURE_ID, marketStructureLogger);
+
     Map<String, com.flow.core.Feature> features = Map.of(
         com.flow.flow.VolumeProfileView.FEATURE_ID, volumeProfile,
         com.flow.flow.FootprintView.FEATURE_ID, footprint,
         com.flow.flow.BigTradeView.FEATURE_ID, bigTrades,
         com.flow.flow.OrderRepeatView.FEATURE_ID, orderRepeats,
         com.flow.flow.VWAPView.FEATURE_ID, vwap,
-        com.flow.flow.LiquidityMapView.FEATURE_ID, liquidityMap);
+        com.flow.flow.LiquidityMapView.FEATURE_ID, liquidityMap,
+        com.flow.flow.MarketStructureView.FEATURE_ID, marketStructure);
 
     IntentSink sink = this::onIntentChanged;
     pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks);
@@ -785,6 +794,12 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       dLog.flush();
       dLog.close();
       domLog = null;
+    }
+    marketStructure = null;
+    MarketStructureFileLogger msLog = marketStructureLogger;
+    if (msLog != null) {
+      msLog.closeLog();
+      marketStructureLogger = null;
     }
   }
 

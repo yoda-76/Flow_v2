@@ -1984,6 +1984,73 @@ readable rather than being silently rewritten.
   (heatmap history behind the candles, not just the live trailing
   column) recorded in `todo.md`, explicitly not picked up now.
 
+- **D-60** (2026-09-18) — **Market structure built against unreviewed
+  rule resolutions, per explicit instruction to proceed without
+  waiting for review.** The user provided a complete trend/pullback/
+  zone/flip system directly (three iterative drafts, distilled into
+  `docs/dynamic/marketStructureRules.md`, 7 points flagged
+  `⚠️ AMBIGUOUS`). No time to review it right now — explicit
+  instruction: "create a temp structure rules, fill the ambiguity with
+  whatever u feel good and move ahead... and complete the market
+  structure part." `marketStructureRulesTemp.md` records exactly which
+  guess was made for each of the 7 points (CHOCH = first bar's close;
+  pullback validity anchored to the run's first candle, not sliding;
+  a valid pullback's candle range keeps growing until continuation;
+  "1%" = 1% of that candle's own high-low range; SBR/RBS plays CHOCH's
+  bootstrap role after the first flip; the DT/DB scan window is
+  `[A+ candle, flip-confirming candle]` inclusive; CHOCH is retired
+  permanently once any real TJL pair forms) — **none of these are
+  confirmed**, this decision and the feature built against it are
+  provisional in a stronger sense than usual until reviewed.
+
+  This construct replaces the earlier, much vaguer plan ("market
+  structure builds on `DataSeries.calcSwingPoints`," E-7/E-10) — that
+  plan is superseded, not merely deferred; `calcSwingPoints` is not used
+  here at all.
+
+  **Zero SDK dependency** — pure bar OHLC logic (open/high/low/close),
+  so `MarketStructureFeature` lives in `flow-core`, same realization as
+  `BigTradeFeature`/`VWAPFeature`/`LiquidityMapFeature` this session.
+  **Bar-close-triggered only** (`BarPhase.CLOSE`), matching the source
+  system's own non-repainting, close-only framing (§9) — this is the
+  first construct here gated on bar closes rather than ticks or DOM
+  updates.
+
+  **Implementation shape**: a single state machine (`trend`,
+  `pullbackState`, the pullback's own growing candle list, the current
+  `lastTjl1`/`lastTjl2`, and `lastAPlus`/`lastSbrRbs`/`lastDtDb` from the
+  most recent flip). The one piece of state the rules required beyond a
+  literal reading of "zones": `tjl1AnchorBar` (which specific candle
+  produced the current TJL1, not just its resulting price range) plus a
+  running `barsSincePair` list accumulated from that candle forward —
+  needed so a future flip's "highest/lowest point after A+" scan (§6)
+  has a real window to search without replaying history. Reset every
+  time a new real TJL pair forms.
+
+  Flip-watch (§5) runs unconditionally every bar, independent of
+  pullback state, exactly as specified — checked *before* pullback
+  update each bar, and a bar that triggers a flip is excluded from that
+  same bar's pullback processing (starts fresh next bar). The
+  CHOCH-driven initial transition (before any real TJL pair has ever
+  formed) is handled as a distinct, simpler branch of the same
+  flip-check: trend flips, but no A+/SBR/RBS/DT/DB gets assigned (there
+  is no TJL1 yet for A+ to come from) — matches §1a's own simpler
+  framing rather than forcing the general flip's full role-reassignment
+  onto a case the source describes differently.
+
+  Log-only (`logs/market_structure_feature.log`), no drawing, no
+  settings — one line per named event (pullback validated, TJL pair
+  formed, flip), matching the discrete-event logging style already used
+  for big trades/order repeats rather than VWAP's periodic-sample style,
+  since these are genuinely discrete occurrences.
+
+  Full rebuild clean (both test gates pass), redeployed, session stayed
+  healthy immediately (zero `DISARM`s). **Not yet live-verified beyond
+  that** — no bar had closed in the short window checked right after
+  redeploy, so no pullback/TJL/flip event has fired yet to confirm the
+  logic itself against real data. Next check: `market_structure_
+  feature.log` after a few real 1-minute bars have closed.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
