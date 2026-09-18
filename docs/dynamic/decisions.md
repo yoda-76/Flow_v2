@@ -2295,6 +2295,59 @@ readable rather than being silently rewritten.
   the periodic journal snapshot (D-58) only, both display/historical
   concerns, not the live trading decision path.
 
+- **D-64** (2026-09-19) — **Market structure gets historical warm-start
+  and chart drawing, both per direct user request.** Confirmed first
+  (the user asked directly): market structure was live-only, forward-
+  only from attach, same as every other construct here — no historical
+  data was ever pulled in. The user considers this construct
+  specifically different from the others (it should use both historical
+  and live data), so this closes that gap.
+
+  **Historical warm-start**: on `startSession()`, before any live event
+  reaches the pipeline, `warmStartMarketStructure()` pulls up to N
+  closed bars (`Market Structure > Historical Warm-Start Bars` setting,
+  default 100, configurable per the user's explicit ask) directly from
+  `ctx.getDataSeries()` and feeds each one through
+  `MarketStructureFeature.onEvent()` as a synthetic `BarEvent`
+  (negative `seq`, never colliding with the real `Sequencer`'s own).
+  Bypasses `Sequencer`/`Pipeline` entirely — this is a one-time
+  bootstrap before the live event stream exists, not part of the
+  replay-relevant record.
+
+  **Real bug found and fixed along the way**: `DataSeries.isComplete()`
+  returns `false` even for bars from many minutes in the past on this
+  jar — confirmed directly (a diagnostic check against index
+  `size()-10` came back `false`, with no exception reading its OHLC/
+  volume/time, ruling out a data-access problem). This made the first
+  version of the warm-start loop discard every single bar
+  (`actualBars: 0` against `availableBars: 646`), silently producing an
+  empty warm-start instead of an error. Fixed by not depending on
+  `isComplete()` at all: the series' own last index is unconditionally
+  treated as "current/forming" and excluded — exactly matching how the
+  *live* `onBarClose(DataContext)` handler already behaves (it never
+  checks `isComplete()` either, trusting its own callback timing). Also
+  guarantees zero overlap with future live bar-close events. **Live-
+  verified working correctly this time**: a batch of 100 real historical
+  bars produced 8 genuine `PULLBACK_VALID` events, one `TJL_FORMED`, and
+  one real `FLIP` (DOWN→UP), all firing synchronously and correctly
+  through the exact same state machine live events use.
+
+  **Chart drawing**: `redrawMarketStructureFigures()`, following
+  `marketStructureRules.md` §8's color scheme exactly (TJL1 blue, TJL2
+  orange, A+ purple, SBR/RBS gray, DT/DB yellow) — one `Box` + `Label`
+  per non-null zone, drawn from session start to now (same convention
+  `redrawVolumeProfileFigures()` already uses for POC/VAH/VAL, since a
+  `ZoneRange` carries no anchor time of its own). SBR-vs-RBS and DT-vs-DB
+  share one field each (`lastSbrRbs()`/`lastDtDb()`) — the correct label
+  is inferred from the *current* trend (Down trend → the last flip was
+  Up→Down → SBR/DT; Up trend → RBS/DB), so no new field was needed to
+  track which flip direction produced them. New settings: `Market
+  Structure > Historical Warm-Start Bars` (default 100) and `> Draw on
+  Chart` (default true). Full rebuild clean, redeployed, session
+  healthy. **Warm-start's own correctness is now live-confirmed; the
+  drawing itself is not yet visually confirmed** — same "built, not yet
+  eyeballed" gap every other construct's first drawing pass has had.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

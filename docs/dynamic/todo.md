@@ -1018,6 +1018,23 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   user's actual first-strategy design used absorption/aggression/sweep
   instead; imbalance stacking stays unbuilt until something needs it.
 
+## Strategy signals — chart drawing `[BUILD, NOT STARTED]`
+
+- [ ] **Draw the strategy's own order signals on the chart** (raised by
+  the user, 2026-09-19): an up arrow at the entry price for a long
+  entry, a down arrow at the entry price for a short entry —
+  `MarketStructureLvnReversalStrategy` (D-62) currently only journals
+  entries (`intent_changed`/`risk_verdict`/`reconcile_dry_run`), nothing
+  is drawn. Natural source: `FlowStrategy.onEvent()`'s returned
+  `Intent` when it changes to a non-zero `targetPosition` with reason
+  `lvn_entry...` — needs a way for `FlowRuntimeStudy` to observe that
+  (there's no existing "strategy drew a signal" hook; `IntentSink`
+  currently only reaches `OrderGateway`, not anything chart-drawing-
+  side) — likely reuses `Marker` + `MarkerAdapter` (D-59's reflection
+  helper) with `ARROW`/`Enums.MarkerType` variants for up/down, same
+  general pattern as `BigTradeFeature`'s circles (D-54) but keyed off
+  intent changes, not a feature's own event stream. Not started.
+
 ## Open bug, not resolved `[BUG]`
 
 - [ ] **Liquidity map bestBid/bestAsk still intermittently wrong**
@@ -1038,36 +1055,28 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   heatmap's window centering (D-59) and the periodic snapshot (D-58)
   only.
 
-## 4c. Market structure: historical warm-start + chart drawing `[BUILD, NOT STARTED]`
+## 4c. Market structure: historical warm-start + chart drawing
 
-Raised by the user directly, 2026-09-19, while checking on `MarketStructureFeature` (D-60) live. Two related asks, both real, neither started:
+Raised by the user directly, 2026-09-19, while checking on `MarketStructureFeature` (D-60) live.
 
-- [ ] **Historical warm-start on activation.** Confirmed live: `MarketStructureFeature`
-  is currently forward-only from attach (D-37's pattern, same as every
-  other construct here) — it does **not** pull any prior bars, so
-  activating mid-session starts trend/CHOCH/pullback tracking from a
-  blank slate rather than from whatever structure was already forming.
-  The user wants this specific construct to be different: on
-  activation, pull the **last N historical bars** (`N` configurable —
-  default TBD, the user's own example used 100) and run them through
-  the *same* state machine (§2-§6 of `marketStructureRules.md`) to
-  build up trend/TJL/A+/SBR-RBS/DT-DB state as if it had been running
-  the whole time, then hand off to live data seamlessly from the
-  activation point forward. Needs: a way to pull N historical bars from
-  the SDK (`DataSeries`/`Instrument` history — not yet checked what's
-  available or how far back it goes for `@GC`), and confirming the
-  state machine can process a batch of historical bars identically to
-  live ones (it should — `MarketStructureFeature.onEvent()` only cares
-  about `BarEvent`/`BarPhase.CLOSE`, not about where the bar came from —
-  but this needs an actual historical-bar-to-`BarEvent` conversion path
-  that doesn't exist yet, since ingest so far has only ever been
-  live-tick-driven).
-- [ ] **Draw market structure on the chart.** Not drawn at all yet
-  (log-only per D-60's original scope) — TJL1/TJL2/A+/SBR-RBS/DT-DB
-  zones, trend state, and ideally the historical-warm-started portion
-  visually distinguished from the live-continued portion, matching the
-  color scheme already specified in `marketStructureRules.md` §8
-  (TJL1 blue, TJL2 orange, A+ purple, SBR/RBS gray, DT/DB yellow).
+- [x] (2026-09-19) **Historical warm-start on activation** → D-64:
+  pulls up to N closed bars (`Historical Warm-Start Bars` setting,
+  default 100, configurable) from `ctx.getDataSeries()` at session
+  start, feeds them through the same state machine as synthetic
+  `BarEvent`s before any live event does. Found and fixed a real bug
+  along the way: `DataSeries.isComplete()` returns `false` even for
+  bars from many minutes ago on this jar, which silently discarded
+  every warm-start bar in the first version (`0` fed against `646`
+  available) — fixed by not depending on it at all, matching how the
+  live `onBarClose` handler already works (position-based, not
+  completeness-based). **Live-verified**: 100 real historical bars
+  produced 8 genuine `PULLBACK_VALID` events, a `TJL_FORMED`, and a
+  real `FLIP`, all correct.
+- [x] (2026-09-19) **Draw market structure on the chart** → D-64:
+  `redrawMarketStructureFigures()`, TJL1/TJL2/A+/SBR-RBS/DT-DB as
+  Box+Label per `marketStructureRules.md` §8's color scheme. Full
+  rebuild clean, redeployed, session healthy. **Not yet visually
+  confirmed** — needs the user to look at the chart.
 
 Both explicitly **not being picked up right now** — recorded per the
 user's own instruction ("ADD THIS TO THE TODO") for later.

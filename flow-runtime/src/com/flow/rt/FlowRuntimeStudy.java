@@ -109,6 +109,10 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // this one only controls what gets drawn, cosmetic, no storage impact.
   private static final String DRAW_LM_KEY = "FLOW_DRAW_LM";
   private static final String LM_DRAW_WINDOW_TICKS_KEY = "FLOW_LM_DRAW_WINDOW_TICKS";
+  // D-64: historical warm-start on activation, configurable per the
+  // user's explicit request ("that 'last 100 bars' will be configurable").
+  private static final String MS_WARMSTART_BARS_KEY = "FLOW_MS_WARMSTART_BARS";
+  private static final String DRAW_MS_KEY = "FLOW_DRAW_MS";
   // Big trades (D-53): built directly against our own TickEvent stream,
   // not a wrapper around AggregateFilter (that engine casts its Tick
   // argument to an internal concrete class -- crashed live the moment it
@@ -194,6 +198,9 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     var lmGrp = tab.addGroup("Liquidity Map");
     lmGrp.addRow(new IntegerDescriptor(LM_DRAW_WINDOW_TICKS_KEY, "Draw Window (ticks each side)", 50, 1, 500, 1));
     lmGrp.addRow(new BooleanDescriptor(DRAW_LM_KEY, "Draw on Chart", true));
+    var msGrp = tab.addGroup("Market Structure");
+    msGrp.addRow(new IntegerDescriptor(MS_WARMSTART_BARS_KEY, "Historical Warm-Start Bars", 100, 0, 5000, 1));
+    msGrp.addRow(new BooleanDescriptor(DRAW_MS_KEY, "Draw on Chart", true));
     createRD();
   }
 
@@ -276,6 +283,26 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     marketStructureLogger = new MarketStructureFileLogger(priceCodec);
     marketStructure = new com.flow.flow.MarketStructureFeature(
         com.flow.flow.MarketStructureView.FEATURE_ID, marketStructureLogger);
+    // D-64: historical warm-start, per direct user request -- pulls the
+    // last N closed bars from the SDK's own DataSeries and runs them
+    // through the SAME state machine BEFORE any live event does, so
+    // activating mid-session doesn't start trend/TJL tracking from a
+    // blank slate. Bypasses Sequencer/Pipeline entirely (they don't
+    // exist yet at this point in startSession(), and this is a one-time
+    // bootstrap, not part of the live, replay-relevant event stream) --
+    // synthetic BarEvents with negative seq numbers so they can never
+    // collide with the real sequencer's own (which start at 1).
+    int warmStartBars = getSettings().getInteger(MS_WARMSTART_BARS_KEY);
+    DataSeries seriesForWarmStart = ctx.getDataSeries();
+    int availableBars = seriesForWarmStart == null ? 0 : Math.max(0, seriesForWarmStart.size() - 1);
+    int warmStartedCount = warmStartMarketStructure(ctx, warmStartBars, priceCodec, marketStructure);
+    journal.writeDecision(0, Json.object()
+        .field("type", "market_structure_warm_start")
+        .field("requestedBars", warmStartBars)
+        .field("availableBars", availableBars) // how much history the chart actually had, for comparison against actualBars
+        .field("actualBars", warmStartedCount)
+        .field("trendAfterWarmStart", marketStructure.trend().toString())
+        .build());
 
     Map<String, com.flow.core.Feature> features = Map.of(
         com.flow.flow.VolumeProfileView.FEATURE_ID, volumeProfile,
@@ -562,6 +589,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     if (getSettings().getBoolean(DRAW_FP_KEY)) redrawFootprintFigures();
     if (getSettings().getBoolean(DRAW_BT_KEY)) redrawBigTradeFigures();
     if (getSettings().getBoolean(DRAW_LM_KEY)) redrawLiquidityMapFigures();
+    if (getSettings().getBoolean(DRAW_MS_KEY)) redrawMarketStructureFigures();
   }
 
   /**
@@ -801,6 +829,56 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     return new Color(r, g, bch);
   }
 
+  /**
+   * D-64: draws the current TJL1/TJL2/A+/SBR-RBS/DT-DB zones per
+   * marketStructureRules.md §8's color scheme. SBR-vs-RBS and DT-vs-DB
+   * are the same field (`lastSbrRbs()`/`lastDtDb()`) under two
+   * different labels depending on which flip direction produced them --
+   * inferred from the CURRENT trend (a Down trend means the last flip
+   * was Up->Down, so the label is SBR/DT; an Up trend means Down->Up,
+   * so RBS/DB), since `MarketStructureFeature` doesn't need a separate
+   * field to track that. Zones drawn from session start to now, same
+   * convention `redrawVolumeProfileFigures()` already uses for POC/VAH/
+   * VAL, since a TJL zone has no historical anchor time of its own
+   * currently exposed (`ZoneRange` is price-only).
+   */
+  private void redrawMarketStructureFigures() {
+    com.flow.flow.MarketStructureFeature ms = marketStructure;
+    PriceCodec codec = priceCodec;
+    if (ms == null || codec == null || !ms.isReady()) return;
+    long start = sessionStartMs;
+    long now = System.currentTimeMillis();
+    boolean down = ms.trend() == com.flow.flow.MarketStructureView.Trend.DOWN;
+
+    drawMsZone(ms.lastTjl1(), codec, start, now, new Color(0, 100, 255), "TJL1");
+    drawMsZone(ms.lastTjl2(), codec, start, now, new Color(255, 140, 0), "TJL2");
+    drawMsZone(ms.lastAPlus(), codec, start, now, new Color(160, 32, 240), "A+");
+    drawMsZone(ms.lastSbrRbs(), codec, start, now, Color.GRAY, down ? "SBR" : "RBS");
+    drawMsZone(ms.lastDtDb(), codec, start, now, Color.YELLOW, down ? "DT" : "DB");
+
+    com.flow.flow.ZoneRange anchor = ms.lastTjl2();
+    if (anchor != null) {
+      double y = codec.fromTicks(anchor.highTicks()) + instrument.getTickSize() * 4;
+      Label trendLabel = new Label(new Coordinate(now, y), "Trend: " + ms.trend());
+      trendLabel.setLineColor(down ? new Color(220, 60, 60) : new Color(0, 200, 0));
+      addFigure(trendLabel);
+    }
+  }
+
+  private void drawMsZone(com.flow.flow.ZoneRange zone, PriceCodec codec, long start, long now, Color color, String label) {
+    if (zone == null) return;
+    double lo = codec.fromTicks(zone.lowTicks());
+    double hi = codec.fromTicks(zone.highTicks()) + instrument.getTickSize();
+    Box box = new Box(start, lo, now, hi);
+    Color fill = new Color(color.getRed(), color.getGreen(), color.getBlue(), 50);
+    box.setFillColor(fill);
+    box.setLineColor(color);
+    addFigure(box);
+    Label labelFigure = new Label(new Coordinate(now, (lo + hi) / 2.0), label);
+    labelFigure.setLineColor(color);
+    addFigure(labelFigure);
+  }
+
   private static int rowsFromPoc(int levelTicks, int pocTicks, int rangeTicks) {
     return Math.round((levelTicks - pocTicks) / (float) rangeTicks);
   }
@@ -833,6 +911,54 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     long endTime = series.getEndTime(idx);
     s.publish((seq, et, rt) -> new BarEvent(seq, et, rt, BarPhase.CLOSE,
         openTicks, highTicks, lowTicks, closeTicks, volume), endTime);
+  }
+
+  /**
+   * D-64: feeds up to `maxBars` closed historical bars (oldest first)
+   * through `MarketStructureFeature` directly, before any live event
+   * does.
+   *
+   * Deliberately does NOT use `DataSeries.isComplete()` to find the
+   * boundary -- confirmed live it returns `false` even for a bar from
+   * many minutes in the past on this jar, so it can't distinguish
+   * "still forming" from "closed long ago" here (a T-6-class jar
+   * quirk, not chased further since a simpler rule works). Instead:
+   * the series' own last index is unconditionally treated as "current/
+   * forming" and excluded, exactly matching how the *live*
+   * `onBarClose(DataContext)` handler already behaves (it never checks
+   * `isComplete()` either -- it trusts its own callback timing and
+   * always uses `size()-1` as "the bar that just closed"). This also
+   * guarantees zero overlap with future live bar-close events, which
+   * will only ever fire for indices at or beyond the current `size()-1`
+   * as the series keeps extending.
+   *
+   * Returns however many bars were actually fed, which may be less
+   * than requested if the chart doesn't have that much history loaded
+   * yet -- journaled by the caller so that's traceable, not silently
+   * assumed to match the setting.
+   */
+  private static int warmStartMarketStructure(DataContext ctx, int maxBars, PriceCodec codec,
+                                                com.flow.flow.MarketStructureFeature marketStructure) {
+    if (maxBars <= 0) return 0;
+    DataSeries series = ctx.getDataSeries();
+    if (series == null || series.size() < 2) return 0;
+    int lastIdx = series.size() - 2; // size()-1 is always "current/forming", excluded
+    int startIdx = Math.max(0, lastIdx - maxBars + 1);
+    long syntheticSeq = -1_000_000L; // negative range, never collides with the real Sequencer's own (starts at 1)
+    int count = 0;
+    for (int idx = startIdx; idx <= lastIdx; idx++) {
+      int openTicks = codec.toTicks(series.getOpen(idx));
+      int highTicks = codec.toTicks(series.getHigh(idx));
+      int lowTicks = codec.toTicks(series.getLow(idx));
+      int closeTicks = codec.toTicks(series.getClose(idx));
+      long volume = (long) series.getVolume(idx);
+      long endTime = series.getEndTime(idx);
+      BarEvent be = new BarEvent(syntheticSeq--, endTime, endTime, BarPhase.CLOSE,
+          openTicks, highTicks, lowTicks, closeTicks, volume);
+      marketStructure.onEvent(be);
+      count++;
+    }
+    return count;
   }
 
   @Override
