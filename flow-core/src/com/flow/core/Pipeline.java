@@ -42,11 +42,15 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
 
   private final MutableMarketState marketState = new MutableMarketState();
   private final TriggerEvaluator triggers;
+  private final ReadinessChecker readinessChecker;
   private final JournalWriter journal;
   private final FlowStrategy strategy;
   private final IntentSink intentSink;
   private final Map<String, Feature> features;
   private final IntToDoubleFunction priceDecoder; // nullable -- see constructor javadoc
+  private final RiskChain riskChain; // nullable -- see constructor javadoc
+  private final java.util.function.BooleanSupplier armedSupplier; // nullable, only consulted if riskChain != null
+  private final java.util.function.IntSupplier queueDepthSupplier; // nullable, only consulted if riskChain != null
 
   private final AtomicBoolean healthy = new AtomicBoolean(true);
   private final AtomicLong clockEventCount = new AtomicLong(0);
@@ -67,15 +71,33 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
    * core." Nullable: a live FlowRuntimeStudy always has one (its
    * PriceCodec); ReplayHarness passes null since it has no live price
    * context, and trace lines fall back to tick-offset-only in that case.
+   *
+   * riskChain/armedSupplier/queueDepthSupplier (D-61) are nullable
+   * together, as one unit -- null means "no risk chain configured,"
+   * preserving the exact prior behavior (every changed intent goes
+   * straight to intentSink) for ReplayHarness, TriggerEvaluatorTest, and
+   * the pure-observer LevelZoneObserverStrategy, none of which need
+   * risk-gating. A live FlowRuntimeStudy always supplies all three.
    */
   public Pipeline(FlowStrategy strategy, JournalWriter journal, IntentSink intentSink,
                    Map<String, Feature> features, IntToDoubleFunction priceDecoder) {
+    this(strategy, journal, intentSink, features, priceDecoder, null, null, null);
+  }
+
+  public Pipeline(FlowStrategy strategy, JournalWriter journal, IntentSink intentSink,
+                   Map<String, Feature> features, IntToDoubleFunction priceDecoder,
+                   RiskChain riskChain, java.util.function.BooleanSupplier armedSupplier,
+                   java.util.function.IntSupplier queueDepthSupplier) {
     this.strategy = strategy;
     this.journal = journal;
     this.intentSink = intentSink;
     this.features = Map.copyOf(features);
     this.triggers = new TriggerEvaluator(this.features);
+    this.readinessChecker = new ReadinessChecker(this.features);
     this.priceDecoder = priceDecoder;
+    this.riskChain = riskChain;
+    this.armedSupplier = armedSupplier;
+    this.queueDepthSupplier = queueDepthSupplier;
     this.lastIntent = Intent.none(strategy.id(), 0);
   }
 
@@ -93,6 +115,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
 
   /** The Consumer<Event> handed to Sequencer's constructor. */
   public void handle(Event e) {
+    long startNanos = System.nanoTime(); // D-61 lag guard only -- see checkLag()'s call site below for why this is an accepted exception to "no wall clock below ingest"
     marketState.bump(e);
     for (Feature f : features.values()) {
       f.onEvent(e); // single-writer thread only (README "The event stream") -- this IS that thread
@@ -146,9 +169,30 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
 
     Intent intent = strategy.onEvent(marketState);
     if (!sameContent(intent, lastIntent)) {
-      lastIntent = intent;
+      lastIntent = intent; // updated regardless of what the risk chain decides, so an identical still-blocked intent doesn't re-evaluate every event
       journal.writeDecision(e.seq(), intentChangeLine(intent, e.seq()));
-      intentSink.onIntentChanged(intent, e);
+
+      if (riskChain == null) {
+        intentSink.onIntentChanged(intent, e); // no risk chain configured -- exact prior behavior
+        return;
+      }
+
+      long processingMs = (System.nanoTime() - startNanos) / 1_000_000L;
+      RiskChain.Context ctx = new RiskChain.Context(
+          armedSupplier.getAsBoolean(),
+          readinessChecker.isReady(strategy.requires()),
+          marketState.lastPriceTicks(),
+          marketState.exchangeTimeMs(),
+          queueDepthSupplier.getAsInt(),
+          processingMs);
+      RiskChain.Result result = riskChain.evaluate(intent, ctx);
+      journal.writeDecision(e.seq(), RiskChain.resultLine(e.seq(), intent, result));
+      if (result.allowed()) {
+        riskChain.recordAccepted(intent, ctx);
+        intentSink.onIntentChanged(intent, e);
+      }
+      // Blocked: nothing forwarded to intentSink -- the suppressed trade
+      // is visible in the risk_verdict record above, not silently dropped.
     }
   }
 

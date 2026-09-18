@@ -375,13 +375,30 @@ live-verified beyond "doesn't crash"** — no bar had closed in the short
 window checked right after redeploy, so no pullback/TJL/flip event has
 fired yet against real data.
 
-**Next concrete step**: check `market_structure_feature.log` after a
-few real 1-minute bars have closed, to confirm the logic actually fires
-sensibly (not just crash-free) — then, whenever the user gets time,
-review `marketStructureRules.md` against what's actually running. Once
-that's settled, per the original redirect: wire one simple strategy
-that uses every core construct and actually places Sim orders, to
-prove the full pipeline end-to-end.
+**Market structure rules review explicitly deferred**: "yes i will
+comeback to it dont worry" — not blocking further work.
+
+**Went straight at the exec/risk-chain backbone (2026-09-18)**, per
+direct instruction, "one by one": external config store → exec
+reconciliation/brackets → risk chain → sizing → refuse-to-arm, in that
+order, all built as D-61 (see `decisions.md` for full detail, and the
+individual checklist items above in §2/§4 for each piece). `RiskChain`
+(flow-core, all 8 filters from README's own list), `ExternalConfig`
+(flow-core, `config/risk.json`), `MarketState.lastPriceTicks()` added
+(a real gap — no general "current price" accessor existed before this,
+needed for PnL marking). Full rebuild clean, redeployed, session
+healthy, config load confirmed live with exact values. **Not yet
+exercised beyond that** — no strategy currently emits anything but
+`Intent.none()`, so none of the risk chain's filters or the
+refuse-to-arm path have fired against a real changing intent yet.
+
+**Next concrete step**: entry evaluators (`flow/`: absorption,
+imbalance stacking, sweep-and-reclaim, D-27) and a first real strategy
+that actually emits a non-`Intent.none()` value — the piece that
+finally exercises the risk chain end-to-end. Per CLAUDE.md's hard rule,
+this stays dry-run only; Sim-account order placement needs its own
+explicit, in-the-moment confirmation later, not bundled into this build
+step.
 
 **Where the work happens:**
 
@@ -609,10 +626,16 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   a binary encoding), gap markers on raw drop, loud failure (logged +
   flagged, checked every event) on decisions-queue overflow, session
   header record (D-15) → `flow-core/src/com/flow/journal/`.
-- [ ] External config store: file loader for `strategyId`-scoped params,
-  risk defaults, session config, external levels; journaled with staleness
-  (D-08, D-18). **Not done** — `StrategyConfig` exists as an empty-map
-  placeholder only.
+- [x] (2026-09-18) External config store, risk-defaults half → D-61:
+  `ExternalConfig` (flow-core), flat JSON at `config/risk.json`,
+  hand-edited/runtime-read-only, missing keys fall back to conservative
+  defaults, loaded+journaled (`risk_config_loaded`) at session start
+  with staleness (file mtime). **Live-verified**: exact config values
+  confirmed in the journal. Still not done: per-`strategyId`-scoped
+  params and external levels (GEX, key levels) — `StrategyConfig`
+  itself is still an empty-map placeholder; only the risk/sizing half of
+  D-08/D-18's original scope exists so far, built first since the risk
+  chain needed it immediately.
 - [x] (2026-09-15) Runtime `@StudyHeader` Study: settings panel with only
   `strategyId`, `armed`, `mode`; `armed = false` default →
   `FlowRuntimeStudy.java`. `armed` currently has no effect either way,
@@ -624,9 +647,11 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   point placement (Q-02) still open, moot until submission code exists.
 - [x] (2026-09-15) Exception boundary: disarm, journal with seq, keep
   ingesting (D-25) → `Pipeline` implements `Sequencer.ExceptionHandler`.
-- [ ] Refuse-to-arm on existing position / resting orders (D-24). **Not
-  done** — moot for now since nothing arms, but needed before this stops
-  being true.
+- [x] (2026-09-18) Refuse-to-arm on existing position / resting orders
+  (D-24) → D-61: `OrderGateway.refuseToArmReason()`, checked on
+  `onActivate`. Built and deployed; not yet live-exercised (needs the
+  user to actually activate the strategy in MotiveWave — hasn't
+  happened this session).
 - [x] (2026-09-15) Readiness framework: per-feature readiness, arming
   blocked with journaled reason (D-22) → `Feature`/`ReadinessChecker`.
   Vacuously trivial right now — zero features exist, `NullStrategy`
@@ -944,14 +969,32 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   `VolumeProfileView` line above, same engine
 - [x] (2026-09-15) Partial-bar-at-attach handling → **D-37: mark invalid,
   skip it, build starts from the next full bar close, no backfill.**
-- [ ] Triggers: `BAR_CLOSE`, `EVERY_TICK`, `THROTTLE`, dynamic
-  `PRICE_CROSS` / `BOOK_CHANGE`, wake reason journaled (D-16)
-- [ ] `exec/` reconciliation: intent diff → minimal order actions (D-13)
-- [ ] Risk chain: armed, session open, readiness, daily-loss, size cap,
-  rate limit, churn guard, lag guard — each verdict journaled (D-13, D-19).
-  Values depend on Q-05, Q-06.
-- [ ] Sizing and brackets per Q-06
-- [ ] Intent-seq vs execution-seq gap journaled per trade (D-17)
+- [x] (2026-09-15) Triggers: `BAR_CLOSE`, `EVERY_TICK`, `THROTTLE`,
+  dynamic `PRICE_CROSS` / `BOOK_CHANGE` (D-16) → `Trigger.java`, built as
+  part of the walking skeleton (D-41). Stale unchecked item, corrected
+  2026-09-18 on noticing it during a status review — wake reason
+  journaling exists too, via `TriggerEvaluator`/`Pipeline`'s trace lines
+  (D-45).
+- [x] (2026-09-15) `exec/` reconciliation: intent diff → minimal order
+  actions (D-13) → `OrderGateway.reconcileDryRun()`, position diff
+  already existed; extended 2026-09-18 (D-61) to also report the
+  bracket (stop/target) that would accompany a real entry.
+- [x] (2026-09-18) Risk chain: armed, session open, readiness,
+  daily-loss, size cap, rate limit, churn guard, lag guard — each
+  verdict journaled (D-13, D-19, D-61) → `RiskChain` (flow-core), wired
+  into `Pipeline.handle()`. "Session open" is a hard-coded ALLOW for now
+  (no session-boundary-detection machinery exists, same gap noted for
+  VWAP/market structure). Live-verified config load; **the chain's own
+  filters haven't fired yet** — needs a strategy that actually changes
+  its intent, which doesn't exist until the next item below.
+- [x] (2026-09-18) Sizing and brackets per Q-06 → D-61: fixed contracts
+  stays a strategy-level decision (reads `fixedContracts` from
+  `ExternalConfig`), `RiskChain`'s size cap is a separate safety check
+  against `maxContracts`. Brackets: see the `exec/` reconciliation item
+  above.
+- [ ] Intent-seq vs execution-seq gap journaled per trade (D-17) — still
+  not done; moot until a real strategy's intents actually reach
+  `OrderGateway` with any latency worth measuring.
 - [ ] Entry evaluators in `flow/`: absorption, imbalance stacking,
   sweep-and-reclaim (D-27)
 

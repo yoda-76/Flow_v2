@@ -1,0 +1,10 @@
+{
+  "fixedContracts": 1,
+  "maxContracts": 1,
+  "dailyLossLimitTicks": 200,
+  "rateLimitPerMinute": 6,
+  "minDwellMs": 5000,
+  "maxReversalsPerSession": 20,
+  "lagQueueDepthThreshold": 1000,
+  "lagProcessingMsThreshold": 2000
+}

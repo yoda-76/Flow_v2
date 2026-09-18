@@ -18,6 +18,15 @@ public interface MarketState {
   /** Local time from the last clock event (README "Time is an event"). */
   long localTimeMs();
 
+  /**
+   * The most recent price seen from a TickEvent or BarEvent (via
+   * Event.priceOf()), integer ticks (D-21). Null until the first such
+   * event. Added for the risk chain's daily-loss PnL marking (D-61) --
+   * a general-purpose "current price" accessor was missing before that,
+   * not something any prior feature needed.
+   */
+  Integer lastPriceTicks();
+
   /** Genuinely immutable snapshot copy. Used only by the journal and tests. */
   MarketState freeze();
 }

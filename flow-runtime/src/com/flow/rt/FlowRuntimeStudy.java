@@ -121,6 +121,10 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // the mode the built-in "Big Trades" study evidently uses).
   private static final String BT_AGG_PERIOD_MS_KEY = "FLOW_BT_AGG_PERIOD_MS";
   private static final Path LOG_ROOT = Path.of("C:/yadvendra/trading/FLOW_V2/logs");
+  // D-61: hand-edited by the user, runtime only ever reads it (README
+  // "External inputs and config") -- not a secret like .env, so it's a
+  // plain repo path, not gitignored.
+  private static final Path RISK_CONFIG_PATH = Path.of("C:/yadvendra/trading/FLOW_V2/config/risk.json");
 
   private final int instanceId = System.identityHashCode(this);
   private final AtomicBoolean subscribed = new AtomicBoolean(false);
@@ -152,6 +156,11 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // D-60: unreviewed rule resolutions, see docs/dynamic/marketStructureRulesTemp.md
   private volatile com.flow.flow.MarketStructureFeature marketStructure;
   private volatile MarketStructureFileLogger marketStructureLogger;
+  // D-61: refuse-to-arm (D-24) overrides the raw ARMED_KEY setting --
+  // set once in onActivate, never cleared for the life of this instance
+  // (clearing the position/orders manually and reactivating creates a
+  // fresh instance anyway, per the zombie-instance discussion elsewhere).
+  private volatile boolean armDenied = false;
   private volatile long sessionStartMs;
 
   // Redraw throttling -- called from onTick, a MotiveWave-invoked
@@ -275,8 +284,39 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         com.flow.flow.LiquidityMapView.FEATURE_ID, liquidityMap,
         com.flow.flow.MarketStructureView.FEATURE_ID, marketStructure);
 
+    // D-61: hand-edited, runtime-read-only (README "External inputs and
+    // config") -- missing file falls back to ExternalConfig's own
+    // conservative defaults rather than failing the session.
+    com.flow.core.ExternalConfig riskConfig;
+    try {
+      riskConfig = com.flow.core.ExternalConfig.load(RISK_CONFIG_PATH);
+    } catch (IOException e) {
+      riskConfig = com.flow.core.ExternalConfig.empty();
+      logLine("RISK_CONFIG_MISSING path=" + RISK_CONFIG_PATH + " -- using built-in defaults");
+    }
+    journal.writeDecision(0, Json.object()
+        .field("type", "risk_config_loaded")
+        .field("fixedContracts", riskConfig.fixedContracts())
+        .field("maxContracts", riskConfig.maxContracts())
+        .field("dailyLossLimitTicks", riskConfig.dailyLossLimitTicks())
+        .field("rateLimitPerMinute", riskConfig.rateLimitPerMinute())
+        .field("minDwellMs", riskConfig.minDwellMs())
+        .field("maxReversalsPerSession", riskConfig.maxReversalsPerSession())
+        .field("lagQueueDepthThreshold", riskConfig.lagQueueDepthThreshold())
+        .field("lagProcessingMsThreshold", riskConfig.lagProcessingMsThreshold())
+        .field("fileLastModifiedMs", riskConfig.fileLastModifiedMs())
+        .field("sessionStartMs", sessionStartMs) // staleness: compare against fileLastModifiedMs (README "traceable... not silently assumed current")
+        .build());
+    com.flow.core.RiskChain riskChain = new com.flow.core.RiskChain(riskConfig);
+    java.util.function.BooleanSupplier armedSupplier = () -> getSettings().getBoolean(ARMED_KEY) && !armDenied;
+    java.util.function.IntSupplier queueDepthSupplier = () -> {
+      Sequencer s = sequencer;
+      return s == null ? 0 : s.queueDepth();
+    };
+
     IntentSink sink = this::onIntentChanged;
-    pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks);
+    pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks,
+        riskChain, armedSupplier, queueDepthSupplier);
     sequencer = new Sequencer(pipeline::handle, pipeline);
     sequencer.start();
 
@@ -817,6 +857,14 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     gateway = new OrderGateway(ctx);
     logLine("ACTIVATE pos=" + ctx.getPosition() + " cash=" + ctx.getCashBalance()
         + " -- CONFIRM: is this the Simulated account? (Sim Trade Only must stay enabled)");
+
+    String refuseReason = gateway.refuseToArmReason();
+    if (refuseReason != null) {
+      armDenied = true;
+      logLine("REFUSE_TO_ARM " + refuseReason);
+    } else {
+      armDenied = false;
+    }
   }
 
   @Override

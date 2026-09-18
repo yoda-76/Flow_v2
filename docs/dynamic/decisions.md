@@ -2051,6 +2051,95 @@ readable rather than being silently rewritten.
   logic itself against real data. Next check: `market_structure_
   feature.log` after a few real 1-minute bars have closed.
 
+- **D-61** (2026-09-18) — **Exec/risk-chain backbone built: external
+  config store, risk chain (all 8 filters), bracket reporting, and
+  refuse-to-arm.** First piece of "wire one simple strategy end-to-end,"
+  built as its own coherent unit since the filters share state and a
+  common journaling pattern — entry evaluators and the first real
+  strategy are the next piece, deliberately separate.
+
+  **`ExternalConfig`** (flow-core): flat JSON, hand-edited, runtime-read-
+  only (D-08/D-18's own write discipline, same spirit as `.env` without
+  being a secret — committed to the repo at `config/risk.json`, not
+  gitignored). Missing keys fall back to conservative defaults rather
+  than failing the session; every value in effect is journaled at
+  session start (`risk_config_loaded`) with the file's own last-modified
+  time for staleness (README: "traceable after the fact, not silently
+  assumed current"). Units are integer ticks, not dollars — sidesteps
+  needing a per-instrument $/tick multiplier as a separate config value
+  for this v1; the daily-loss guard is directionally meaningful in ticks,
+  revisit if a real $ threshold ever matters more than this
+  simplification.
+
+  **`RiskChain`** (flow-core): the 8 filters in README's own listed
+  order (armed, session open, readiness, daily-loss, size cap, rate
+  limit, churn guard, lag guard), short-circuiting on the first block —
+  later filters are moot once one blocks, nothing meaningful to journal
+  for them. `evaluate()` is read-only; `recordAccepted()` (called only
+  when `evaluate()` allows) is what actually updates churn/rate/PnL
+  state, so a blocked intent never pollutes tracking as if it had really
+  happened. Every evaluation — allowed or blocked — gets a
+  `risk_verdict` decisions-tier record with all verdicts reached before
+  short-circuiting.
+
+  Sub-decisions inside the chain, each a real simplification worth
+  naming:
+  - **"Session open" is a hard-coded ALLOW** — no session-boundary-
+    detection machinery exists anywhere in this codebase yet (the same
+    gap flagged independently while building VWAP, D-57, and market
+    structure, D-60), and D-29 already settled on a 24h session with no
+    defined "closed" window to check against yet.
+  - **Daily-loss PnL tracking assumes every allowed intent is exactly
+    what gets reconciled** — true today since `OrderGateway` is dry-run
+    only (D-14); once real Sim fills exist this needs to sync against
+    actual fill prices instead, noted as a gap rather than fixed now.
+  - **Churn's reversal counter counts every accepted position change
+    except the session's very first entry** — not "reversal" in the
+    strict direction-flip sense, matching D-19's own "long/flat/long"
+    example (2 changes, both counted) literally rather than only
+    counting direct sign flips.
+  - **The lag guard's `processingTimeMs` is measured with
+    `System.nanoTime()` inside `Pipeline.handle()`** — a deliberate,
+    narrow exception to D-11's "no wall clock below ingest": this
+    specific measurement is an operational health check that can only
+    cause a disarm (a safety action), never alter what price or intent
+    gets computed, so it doesn't threaten replay determinism the way a
+    trading-logic read of the wall clock would.
+
+  **New `MarketState.lastPriceTicks()`** (D-21 integer ticks): a
+  general-purpose "current price" accessor was missing entirely before
+  this — needed for PnL marking, added via `Event.priceOf()` in
+  `MutableMarketState.bump()`, the same mechanism `Pipeline`'s trace
+  journaling already used for a different purpose.
+
+  **Bracket reporting**: `OrderGateway.reconcileDryRun()` now also
+  reports `wouldSetStopPriceTicks`/`wouldSetTargetPriceTicks` from the
+  `Intent` — dry-run reporting only, no bracket order is ever
+  constructed (matches the existing position-side discipline exactly).
+
+  **Refuse-to-arm (D-24), finally implemented**: `OrderGateway.
+  refuseToArmReason()` checks `getPosition()` and `getActiveOrders()` on
+  `onActivate` — if either is non-empty, `armDenied` is set and the risk
+  chain's `armed` filter blocks regardless of the `Armed` setting, until
+  a fresh activation finds a clean account.
+
+  **Sizing (Q-06)**: fixed contracts stays a strategy-level decision (a
+  strategy that wants to be long requests `targetPosition =
+  fixedContracts`, reading the value from config) — `RiskChain`'s size
+  cap is a separate safety check (block if a target exceeds
+  `maxContracts`), not the mechanism that performs scaling in the first
+  place. Chosen over introducing a new "direction vs. size" split into
+  `Intent` that the type doesn't currently have.
+
+  Full rebuild clean (both test gates pass), redeployed, session stayed
+  healthy (zero `DISARM`s), `risk_config_loaded` confirmed live with the
+  exact values from `config/risk.json`. **Not yet exercised beyond
+  that**: no strategy currently emits a non-`Intent.none()` value
+  (`LevelZoneObserverStrategy` is still a pure observer), so the risk
+  chain's filters and the refuse-to-arm path have not been triggered by
+  a real changing intent yet — that needs the next piece (entry
+  evaluators + a first real strategy) to actually exercise.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

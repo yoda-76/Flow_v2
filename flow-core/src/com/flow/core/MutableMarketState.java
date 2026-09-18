@@ -13,6 +13,7 @@ public final class MutableMarketState implements MarketState {
   private long generation = 0;
   private long exchangeTimeMs = 0;
   private long localTimeMs = 0;
+  private Integer lastPriceTicks = null;
 
   /** Advances the generation and updates whichever clock the driving event carries. */
   public void bump(Event e) {
@@ -22,6 +23,8 @@ public final class MutableMarketState implements MarketState {
     } else {
       exchangeTimeMs = e.eventTimeMs();
     }
+    Integer p = Event.priceOf(e);
+    if (p != null) lastPriceTicks = p;
   }
 
   @Override
@@ -40,8 +43,13 @@ public final class MutableMarketState implements MarketState {
   }
 
   @Override
+  public Integer lastPriceTicks() {
+    return lastPriceTicks;
+  }
+
+  @Override
   public MarketState freeze() {
-    return new Frozen(generation, exchangeTimeMs, localTimeMs);
+    return new Frozen(generation, exchangeTimeMs, localTimeMs, lastPriceTicks);
   }
 
   /** Checks the caller's captured generation against the current one; throws if stale. */
@@ -53,7 +61,7 @@ public final class MutableMarketState implements MarketState {
     }
   }
 
-  private record Frozen(long generation, long exchangeTimeMs, long localTimeMs) implements MarketState {
+  private record Frozen(long generation, long exchangeTimeMs, long localTimeMs, Integer lastPriceTicks) implements MarketState {
     @Override
     public MarketState freeze() {
       return this;
