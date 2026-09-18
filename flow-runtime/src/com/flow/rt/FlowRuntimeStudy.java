@@ -208,7 +208,6 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     String strategyId = getSettings().getString(STRATEGY_ID_KEY);
     StrategyRegistry registry = StrategyRegistrations.buildDefault();
     var strategy = registry.create(strategyId);
-    strategy.onInit(new StrategyConfig(java.util.Map.of()));
 
     long sessionStartMs = System.currentTimeMillis();
     this.sessionStartMs = sessionStartMs;
@@ -294,6 +293,13 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       riskConfig = com.flow.core.ExternalConfig.empty();
       logLine("RISK_CONFIG_MISSING path=" + RISK_CONFIG_PATH + " -- using built-in defaults");
     }
+    // D-62: strategy.onInit() now gets real values (fixedContracts, at
+    // minimum) instead of an empty map -- StrategyConfig itself stays a
+    // plain string map (README's own stated "typed accessors get added
+    // once a real strategy needs them" plan), this is that first real need.
+    strategy.onInit(new StrategyConfig(java.util.Map.of(
+        "fixedContracts", String.valueOf(riskConfig.fixedContracts()),
+        "maxContracts", String.valueOf(riskConfig.maxContracts()))));
     journal.writeDecision(0, Json.object()
         .field("type", "risk_config_loaded")
         .field("fixedContracts", riskConfig.fixedContracts())

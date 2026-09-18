@@ -2140,6 +2140,115 @@ readable rather than being silently rewritten.
   a real changing intent yet — that needs the next piece (entry
   evaluators + a first real strategy) to actually exercise.
 
+- **D-62** (2026-09-18/19) — **First real strategy built:
+  `MarketStructureLvnReversalStrategy`, exercising every construct built
+  this session together.** Explicit scope, stated by the user directly:
+  not expected to be correct or profitable yet, the point is proving the
+  whole system holds together end-to-end without breaking. Per the
+  user's own design, with every remaining ambiguity resolved by best
+  judgment (all documented inline in the class's own javadoc, same
+  "temp, revisit later" stance as `marketStructureRulesTemp.md`):
+
+  1. **Area of interest = `MarketStructureView.lastTjl2()`** in the
+     current trend — not an arbitrary pick: TJL2 is already the
+     system's own named far-side/invalidation boundary
+     (`marketStructureRules.md`'s own invariant), so reusing it as the
+     trade zone means "pullback zone" and "post-flip retest zone" are
+     the same concept for free (`lastTjl2` always means the right thing
+     whether it's a real TJL2, the CHOCH bootstrap, or a post-flip
+     SBR/RBS) — no separate case needed for either.
+  2. **Area-of-interest expiration is implicit, not a timer**: the
+     tracked zone is just "whatever `lastTjl2` currently is." The
+     moment that value changes (new pair, or a flip), the old one is
+     retired automatically and in-progress tracking resets. No time/
+     distance-based staleness rule added on top of that.
+  3. **Biggest LVN inside the area of interest**: recomputed fresh from
+     `VolumeProfileView.zones()` every wake (not tracked by persistent
+     zone id across wakes — simpler, accepted for this pass).
+  4. **No LVN in the area of interest → no trade**, exactly as stated.
+  5. **Entry confirmation = absorption (footprint) OR aggression (big
+     trades) OR sweep (liquidity map)** — any one, not all three
+     required. Read as "any of these, together or alone" rather than
+     requiring unanimous agreement.
+  6. **Stop** = a small buffer beyond the area of interest's own far
+     edge — the same edge that would flip the trend if broken, so the
+     stop and the structural invalidation point are the same idea by
+     construction. **Target** = a fixed 2:1 reward:risk multiple.
+     Simplest defensible choices, not tuned.
+
+  **Three new entry evaluators** (D-27, `flow-core`, reusable library
+  pieces as that decision originally planned): `AbsorptionEvaluator`
+  (stateless, footprint-row volume concentration at the touched price),
+  `AggressionEvaluator` (stateless, a recent same-direction big trade
+  near the touched price), `SweepEvaluator` (**stateful** — detecting a
+  sweep means detecting *change* in resting liquidity, which a single
+  point-in-time read can't do alone; a strategy owns one instance per
+  area-of-interest attempt). All three are v1 proxies for genuinely
+  loose trading concepts, documented as such in their own javadoc, not
+  claimed to be rigorous.
+
+  **VWAP and order-repeat tracking are read but never gate the trade** —
+  folded into the intent's own reason string as non-blocking context,
+  included specifically because the user asked that every construct
+  built this session get exercised together, not because the strategy
+  logic itself needed them.
+
+  **A real architecture gap found and closed along the way**: nothing
+  let a strategy read a feature's *value* from `MarketState` at all —
+  only `generation()`/`exchangeTimeMs()`/`localTimeMs()`/
+  `lastPriceTicks()` existed. `MutableMarketState`'s own very first
+  version had already flagged this ("feature-specific accessors... get
+  added here... as each real feature is built") but nothing needed it
+  until now. Added seven typed accessors (`marketStructure()`,
+  `volumeProfile()`, `footprint()`, `bigTrades()`, `liquidityMap()`,
+  `vwap()`, `orderRepeats()`), each a safe cast returning null if that
+  feature isn't registered or isn't the expected type — required
+  `MutableMarketState` to finally hold the `features` map (passed in by
+  `Pipeline`, which already had it).
+
+  **A real correctness bug found in self-review, before this ever ran
+  live, and fixed — not shipped and flagged after the fact**: the
+  strategy optimistically mutates its own `phase`/position-tracking
+  fields the moment it *decides* to change position, before knowing
+  whether `RiskChain` will actually let that intent through. Since
+  `armed=false` is the literal default (D-41), the very first real
+  entry this strategy ever attempts would have been silently blocked
+  while the strategy's own internal state believed it succeeded —
+  managing a phantom position that was never actually reconciled, and
+  eventually emitting a "flatten" intent for a position that never
+  existed. Fixed structurally, not with a special case: `FlowStrategy`
+  gained a new default hook, `onIntentRejected(Intent, String reason)`,
+  called by `Pipeline` whenever `RiskChain` blocks an intent that would
+  otherwise have gone to `IntentSink`. The strategy saves a snapshot of
+  every field a position-changing decision is about to mutate, keyed by
+  that intent's own `seq`, and `onIntentRejected` rolls it back exactly
+  if the rejected intent matches. Every other strategy defaults to a
+  no-op override, since none of them hold state a rejection could
+  invalidate yet.
+
+  Also, as part of wiring this in: `strategy.onInit()` now receives real
+  values (`fixedContracts`/`maxContracts` from `ExternalConfig`, D-61)
+  instead of an empty map — the first real use of that hook, closing
+  part of the "`StrategyConfig` is just an empty-map placeholder" gap
+  (per-`strategyId`-scoped params and external levels remain
+  unaddressed, see todo.md).
+
+  Registered as `market_structure_lvn_reversal` in
+  `StrategyRegistrations` — **not** switched on by default (the
+  settings panel's `Strategy Id` still defaults to
+  `level_zone_observer`); the user selects it explicitly to test.
+
+  Full rebuild clean (both test gates pass), redeployed. **Live-
+  verified that the refactor didn't break anything already running**:
+  the currently-active `level_zone_observer` session (unaffected by
+  which strategy is selected, but very much affected by the
+  `MutableMarketState`/`Pipeline` constructor changes underneath it)
+  stayed healthy, zero `DISARM`s, trace records continuing normally,
+  across two full rebuild-and-redeploy cycles in a row. **Not yet
+  live-verified**: the new strategy's own logic — nobody has selected
+  `market_structure_lvn_reversal` in the settings panel and watched it
+  run yet.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

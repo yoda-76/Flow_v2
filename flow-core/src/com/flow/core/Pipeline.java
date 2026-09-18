@@ -40,7 +40,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   private static final long DOM_SNAPSHOT_EVERY_CLOCK_EVENTS = 100; // ~10s
   private static final int DOM_SNAPSHOT_WINDOW_TICKS = 100; // bounded window around mid-price
 
-  private final MutableMarketState marketState = new MutableMarketState();
+  private final MutableMarketState marketState;
   private final TriggerEvaluator triggers;
   private final ReadinessChecker readinessChecker;
   private final JournalWriter journal;
@@ -92,6 +92,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     this.journal = journal;
     this.intentSink = intentSink;
     this.features = Map.copyOf(features);
+    this.marketState = new MutableMarketState(this.features);
     this.triggers = new TriggerEvaluator(this.features);
     this.readinessChecker = new ReadinessChecker(this.features);
     this.priceDecoder = priceDecoder;
@@ -190,6 +191,13 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
       if (result.allowed()) {
         riskChain.recordAccepted(intent, ctx);
         intentSink.onIntentChanged(intent, e);
+      } else {
+        // Bugfix found building the first real strategy (D-62): without
+        // this, a strategy that optimistically mutates its own state the
+        // moment it decides to change position has no way to learn that
+        // change never actually reached OrderGateway.
+        String blockedReason = result.verdicts().get(result.verdicts().size() - 1).reason();
+        strategy.onIntentRejected(intent, blockedReason);
       }
       // Blocked: nothing forwarded to intentSink -- the suppressed trade
       // is visible in the risk_verdict record above, not silently dropped.

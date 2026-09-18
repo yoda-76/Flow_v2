@@ -27,6 +27,27 @@ public interface MarketState {
    */
   Integer lastPriceTicks();
 
+  /**
+   * Typed feature accessors (D-62) -- the mechanism MutableMarketState's
+   * very first version already anticipated ("feature-specific accessors
+   * ... get added here ... as each real feature is built") but nothing
+   * needed until the first real strategy did. Each returns null if that
+   * feature isn't registered for this session (e.g. ReplayHarness's
+   * Map.of() for anything SDK-engine-backed, D-43) or hasn't reported
+   * ready yet -- callers check isReady() themselves, same as any other
+   * Feature consumer. Deliberately typed one-by-one rather than a
+   * generic `<T> T feature(String id, Class<T> type)` -- explicit
+   * accessors are greppable and can't typo a feature id silently into a
+   * null.
+   */
+  com.flow.flow.MarketStructureView marketStructure();
+  com.flow.flow.VolumeProfileView volumeProfile();
+  com.flow.flow.FootprintView footprint();
+  com.flow.flow.BigTradeView bigTrades();
+  com.flow.flow.LiquidityMapView liquidityMap();
+  com.flow.flow.VWAPView vwap();
+  com.flow.flow.OrderRepeatView orderRepeats();
+
   /** Genuinely immutable snapshot copy. Used only by the journal and tests. */
   MarketState freeze();
 }

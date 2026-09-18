@@ -392,13 +392,28 @@ exercised beyond that** — no strategy currently emits anything but
 `Intent.none()`, so none of the risk chain's filters or the
 refuse-to-arm path have fired against a real changing intent yet.
 
-**Next concrete step**: entry evaluators (`flow/`: absorption,
-imbalance stacking, sweep-and-reclaim, D-27) and a first real strategy
-that actually emits a non-`Intent.none()` value — the piece that
-finally exercises the risk chain end-to-end. Per CLAUDE.md's hard rule,
-this stays dry-run only; Sim-account order placement needs its own
-explicit, in-the-moment confirmation later, not bundled into this build
-step.
+**Entry evaluators + first real strategy built (D-62, 2026-09-19)** —
+`MarketStructureLvnReversalStrategy`, exercising every construct from
+this session together (market structure for the area of interest,
+volume profile for the LVN, footprint/big trades/liquidity map for
+entry confirmation, VWAP/order-repeats as non-gating context). Full
+detail in `decisions.md`. **Found and fixed a real bug in self-review
+before it ever ran live**: the strategy had no way to learn a
+`RiskChain`-blocked intent never took effect, and would have silently
+desynced from reality the first time `armed=false` (the default)
+blocked a real entry — fixed with a new `FlowStrategy.
+onIntentRejected()` hook, not a special case. Registered but not
+switched on by default. Rebuilt clean, redeployed, confirmed the
+already-running session survived the underlying `MutableMarketState`/
+`Pipeline` changes across two redeploys. Per CLAUDE.md's hard rule,
+this stays dry-run only — Sim-account order placement needs its own
+explicit, in-the-moment confirmation later, not bundled into this
+build step.
+
+**Next concrete step**: select `market_structure_lvn_reversal` in the
+`Strategy Id` setting and watch it actually run — its own logic hasn't
+been live-verified at all yet, only that building it didn't break
+anything.
 
 **Where the work happens:**
 
@@ -995,8 +1010,13 @@ journal reconstructs what happened and whose replay reproduces it exactly.
 - [ ] Intent-seq vs execution-seq gap journaled per trade (D-17) — still
   not done; moot until a real strategy's intents actually reach
   `OrderGateway` with any latency worth measuring.
-- [ ] Entry evaluators in `flow/`: absorption, imbalance stacking,
-  sweep-and-reclaim (D-27)
+- [x] (2026-09-19) Entry evaluators in `flow/` (D-27) → D-62:
+  `AbsorptionEvaluator` (footprint, stateless), `AggressionEvaluator`
+  (big trades, stateless), `SweepEvaluator` (liquidity map, **stateful**
+  — detecting a sweep means detecting change, needs a memory of the
+  prior reading). "Imbalance stacking" specifically not built — the
+  user's actual first-strategy design used absorption/aggression/sweep
+  instead; imbalance stacking stays unbuilt until something needs it.
 
 ## 4b. Historical retention `[DESIGN ONLY, NOT STARTED]`
 
@@ -1049,9 +1069,26 @@ requirements, not a plan.
 
 ## 5. Strategies and forward testing
 
-- [ ] First real strategy, `BAR_CLOSE` trigger, unit-tested on synthetic
-  sequences before the platform is involved
-- [ ] Dry-run sessions → review journal against manual judgment
+- [x] (2026-09-19) First real strategy → D-62:
+  `MarketStructureLvnReversalStrategy`, `EveryTick` trigger (not
+  `BAR_CLOSE` — deliberate, this build's point is stress-testing the
+  live pipeline at its most demanding cadence). **Not unit-tested on
+  synthetic sequences** — built and reasoned through directly per the
+  user's explicit framing ("i dont need to test the strategy itself, i
+  want to see if the system can hold everything together"); the
+  event-sequence DSL (§3, still not built either) would be the natural
+  way to do that properly later. A real bug was found and fixed in
+  self-review before this ever ran live (see D-62's own writeup) — the
+  strategy had no way to learn a `RiskChain`-blocked intent never
+  actually took effect, and would have silently desynced from reality
+  the first time `armed=false` (the default) blocked a real entry.
+- [ ] Dry-run sessions → review journal against manual judgment. Next
+  concrete step: select `market_structure_lvn_reversal` in the
+  `Strategy Id` setting (currently still defaults to
+  `level_zone_observer`) and watch `decisions.jsonl` for real
+  `intent_changed`/`risk_verdict`/`reconcile_dry_run` records — this
+  strategy's own logic has not been live-verified at all yet, only
+  that building it didn't break anything already running.
 - [ ] Sim sessions (arming is a per-session act; confirm account out loud
   at every activation)
 - [ ] Second real strategy — tests whether the layer boundaries hold;
