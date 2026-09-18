@@ -32,7 +32,7 @@ public final class TriggerEvaluatorTest {
   private static int seq = 0;
   private static TickEvent tick(int priceTicks) {
     seq++;
-    return new TickEvent(seq, seq * 1000L, seq * 1000L, priceTicks, 1, true, priceTicks, priceTicks);
+    return new TickEvent(seq, seq * 1000L, seq * 1000L, priceTicks, 1, true, priceTicks, priceTicks, 0L, 0L);
   }
 
   private static int failures = 0;

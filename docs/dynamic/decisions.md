@@ -1340,9 +1340,17 @@ readable rather than being silently rewritten.
   Full rebuild clean (both test gates pass), replay-equivalence
   regression still passes. Not yet live-verified.
 
+  **Amended 2026-09-18**: staying not-live-verified deliberately, by the
+  user's own call, not an oversight — `zoneAgeMs` is hard to eyeball
+  against a live chart (there's no visual reference for "how old is this
+  zone" the way footprint has the built-in study to compare against), and
+  the user trusts the measured-before-built cost accounting and the
+  mechanism (set-once-on-new-id, D-38's existing identity tracking) enough
+  to accept it without a manual check. Left open only in the sense that
+  nobody's watched it fire against real data yet.
+
 - **D-50** (2026-09-18) — **Major sequencing redirect, plus footprint
-  built (first of the newly-ordered construct list).** Not yet
-  live-verified.
+  built (first of the newly-ordered construct list).**
 
   **The redirect, stated by the user directly**: stop per-zone
   refinement (D-39's ranking, the HVN/LVN density question) and build
@@ -1384,7 +1392,13 @@ readable rather than being silently rewritten.
   different granularity.
 
   Full rebuild clean (both test gates pass), replay-equivalence
-  regression still passes. Not yet live-verified.
+  regression still passes. **Live-verified 2026-09-18**, twice: an
+  initial live pass (mechanics — bar-close rows sane, zero exceptions)
+  and, the same day, a direct visual comparison against MotiveWave's own
+  built-in footprint study on the same chart — the user's read: "working
+  good enough." No formal row-by-row diff done (that's E-4's stricter,
+  still-open bar), but the construct is trusted for the breadth-first
+  build to proceed on.
 
 - **D-51** (2026-09-18) — **Per-construct draw flags, plus an honest
   architecture fix the user's question exposed rather than papering
@@ -1444,10 +1458,12 @@ readable rather than being silently rewritten.
   not attempted here, flagged rather than silently limited.
 
   Full rebuild clean (both test gates pass), replay-equivalence
-  regression still passes. Not yet live-verified.
+  regression still passes. **Live-verified 2026-09-18** — draw-flag
+  toggle and the footprint-over-candles rendering both confirmed working
+  by the user, alongside D-50's comparison-against-built-in-study check.
 
 - **D-52** (2026-09-18) — **Footprint row merging is draw-time only,
-  never stored.** Not yet live-verified.
+  never stored.**
 
   Per the user's explicit instruction: the raw per-tick footprint rows
   stay exactly as `FootprintView` computes them — "the more granular the
@@ -1482,7 +1498,336 @@ readable rather than being silently rewritten.
   or builds toward that.
 
   Full rebuild clean (both test gates pass), replay-equivalence
-  regression still passes. Not yet live-verified.
+  regression still passes. **Live-verified 2026-09-18** — merged-row
+  boxes confirmed correct by the user alongside D-50/D-51's checks.
+
+- **D-53** (2026-09-18) — **Big trades built directly against our own
+  `TickEvent` stream, not as a wrapper around the SDK's `AggregateFilter`
+  — reopens D-36's "same audit covers big trades" framing for this one
+  construct specifically.** Live-verified the hard way: the first attempt
+  (`AggregateFilter` fed via `TickAdapter`'s dynamic proxy, same pattern
+  D-44/D-50 already had working for `VolumeProfile`) disarmed a live
+  `level_zone_observer` session immediately — every event from seq 1
+  hit `ClassCastException: class jdk.proxy2.$Proxy6 cannot be cast to
+  class k.v`. Root cause and full trail:
+  `../../motivewave/docs/dynamic/findings.md`, 2026-09-18. Diagnosed and
+  fixed within the same session — no strategy runs on data this affects
+  yet (walking skeleton, no real trading), but it did mean a live session
+  sat silently disarmed until the fix was deployed.
+
+  **Root cause**: `AggregateFilter.onTick(Tick)` casts its argument to an
+  internal concrete class, unlike `VolumeProfile.onTick(Tick)` which
+  accepts any `Tick` implementer (confirmed safe there since D-44). A
+  real asymmetry between two SDK engine classes E-2/E-5 both technically
+  "passed" — E-5's own live confirmation fed it the platform's *real*
+  `Tick` directly from a MotiveWave callback thread, never through a
+  proxy or a re-sequenced stream, so it never exercised this path.
+
+  **Why not just feed it the real Tick from the callback thread**:
+  that's the only way to avoid the cast, but doing so would mean
+  `AggregateFilter`'s internal state mutates from a thread that isn't the
+  drain thread — violates the single-writer invariant (README "The event
+  stream") every other feature depends on, and makes big trades
+  undecodable from the raw journal (D-11's replay-equivalence requires
+  every feature's inputs to be reconstructable from the recorded event
+  stream in original seq order; realtime callback-thread arrival order
+  isn't that). Not attempted.
+
+  **What got built instead**: `BigTradeFeature` (`flow-core/src/com/flow/
+  flow/`) reimplements `AggregateFilter`'s actual job directly —
+  accumulate volume by `exchOrderId` (a real per-tick field, added to
+  `TickEvent` alongside `aggExchOrderId` specifically for this), and once
+  the running total for an id crosses the configured `minSize`, publish a
+  `BigTradeEvent`; further volume on the same id updates that event's
+  size in place (T-3's documented repeat-emission behavior, reproduced
+  directly rather than relied upon from the SDK). `exchOrderId == 0`
+  (confirmed live sentinel, E-5) is never aggregated with another
+  zero-id tick — each stands alone, counted only if its own single-tick
+  volume already clears `minSize`. **Zero SDK dependency**, so this
+  lives entirely in `flow-core`, not `flow-runtime` — not required by
+  D-09's classpath split, just falls out naturally since there was
+  nothing left needing the SDK. Deterministic function of the recorded
+  `TickEvent` stream, so D-11's replay-equivalence holds by construction
+  rather than by trusting an opaque engine to replay identically.
+
+  **Fixed threshold (D-22 class 1, ready immediately)**: `minSize` is a
+  configurable settings value (`Big Trade Min Size`, default 10
+  contracts, matching the value the original `SdkCapabilityProbe` E-5
+  experiment used), not a relative/percentile threshold — no warmup
+  needed, consistent with how footprint/VP row widths are configured.
+
+  **Logging split, not the feature itself**: `BigTradeFeature` takes an
+  optional `Listener` callback (`onCreated`/`onUpdated`) rather than
+  owning file I/O directly — keeps it a plain, synchronously-testable
+  object per D-20, with no platform or filesystem dependency at all.
+  `BigTradeFileLogger` (`flow-runtime`) implements `Listener` and owns
+  the actual `logs/big_trade_feature.log` PrintWriter, same live-
+  validation discipline as footprint/VP's own log files. A drawing pass
+  (chart figures) is deliberately deferred, same as footprint's own
+  D-50-before-D-51 sequencing — this pass is feature + log validation
+  only.
+
+  Full rebuild clean (both test gates pass) after the fix. **Live-
+  verified**: redeployed, the previously-disarmed session's replacement
+  came back healthy (zero `DISARM` records, heartbeat `healthy:true`,
+  trigger/trace records continuing to fire normally) — confirms the
+  crash itself is fixed. **Not yet confirmed**: an actual real trade
+  clearing the 10-contract threshold hadn't printed in the short window
+  checked immediately after redeploy, so the aggregation/dedupe logic's
+  correctness against real data is still open — next live check should
+  look for `CREATED`/`REPEAT` lines in `big_trade_feature.log` once a
+  genuinely large print happens.
+
+  **Amended 2026-09-18 by D-55**: order-id aggregation itself was
+  subsequently live-confirmed *correct* (D-54's live check), but a
+  side-by-side against the built-in study showed it was the wrong mode —
+  D-55 switches to time+price window aggregation, matching what the
+  built-in evidently uses. This entry's design description (order id as
+  the aggregation key) is superseded; the "not a wrapper around
+  AggregateFilter, here's why" reasoning stands unchanged.
+
+- **D-54** (2026-09-18) — **Big trades drawn on chart: one CIRCLE Marker
+  per trade, green for buy-aggressor / red for sell-aggressor, labeled
+  with contract size.** Requested directly by the user right after D-53
+  landed, plus a follow-up mid-build asking for the size label too — both
+  folded into this pass rather than split into two.
+
+  **New SDK-jar mismatch found and worked around, same class as T-6**:
+  `Enums.MarkerType`/`Enums.Size`/`Enums.Position` (needed for `Marker`'s
+  constructor) fail to compile as source-level type references —
+  confirmed directly (`javac`: "cannot find symbol: class MarkerType,
+  location: interface Enums") for both a qualified reference and a plain
+  `import`, the same failure shape T-6/`TickAdapter`'s `Enums.BarData`
+  finding already established for a different nested `Enums` type.
+  Worked around the same way `TickAdapter` works around `Enums.BarData` —
+  reflection, not a source-level reference: `MarkerAdapter`
+  (`flow-runtime`) resolves `Enums$MarkerType`/`$Size`/`$Position` via
+  `Class.forName`, looks up `CIRCLE`/`MEDIUM`/`CENTER` via `Enum.valueOf`,
+  and calls `Marker`'s 6-arg constructor via `Constructor.newInstance`
+  once, cached in static fields. Unlike `TickAdapter`'s dynamic proxy
+  (needed there because `Tick` itself couldn't be implemented any other
+  way), `Marker` is a perfectly ordinary nameable class — only the enum
+  arguments going *into* its constructor needed reflection — so
+  `MarkerAdapter.circle()` returns a genuinely typed `Marker`, and every
+  other call on it (`setTextValue`, `addFigure`) is a normal method call.
+
+  **Color convention matches footprint's existing delta-sign rule**
+  (`drawFootprintBar()`): `isAskTick` (buy aggressor, "+ve") → green
+  `(0,200,0)`; sell aggressor ("-ve") → red `(220,60,60)`. Text is the
+  trade's contract size (`%.0f`), not a bare shape — added per the user's
+  explicit follow-up request, matching the project's existing convention
+  that every drawn figure carries a readable label (POC/VAH/VAL lines,
+  zone boxes, footprint rows all do too).
+
+  **Historical stamp, not "current state"**: unlike VP zones/footprint
+  rows, a big trade has no ongoing state to reflect — `redrawBigTradeFigures()`
+  draws one Marker per entry in `BigTradeView.recent()` (bounded at 500
+  by `BigTradeFeature`, D-53) every redraw pass, the same full-clear-
+  and-redraw-from-current-state pattern `redrawFigures()`'s dispatcher
+  already uses for every construct, just applied to a list of point
+  events instead of an ongoing computed state. New draw flag
+  (`Big Trades > Draw on Chart`, default **true** — the user asked for
+  this immediately, no reason to default it off) alongside the existing
+  per-construct dispatcher (D-51).
+
+  **Needed a thread-safety fix in `BigTradeFeature` to support this**:
+  `recent()` previously built its `List.copyOf` live from the
+  drain-thread-only `recentByKey` map on every call — safe when nothing
+  outside the drain thread called it (true when D-53 landed), unsafe now
+  that `redrawBigTradeFigures()` calls it from a MotiveWave callback
+  thread. Fixed with the same volatile-immutable-snapshot pattern
+  `VolumeProfileSnapshot`/`FootprintSnapshot` already established:
+  `recentSnapshot` is republished only inside the create/repeat-update
+  branches (not on every tick — most ticks aren't big trades, so this
+  stays cheap), and `recent()` now just returns it.
+
+  Full rebuild clean (both test gates pass). **Live-verified, the
+  aggregation logic itself for the first time (closing D-53's one open
+  item)**: `logs/big_trade_feature.log` shows real `CREATED` → `REPEAT`
+  sequences against live `@GC` ticks, size genuinely growing across
+  repeats for the same `exchOrderId` exactly as T-3 predicted (e.g.
+  `10.0 → 11.0 → 13.0 → 25.0` for one order id, three separate repeat
+  emissions). Session stayed healthy throughout (zero `DISARM`,
+  `level_trace`/`zone_trace` records continuing normally) — confirms the
+  redesign in D-53 both fixed the crash and produces correct output
+  against real trades. **Not yet confirmed**: the drawn circles
+  themselves — `redrawBigTradeFigures()` runs on the callback thread
+  outside `Pipeline`, so a drawing-side exception wouldn't show up as a
+  journaled `DISARM` the way a pipeline exception would; needs the user
+  to actually look at the chart.
+
+- **D-55** (2026-09-18) — **Big trades re-aggregated by time+price window,
+  not exchange order id — corrects D-53's aggregation mode, not its
+  decision to avoid `AggregateFilter`.** Triggered by the user's own
+  side-by-side comparison against MotiveWave's built-in "Big Trades(20)"
+  study on the same chart: markers landed at the correct price/time on
+  both sides, but the contract-size numbers didn't match at corresponding
+  locations — ours mostly showed `1`, the built-in showed varied `2`/`3`/
+  `5`s.
+
+  **Root cause, found in the SDK's own javadoc**
+  (`../../motivewave/docs/static/javadoc/.../AggregateFilter.html`, not
+  previously read closely): `aggByOrder` and `aggPeriod` are **mutually
+  exclusive by data availability, not a user choice** — "if this
+  [exchange order] id is available... it will be used to aggregate
+  (ignoring the agg period)." D-53 used order-id aggregation, which
+  D-53 itself already live-confirmed *correct for that mode* (real
+  `CREATED`→`REPEAT` growth on a shared order id) — the bug wasn't in the
+  aggregation logic, it was in choosing the wrong mode. On this feed,
+  most prints have genuinely distinct exchange order ids (each fill
+  against a different resting order), so order-id aggregation mostly
+  degenerates to single-print "big trades." The built-in study's "(20)"
+  is almost certainly `aggPeriod=20ms` — time+price window aggregation
+  (a sweep through several resting orders within a short window),
+  independent of order id, which is the more human-intuitive "one big
+  trade" and evidently what MotiveWave's own study uses.
+
+  **New design**: a single in-progress aggregation window (not a
+  per-order-id or per-price map) — matches `AggregateFilter`'s own
+  internal shape too (its field list has one `aggTick`/`tickStart` pair,
+  not a map), and is correct here because trades on one instrument arrive
+  strictly sequentially in time, so at most one window can be open at
+  once. A tick merges into the current window iff same `priceTicks`,
+  same `isAskTick` (side), and within a configurable `aggPeriodMs` of the
+  *last* tick that joined it (a rolling gap, not a fixed clock window —
+  chosen as the more standard "continuous burst" interpretation); a
+  non-matching tick silently closes the old window (its last published
+  state already stands as final) and opens a new one. T-3's
+  same-order-id repeat behavior is naturally subsumed — same-id repeats
+  are necessarily same price/side/short-gap, so they merge into the
+  window anyway without any order-id-specific code. `exchOrderId` on the
+  resulting `BigTradeEvent` is now best-effort provenance only (the
+  opening tick's id), not an aggregation key.
+
+  New setting, `Big Trades > Agg Period (ms)`, default **20** (best
+  available evidence for the built-in's own default, from its title) —
+  configurable per-instrument/session like every other threshold here.
+
+  Full rebuild clean (both test gates pass), redeployed. **Live-verified
+  crash-free** (replacement session healthy, zero DISARMs) — **merge
+  behavior itself not yet observed live**: the short window checked
+  right after redeploy had `minSize=1` (the user's own test setting from
+  the drawing pass), so single ticks already clear threshold before any
+  merge opportunity shows up in the log as a `WINDOW_GROW` line. Next
+  live check: either wait for a natural same-price cluster, or raise
+  `minSize` back up, and confirm the drawn numbers now vary the way the
+  built-in study's do.
+
+- **D-56** (2026-09-18) — **Order-id repeat tracking kept alive as its
+  own separate construct (`OrderRepeatView`), not discarded when D-55
+  moved big trades to time+price-window aggregation.** Direct user
+  request: "keep the group by order id also possible for future. we
+  might need both to identify iceberg orders and more analyses." Also
+  confirmed the D-55 fix itself: a second side-by-side against the
+  built-in "Big Trades(20)" study, varied numbers now roughly matching —
+  user's own assessment, "matching almost exactly (90%) good enough."
+
+  **Why a separate construct, not a flag on `BigTradeFeature`**: the two
+  questions are genuinely different. "Was this a big print" (time+price
+  window, D-55) and "is this order id trading repeatedly" (iceberg/
+  hidden-liquidity signal) can disagree in both directions — a big
+  window-aggregated print might be several different orders' first and
+  only fill each, and a genuine order-id repeat might never individually
+  or cumulatively be "big." Keeping them separate mirrors how VP and
+  footprint stay separate constructs despite sharing the same SDK engine
+  underneath.
+
+  **No size threshold, no classification** — capture only. Any order id
+  seen a second time publishes an `OrderRepeatEvent` (count starting at
+  2), updated on every repeat after that; "is this actually an iceberg"
+  is deferred analysis, not decided here, matching how D-39/D-40 kept
+  ranking separate from raw capture. Reuses D-53's original per-order-id
+  logic almost exactly (already live-proven correct, just not the right
+  fit for `BigTradeView` specifically).
+
+  **One new bound, an accepted simplification not a measured one**: the
+  per-order-id running-state map (`running`, every distinct order id seen
+  this session, not just repeats) is capped at 5000 entries with LRU
+  eviction (`LinkedHashMap` access-order mode) — without it, this map
+  would grow with total tick count over a long session, since most real
+  order ids never repeat at all. Forgetting a very old, never-repeated id
+  costs nothing; the only real risk is missing a genuine repeat that
+  happens unusually far apart in tick count (not wall time), accepted
+  without measurement for now, same honesty-over-precision stance D-49
+  modeled for a different tradeoff.
+
+  No settings row, no drawing — log-only (`logs/order_repeat_feature.log`)
+  for now, same build-then-layer discipline as every other construct's
+  first pass here. `recent()` is drain-thread-only (no volatile snapshot
+  yet, unlike `BigTradeFeature`) since nothing outside the drain thread
+  reads it — would need the same fix `BigTradeFeature` got (D-54) before
+  any future drawing/cross-thread use.
+
+  Full rebuild clean (both test gates pass), redeployed, **live-verified
+  crash-free** (session healthy, zero DISARMs) — **repeat detection
+  itself not yet observed live** (log empty in the short window checked
+  right after redeploy; needs a real order id to actually trade twice).
+
+- **D-57** (2026-09-18) — **VWAP built: ported from MotiveWave's own
+  published `VWAP.java` source, core running-average algorithm only.**
+  Fourth construct in the 2026-09-18 breadth-first order (footprint →
+  big trades → **VWAP** → market structure → liquidity map).
+
+  Cloned `MotiveWave/motivewave-studies` (GPL v3, public,
+  `https://github.com/MotiveWave/motivewave-studies`, already the source
+  D-36/E-10 previously inventoried by filename only) to actually read
+  `ma/VWAP.java` for this pass, rather than working from the earlier
+  summary alone — confirms E-10's finding exactly: genuinely
+  tick-weighted (`totalPrice += tick.getPrice()*tick.getVolumeAsFloat();
+  totalVolume += tick.getVolumeAsFloat(); vwap = totalPrice/
+  totalVolume`), and the file is ~90% settings-panel/UI plumbing
+  (path/indicator descriptors, `DataSeriesImpl`-backed per-bar storage,
+  RTH/click-anchor menu, standard-deviation bands) that has no equivalent
+  in this codebase and isn't needed — only the core running-average loop
+  is ported, confirming "adapt, don't copy" (D-36) was the right call,
+  not an assumption.
+
+  **Zero SDK dependency** — lives in `flow-core`
+  (`VWAPView`/`VWAPFeature`), same as `BigTradeFeature` (D-53): two
+  running `double`s, no engine class, no rotation/memory concern at all.
+
+  **Session-anchored to feature construction (attach time), not a
+  calendar-day boundary** — matches `VolumeProfileView`/`FootprintView`'s
+  own "forward-only from attach" behavior (D-37) rather than building
+  session-boundary-detection machinery that doesn't exist anywhere else
+  in this codebase yet (nothing currently resets anything at a calendar
+  boundary — D-19's reversal counters and D-21's price anchor will
+  eventually need the same mechanism). A true daily reset matching
+  D-29/D-34's 24h session boundary is deferred until that general
+  mechanism gets built, not invented as a one-off here.
+
+  **Standard-deviation bands deliberately not ported** — a materially
+  separate computation (per-bar OHLC typical price, rolling volume
+  window, the source file's own second half) on top of the core VWAP
+  value, not attempted this pass. Matches this session's own established
+  pattern of deferring secondary refinements (footprint's imbalance
+  flag, VP's value-area-method pluggability) until the core construct is
+  proven.
+
+  **Volatile snapshot from day one, not retrofitted** — `vwap()`/
+  `totalVolume()` publish via `volatile` fields updated at the end of
+  every tick, unlike `BigTradeFeature` which needed exactly this fix
+  added after the fact once drawing needed cross-thread reads (D-54).
+  Cheap enough to just do now given that lesson.
+
+  No settings row (nothing to configure — no threshold, no window), no
+  drawing yet — log-only (`logs/vwap_feature.log`, periodic 1s-throttled
+  samples since VWAP is one continuously-updating value rather than
+  discrete occurrences, unlike big trades/order repeats' event-driven
+  logging) — same build-then-layer discipline as every construct's first
+  pass here.
+
+  Full rebuild clean (both test gates pass), redeployed. **Live-verified
+  both halves**: crash-free (session healthy, zero `DISARM`s, sequence
+  advancing normally, `level_trace` continuing to fire) and the value
+  itself looks correct — sampled `vwap` tracked the same price range
+  `VolumeProfileView`'s POC/VAH/VAL were reporting concurrently
+  (~4419.15-4419.21), with `totalVolume` growing monotonically as
+  expected (6 → 10 → 11 → 12 → 13 across consecutive 1s samples). Not
+  compared numerically against the chart's own built-in VWAP line yet
+  (no drawing wired to do that visual comparison) — next natural check
+  once VWAP gets a chart line, same as every other construct's
+  built-in-study comparison pattern.
 
 ## Open questions (not yet decisions)
 

@@ -26,12 +26,13 @@ import java.lang.reflect.Proxy;
  * Tick -- that would violate the single-writer invariant (README "The
  * event stream").
  *
- * Bid/ask size and order ids are not carried by TickEvent (D-21's ingest
- * boundary keeps the core event minimal) and are stubbed to 0 --
- * confirmed safe for this use: "Bid/Ask sizes are not currently used by
- * the volume analysis tools in MotiveWave" per the SDK docs, and
- * VolumeProfile's own algorithm (E-2, live-confirmed) never reads
- * exchange order ids either.
+ * Bid/ask size are not carried by TickEvent (D-21's ingest boundary keeps
+ * the core event minimal) and are stubbed to 0 -- confirmed safe for this
+ * use: "Bid/Ask sizes are not currently used by the volume analysis tools
+ * in MotiveWave" per the SDK docs, and VolumeProfile's own algorithm
+ * (E-2, live-confirmed) never reads exchange order ids either. Order ids
+ * ARE carried by TickEvent (added for big trades -- see that record's
+ * javadoc) and passed through genuinely here, not stubbed.
  */
 final class TickAdapter {
   private TickAdapter() {}
@@ -62,8 +63,8 @@ final class TickAdapter {
         case "getBidSizeAsFloat": return 0f;
         case "getTime": return e.eventTimeMs();
         case "isAskTick": return e.isAskTick();
-        case "getExchOrderId": return 0L;
-        case "getAggExchOrderId": return 0L;
+        case "getExchOrderId": return e.exchOrderId();
+        case "getAggExchOrderId": return e.aggExchOrderId();
         case "equals": return proxy == (args != null && args.length > 0 ? args[0] : null);
         case "hashCode": return System.identityHashCode(proxy);
         case "toString": return "TickAdapter[seq=" + e.seq() + " price=" + price + "]";

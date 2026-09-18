@@ -28,6 +28,7 @@ import com.motivewave.platform.sdk.common.desc.StringDescriptor;
 import com.motivewave.platform.sdk.draw.Box;
 import com.motivewave.platform.sdk.draw.Label;
 import com.motivewave.platform.sdk.draw.Line;
+import com.motivewave.platform.sdk.draw.Marker;
 import com.motivewave.platform.sdk.order_mgmt.Order;
 import com.motivewave.platform.sdk.order_mgmt.OrderContext;
 import com.motivewave.platform.sdk.study.Study;
@@ -98,6 +99,18 @@ public class FlowRuntimeStudy extends Study {
   // construct is currently shown.
   private static final String DRAW_VP_KEY = "FLOW_DRAW_VP";
   private static final String DRAW_FP_KEY = "FLOW_DRAW_FP";
+  private static final String DRAW_BT_KEY = "FLOW_DRAW_BT";
+  // Big trades (D-53): built directly against our own TickEvent stream,
+  // not a wrapper around AggregateFilter (that engine casts its Tick
+  // argument to an internal concrete class -- crashed live the moment it
+  // was tried, see D-53). Fixed threshold, no warmup (D-22 class 1). No
+  // draw flag yet -- this pass is feature + log validation only, drawing
+  // deferred the same way footprint's was (D-50 before D-51).
+  private static final String BT_MIN_SIZE_KEY = "FLOW_BT_MIN_SIZE";
+  // D-55: aggregation window, not an order-id key -- see BigTradeFeature's
+  // javadoc for why (matches AggregateFilter's own aggPeriod semantics,
+  // the mode the built-in "Big Trades" study evidently uses).
+  private static final String BT_AGG_PERIOD_MS_KEY = "FLOW_BT_AGG_PERIOD_MS";
   private static final Path LOG_ROOT = Path.of("C:/yadvendra/trading/FLOW_V2/logs");
 
   private final int instanceId = System.identityHashCode(this);
@@ -112,6 +125,14 @@ public class FlowRuntimeStudy extends Study {
   private volatile Instrument instrument;
   private volatile SdkVolumeProfileFeature volumeProfile;
   private volatile SdkFootprintFeature footprint;
+  private volatile com.flow.flow.BigTradeFeature bigTrades;
+  private volatile BigTradeFileLogger bigTradeLogger;
+  private volatile com.flow.flow.OrderRepeatFeature orderRepeats;
+  private volatile OrderRepeatFileLogger orderRepeatLogger;
+  private volatile com.flow.flow.VWAPFeature vwap;
+  private volatile java.io.PrintWriter vwapLog;
+  private volatile long lastVwapLogTime = 0;
+  private static final long VWAP_LOG_INTERVAL_MS = 1000;
   private volatile long sessionStartMs;
 
   // Redraw throttling -- called from onTick, a MotiveWave-invoked
@@ -135,6 +156,10 @@ public class FlowRuntimeStudy extends Study {
     fpGrp.addRow(new IntegerDescriptor(FP_RANGE_TICKS_KEY, "Row Width (ticks)", 1, 1, 9999, 1));
     fpGrp.addRow(new IntegerDescriptor(FP_MERGE_ROWS_KEY, "Draw: Merge N Rows (display only, not stored)", 1, 1, 999, 1));
     fpGrp.addRow(new BooleanDescriptor(DRAW_FP_KEY, "Draw on Chart", true));
+    var btGrp = tab.addGroup("Big Trades");
+    btGrp.addRow(new IntegerDescriptor(BT_MIN_SIZE_KEY, "Min Size (contracts, fixed threshold)", 10, 1, 99999, 1));
+    btGrp.addRow(new IntegerDescriptor(BT_AGG_PERIOD_MS_KEY, "Agg Period (ms, same price+side window)", 20, 0, 60000, 1));
+    btGrp.addRow(new BooleanDescriptor(DRAW_BT_KEY, "Draw on Chart", true));
     createRD();
   }
 
@@ -180,9 +205,35 @@ public class FlowRuntimeStudy extends Study {
     int fpRangeTicks = getSettings().getInteger(FP_RANGE_TICKS_KEY);
     footprint = new SdkFootprintFeature(
         com.flow.flow.FootprintView.FEATURE_ID, instrument, priceCodec, fpRangeTicks);
+    int btMinSize = getSettings().getInteger(BT_MIN_SIZE_KEY);
+    int btAggPeriodMs = getSettings().getInteger(BT_AGG_PERIOD_MS_KEY);
+    bigTradeLogger = new BigTradeFileLogger(priceCodec, btMinSize, btAggPeriodMs);
+    bigTrades = new com.flow.flow.BigTradeFeature(
+        com.flow.flow.BigTradeView.FEATURE_ID, btMinSize, btAggPeriodMs, bigTradeLogger);
+    // D-56: order-id repeat tracking, kept alive alongside big trades (not
+    // merged into it) for future iceberg/hidden-liquidity analysis -- see
+    // OrderRepeatView's javadoc. No settings/drawing yet, log-only.
+    orderRepeatLogger = new OrderRepeatFileLogger(priceCodec);
+    orderRepeats = new com.flow.flow.OrderRepeatFeature(
+        com.flow.flow.OrderRepeatView.FEATURE_ID, orderRepeatLogger);
+    // D-57: zero SDK dependency, no rotation/settings needed -- see
+    // VWAPFeature's javadoc. Log-only for now, same build-then-layer
+    // discipline as every other construct's first pass.
+    vwap = new com.flow.flow.VWAPFeature(com.flow.flow.VWAPView.FEATURE_ID, priceCodec::fromTicks);
+    try {
+      vwapLog = new java.io.PrintWriter(new java.io.FileWriter(
+          "C:/yadvendra/trading/FLOW_V2/logs/vwap_feature.log", true));
+      vwapLog.println("# feature start " + System.currentTimeMillis() + " id=vwap");
+      vwapLog.flush();
+    } catch (IOException e) {
+      vwapLog = null;
+    }
     Map<String, com.flow.core.Feature> features = Map.of(
         com.flow.flow.VolumeProfileView.FEATURE_ID, volumeProfile,
-        com.flow.flow.FootprintView.FEATURE_ID, footprint);
+        com.flow.flow.FootprintView.FEATURE_ID, footprint,
+        com.flow.flow.BigTradeView.FEATURE_ID, bigTrades,
+        com.flow.flow.OrderRepeatView.FEATURE_ID, orderRepeats,
+        com.flow.flow.VWAPView.FEATURE_ID, vwap);
 
     IntentSink sink = this::onIntentChanged;
     pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks);
@@ -227,8 +278,28 @@ public class FlowRuntimeStudy extends Study {
     int bidTicks = codec.toTicks(tick.getBidPrice());
     int askTicks = codec.toTicks(tick.getAskPrice());
     s.publish((seq, et, rt) -> new TickEvent(seq, et, rt, priceTicks, tick.getVolume(),
-        tick.isAskTick(), bidTicks, askTicks), tick.getTime());
+        tick.isAskTick(), bidTicks, askTicks, tick.getExchOrderId(), tick.getAggExchOrderId()), tick.getTime());
     maybeRedraw();
+    maybeLogVwap();
+  }
+
+  /**
+   * VWAPFeature (D-57) is pure/no-I/O by design (flow-core discipline) --
+   * the runtime owns logging for it, same as every other construct's
+   * live-validation log, just periodic instead of event-driven since VWAP
+   * is one continuously-updating value rather than discrete occurrences.
+   */
+  private void maybeLogVwap() {
+    java.io.PrintWriter w = vwapLog;
+    com.flow.flow.VWAPFeature v = vwap;
+    if (w == null || v == null) return;
+    long now = System.currentTimeMillis();
+    if (now - lastVwapLogTime < VWAP_LOG_INTERVAL_MS) return;
+    lastVwapLogTime = now;
+    Double value = v.vwap();
+    w.println(now + " vwap=" + (value == null ? "null" : String.format("%.4f", value))
+        + " totalVolume=" + v.totalVolume());
+    w.flush();
   }
 
   // Drawing, for visual comparison against the chart's built-in Volume
@@ -259,6 +330,7 @@ public class FlowRuntimeStudy extends Study {
     clearFigures();
     if (getSettings().getBoolean(DRAW_VP_KEY)) redrawVolumeProfileFigures();
     if (getSettings().getBoolean(DRAW_FP_KEY)) redrawFootprintFigures();
+    if (getSettings().getBoolean(DRAW_BT_KEY)) redrawBigTradeFigures();
   }
 
   /**
@@ -400,6 +472,29 @@ public class FlowRuntimeStudy extends Study {
     }
   }
 
+  /**
+   * One Marker circle per big trade in BigTradeView.recent() (D-54),
+   * positioned at the trade's own eventTimeMs/price -- a historical stamp
+   * on the chart, not a "current state" redraw the way VP/footprint are
+   * (a big trade has no ongoing state to reflect, just a point it
+   * occurred at). Green = buy aggressor (isAskTick, "+ve"), red = sell
+   * aggressor ("-ve") -- same delta-sign color convention as
+   * drawFootprintBar(). Text is the contract size, per the user's
+   * explicit request (2026-09-18), not just a bare shape.
+   */
+  private void redrawBigTradeFigures() {
+    com.flow.flow.BigTradeFeature bt = bigTrades;
+    PriceCodec codec = priceCodec;
+    if (bt == null || codec == null) return;
+    for (com.flow.flow.BigTradeEvent t : bt.recent()) {
+      double price = codec.fromTicks(t.priceTicks());
+      Color color = t.isAskTick() ? new Color(0, 200, 0) : new Color(220, 60, 60);
+      Marker marker = MarkerAdapter.circle(t.eventTimeMs(), price, color);
+      marker.setTextValue(String.format("%.0f", t.size()));
+      addFigure(marker);
+    }
+  }
+
   private static int rowsFromPoc(int levelTicks, int pocTicks, int rangeTicks) {
     return Math.round((levelTicks - pocTicks) / (float) rangeTicks);
   }
@@ -461,6 +556,25 @@ public class FlowRuntimeStudy extends Study {
     if (fp != null) {
       fp.closeLog();
       footprint = null;
+    }
+    bigTrades = null;
+    BigTradeFileLogger btLog = bigTradeLogger;
+    if (btLog != null) {
+      btLog.closeLog();
+      bigTradeLogger = null;
+    }
+    orderRepeats = null;
+    OrderRepeatFileLogger orLog = orderRepeatLogger;
+    if (orLog != null) {
+      orLog.closeLog();
+      orderRepeatLogger = null;
+    }
+    vwap = null;
+    java.io.PrintWriter vwLog = vwapLog;
+    if (vwLog != null) {
+      vwLog.flush();
+      vwLog.close();
+      vwapLog = null;
     }
   }
 

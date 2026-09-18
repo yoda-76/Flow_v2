@@ -26,7 +26,9 @@ public final class RawEventCodec {
           .field("volume", te.volume())
           .field("isAskTick", te.isAskTick())
           .field("bidPriceTicks", te.bidPriceTicks())
-          .field("askPriceTicks", te.askPriceTicks());
+          .field("askPriceTicks", te.askPriceTicks())
+          .field("exchOrderId", te.exchOrderId())
+          .field("aggExchOrderId", te.aggExchOrderId());
     } else if (e instanceof BarEvent be) {
       j.field("type", "bar")
           .field("phase", be.phase().name())
@@ -72,7 +74,8 @@ public final class RawEventCodec {
     return switch (type) {
       case "tick" -> new TickEvent(seq, eventTimeMs, receiptTimeMs,
           o.getInt("priceTicks"), o.getInt("volume"), o.getBoolean("isAskTick"),
-          o.getInt("bidPriceTicks"), o.getInt("askPriceTicks"));
+          o.getInt("bidPriceTicks"), o.getInt("askPriceTicks"),
+          o.getLong("exchOrderId"), o.getLong("aggExchOrderId"));
       case "bar" -> new BarEvent(seq, eventTimeMs, receiptTimeMs,
           BarPhase.valueOf(o.getString("phase")),
           o.getInt("openTicks"), o.getInt("highTicks"), o.getInt("lowTicks"), o.getInt("closeTicks"),
