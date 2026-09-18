@@ -113,6 +113,25 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // user's explicit request ("that 'last 100 bars' will be configurable").
   private static final String MS_WARMSTART_BARS_KEY = "FLOW_MS_WARMSTART_BARS";
   private static final String DRAW_MS_KEY = "FLOW_DRAW_MS";
+  // Entry signal arrows (user request, 2026-09-19): drawn from
+  // onIntentChanged, which only fires once the risk chain ALLOWS an
+  // intent -- so with armed=false (the default) this stays empty; arrows
+  // appear once the session is actually armed. Matches the "order
+  // signals" framing of the original request, not "everything the
+  // strategy considered."
+  private static final String DRAW_ENTRY_KEY = "FLOW_DRAW_ENTRY_SIGNALS";
+  // One-shot real-order plumbing test (2026-09-19, explicit user request +
+  // in-the-moment confirmation: SELL 1 @ market on activation, 10-tick
+  // SL/TP). Deliberately its own checkbox, separate from ARMED_KEY -- the
+  // act of checking this box and (re)activating the study IS the human's
+  // "immediately before submitting" confirmation CLAUDE.md requires,
+  // independent of whatever ARMED_KEY is set to. Guarded so it can never
+  // fire more than once per Study instance regardless of how many times
+  // onActivate re-runs (testTradeFiredEver latch). Strip this whole path
+  // out once the test has been run and confirmed -- it is a throwaway
+  // plumbing check, not a feature.
+  private static final String FIRE_TEST_TRADE_KEY = "FLOW_FIRE_TEST_TRADE_ONCE";
+  private static final int TEST_TRADE_SL_TP_TICKS = 10;
   // Big trades (D-53): built directly against our own TickEvent stream,
   // not a wrapper around AggregateFilter (that engine casts its Tick
   // argument to an internal concrete class -- crashed live the moment it
@@ -163,6 +182,18 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // D-60: unreviewed rule resolutions, see docs/dynamic/marketStructureRulesTemp.md
   private volatile com.flow.flow.MarketStructureFeature marketStructure;
   private volatile MarketStructureFileLogger marketStructureLogger;
+  // Entry signal arrows: appended from onIntentChanged (drain thread, via
+  // IntentSink), read from maybeRedraw()'s MotiveWave-invoked thread --
+  // same cross-thread read-of-recent-events pattern as BigTradeFeature's
+  // recent(), so a plain synchronized list (bounded, oldest evicted) is
+  // enough; no generation-guarded view needed for a cosmetic draw list.
+  private record EntrySignal(long timeMs, double price, boolean isLong, String reason) {}
+  private final java.util.List<EntrySignal> entrySignals =
+      java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+  private static final int MAX_ENTRY_SIGNALS = 200;
+  // One-shot test trade state -- see FIRE_TEST_TRADE_KEY's javadoc.
+  private volatile boolean testTradeFiredEver = false;
+  private volatile boolean pendingTestBracket = false;
   // D-61: refuse-to-arm (D-24) overrides the raw ARMED_KEY setting --
   // set once in onActivate, never cleared for the life of this instance
   // (clearing the position/orders manually and reactivating creates a
@@ -201,6 +232,11 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     var msGrp = tab.addGroup("Market Structure");
     msGrp.addRow(new IntegerDescriptor(MS_WARMSTART_BARS_KEY, "Historical Warm-Start Bars", 100, 0, 5000, 1));
     msGrp.addRow(new BooleanDescriptor(DRAW_MS_KEY, "Draw on Chart", true));
+    var entryGrp = tab.addGroup("Entry Signals");
+    entryGrp.addRow(new BooleanDescriptor(DRAW_ENTRY_KEY, "Draw Arrows on Chart", true));
+    var testGrp = tab.addGroup("Order Plumbing Test (real Sim order, one-shot)");
+    testGrp.addRow(new BooleanDescriptor(FIRE_TEST_TRADE_KEY,
+        "Fire ONE test SELL 1 @ market + 10-tick SL/TP on next activate", false));
     createRD();
   }
 
@@ -381,6 +417,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   }
 
   private void onIntentChanged(Intent intent, Event triggeringEvent) {
+    recordEntrySignal(intent, triggeringEvent);
     OrderGateway gw = gateway;
     if (gw == null) {
       journal.writeDecision(triggeringEvent.seq(), Json.object()
@@ -391,6 +428,26 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       return;
     }
     journal.writeDecision(triggeringEvent.seq(), gw.reconcileDryRun(intent));
+  }
+
+  /**
+   * Only fires for intents the risk chain already ALLOWED (Pipeline only
+   * calls the IntentSink on allowed changes -- see its javadoc) -- with
+   * armed=false every attempt is blocked before it gets here, so this
+   * list stays empty until the session is actually armed. Only records
+   * entries (targetPosition != 0), not flattens, per the user's "at the
+   * entry price" request.
+   */
+  private void recordEntrySignal(Intent intent, Event triggeringEvent) {
+    if (intent.targetPosition() == 0) return;
+    PriceCodec codec = priceCodec;
+    Integer priceTicks = Event.priceOf(triggeringEvent);
+    if (codec == null || priceTicks == null) return;
+    entrySignals.add(new EntrySignal(triggeringEvent.eventTimeMs(), codec.fromTicks(priceTicks),
+        intent.targetPosition() > 0, intent.reason()));
+    synchronized (entrySignals) {
+      while (entrySignals.size() > MAX_ENTRY_SIGNALS) entrySignals.remove(0);
+    }
   }
 
   @Override
@@ -590,6 +647,26 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     if (getSettings().getBoolean(DRAW_BT_KEY)) redrawBigTradeFigures();
     if (getSettings().getBoolean(DRAW_LM_KEY)) redrawLiquidityMapFigures();
     if (getSettings().getBoolean(DRAW_MS_KEY)) redrawMarketStructureFigures();
+    if (getSettings().getBoolean(DRAW_ENTRY_KEY)) redrawEntrySignalFigures();
+  }
+
+  /**
+   * One arrow Marker per recorded entry signal (bounded list, see
+   * entrySignals' javadoc) -- up/green for long, down/red for short,
+   * positioned at the exact price the triggering event carried (D-59-era
+   * convention: a historical stamp, not a "current state" redraw).
+   */
+  private void redrawEntrySignalFigures() {
+    java.util.List<EntrySignal> snapshot;
+    synchronized (entrySignals) {
+      snapshot = new java.util.ArrayList<>(entrySignals);
+    }
+    for (EntrySignal sig : snapshot) {
+      Color color = sig.isLong() ? new Color(0, 200, 0) : new Color(220, 60, 60);
+      Marker marker = MarkerAdapter.arrow(sig.timeMs(), sig.price(), color, sig.isLong());
+      marker.setTextValue(sig.isLong() ? "B" : "S");
+      addFigure(marker);
+    }
   }
 
   /**
@@ -1049,6 +1126,33 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     } else {
       armDenied = false;
     }
+
+    maybeFireTestTrade(refuseReason);
+  }
+
+  /**
+   * See FIRE_TEST_TRADE_KEY's javadoc -- one real SELL 1 @ market, fired
+   * at most once per Study instance regardless of how many times this
+   * checkbox stays checked or onActivate re-runs. Skipped entirely if
+   * refuseToArmReason() found an existing position/order (same guard the
+   * main arm path uses, for the same reason: never act on state left
+   * over from something else).
+   */
+  private void maybeFireTestTrade(String refuseReason) {
+    boolean checkboxOn = getSettings().getBoolean(FIRE_TEST_TRADE_KEY);
+    logLine("TEST_TRADE_CHECK firedEver=" + testTradeFiredEver + " checkboxOn=" + checkboxOn
+        + " refuseReason=" + refuseReason);
+    if (testTradeFiredEver) return;
+    if (!checkboxOn) return;
+    if (refuseReason != null) {
+      logLine("TEST_TRADE_SKIPPED reason=" + refuseReason);
+      return;
+    }
+    testTradeFiredEver = true;
+    pendingTestBracket = true;
+    String line = gateway.submitRealEntry(false, 1,
+        "manual_one_shot_plumbing_test_2026-09-19_user_confirmed_sell_10tick_sltp");
+    logLine("TEST_TRADE_SUBMITTED " + line);
   }
 
   @Override
@@ -1107,6 +1211,19 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   @Override
   public void onOrderFilled(OrderContext ctx, Order order) {
     logLine("ORDER_FILLED " + order);
+    if (pendingTestBracket) {
+      pendingTestBracket = false;
+      OrderGateway gw = gateway;
+      float fillPrice = order.getAvgFillPrice();
+      float tick = (float) instrument.getTickSize();
+      // Entry was SELL, so the closing bracket side is BUY: stop above
+      // the fill (loss if price rises), target below it (profit if it falls).
+      float stopPrice = fillPrice + TEST_TRADE_SL_TP_TICKS * tick;
+      float targetPrice = fillPrice - TEST_TRADE_SL_TP_TICKS * tick;
+      String line = gw.submitRealBracket(true, order.getFilled(), stopPrice, targetPrice,
+          "manual_one_shot_plumbing_test_2026-09-19_bracket");
+      logLine("TEST_BRACKET_SUBMITTED " + line);
+    }
   }
 
   @Override

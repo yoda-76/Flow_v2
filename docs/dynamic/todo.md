@@ -7,14 +7,57 @@ date, and link the decision/finding it produced; don't delete it.
 
 ## Where we left off (2026-09-19, updated — read this first, assume no memory of the conversation that produced it)
 
-**Most recent (2026-09-19)**: market structure got its historical
-warm-start + chart drawing (D-64), and the user's own visual read of
-the resulting chart caught a real bug (D-65) — continuation
-confirmation was giving up after the first non-confirming candle
-instead of waiting for a later one, silently discarding pullbacks
-whose real confirming candle wasn't the immediate next bar. Fixed;
-live-verified the same 100-bar warm-start now produces 4 TJL
-formations instead of 1. Full detail in `decisions.md` D-64/D-65.
+**Most recent (2026-09-19)**: real order-submission code was built
+(D-66) and live-tested with the user's explicit in-the-moment
+confirmation (D-67) — a one-shot SELL 1 `GCZ6` market test order, 10-tick
+SL/TP. **Entry worked** (confirmed filled on the Sim account from the
+MotiveWave Account view directly). **Bracket attach didn't** — it's
+gated behind `onOrderFilled`, which never got called for that order,
+leaving the position naked until the user closed it manually. Suspected
+cause: entry was submitted via `ctx.sell(int)` (returns `void`, no
+`Order` handle), unlike every other order-creation method on
+`OrderContext`; fixed to go through `createMarketOrder()` +
+`submitOrders()` instead, same tracked family as the stop/target orders.
+**Untested — market was closed for the rest of the session.** Full
+detail, including the exact reasoning and what's still just a theory
+(not confirmed against SDK source), in `decisions.md` D-67.
+
+**Before the next trading session, needs to happen in this order:**
+1. Confirm the naked position from the last test is still flat (user
+   confirmed it was closed manually as of 2026-09-19 — re-verify at
+   session start regardless, don't assume it's still true).
+2. Decide whether to leave `FIRE_TEST_TRADE_KEY` checked (it will fire
+   automatically on the next activation — that's deliberate, see D-67)
+   or uncheck it first and re-check it deliberately right before
+   activating, matching CLAUDE.md's "immediately before submitting"
+   framing more literally.
+3. **What needs retesting, specifically**: does `onOrderFilled` fire now
+   for a `createMarketOrder()`-submitted entry? If yes — does the
+   bracket (`submitRealBracket`, stop via `createStopOrder` + target via
+   `createLimitOrder`) submit correctly, and do both legs show up
+   correctly in MotiveWave's Orders/Positions panels (right side, right
+   prices, OCO behavior when one leg fills)? If `onOrderFilled` *still*
+   doesn't fire even for a tracked order, the theory in D-67 is wrong
+   and this needs a different diagnosis — don't assume the fix worked
+   just because it compiles.
+4. Once retest passes end-to-end (entry + bracket both confirmed
+   correct): per the user's own instructions, (a) strip the whole
+   one-shot test-trade path out of `FlowRuntimeStudy`/`OrderGateway`
+   (it's throwaway plumbing, not a feature) and (b) update `CLAUDE.md`
+   to lower the per-order confirmation requirement specifically when Sim
+   Trade Only is confirmed enabled, so the automated strategy can run
+   unattended on Sim without a human confirming each entry — **not
+   before both (entry AND bracket) are confirmed working**, since a
+   policy change permitting unattended automatic trading shouldn't rest
+   on a test that only proved half the flow.
+
+Market structure got its historical warm-start + chart drawing (D-64),
+and the user's own visual read of the resulting chart caught a real bug
+(D-65) — continuation confirmation was giving up after the first
+non-confirming candle instead of waiting for a later one, silently
+discarding pullbacks whose real confirming candle wasn't the immediate
+next bar. Fixed; live-verified the same 100-bar warm-start now produces
+4 TJL formations instead of 1. Full detail in `decisions.md` D-64/D-65.
 Liquidity map's best-bid/ask bug (D-63) is still open, not resolved —
 see below.
 
@@ -1031,22 +1074,29 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   user's actual first-strategy design used absorption/aggression/sweep
   instead; imbalance stacking stays unbuilt until something needs it.
 
-## Strategy signals — chart drawing `[BUILD, NOT STARTED]`
+## Strategy signals — chart drawing `[DONE]`
 
-- [ ] **Draw the strategy's own order signals on the chart** (raised by
-  the user, 2026-09-19): an up arrow at the entry price for a long
-  entry, a down arrow at the entry price for a short entry —
-  `MarketStructureLvnReversalStrategy` (D-62) currently only journals
-  entries (`intent_changed`/`risk_verdict`/`reconcile_dry_run`), nothing
-  is drawn. Natural source: `FlowStrategy.onEvent()`'s returned
-  `Intent` when it changes to a non-zero `targetPosition` with reason
-  `lvn_entry...` — needs a way for `FlowRuntimeStudy` to observe that
-  (there's no existing "strategy drew a signal" hook; `IntentSink`
-  currently only reaches `OrderGateway`, not anything chart-drawing-
-  side) — likely reuses `Marker` + `MarkerAdapter` (D-59's reflection
-  helper) with `ARROW`/`Enums.MarkerType` variants for up/down, same
-  general pattern as `BigTradeFeature`'s circles (D-54) but keyed off
-  intent changes, not a feature's own event stream. Not started.
+- [x] **Draw the strategy's own order signals on the chart** (raised by
+  the user, 2026-09-19; built 2026-09-19): up arrow (green, "B") at the
+  entry price for a long entry, down arrow (red, "S") for a short entry.
+  `MarkerAdapter` (D-59's reflection helper) gained an `arrow()` factory
+  (`Enums.MarkerType.ARROW`, orientation via `Position.BOTTOM`/`TOP` —
+  unconfirmed visually yet which way it actually renders, flag to fix if
+  upside down). `FlowRuntimeStudy.onIntentChanged` now also calls
+  `recordEntrySignal()`, appending to a bounded (200) synchronized list
+  read back by the new `redrawEntrySignalFigures()`, dispatched from
+  `redrawFigures()` behind a new `FLOW_DRAW_ENTRY_SIGNALS` setting
+  (default on). **Important semantic**: `onIntentChanged` (the
+  `IntentSink`) is only ever called by `Pipeline` for intents the risk
+  chain already ALLOWED — with `armed=false` (the default) every intent
+  is blocked before it gets here, so this list stays empty and no
+  arrows draw until the session is armed. This matches the "order
+  signals" framing of the original request (signals that became real
+  accept-track intents), not "everything the strategy considered,
+  blocked or not." Compiled, safety reflection test still passes,
+  redeployed. Not yet visually confirmed on a live chart (needs an
+  armed session to produce any arrows at all — see the armed/order-
+  placement discussion, 2026-09-19).
 
 ## Open bug, not resolved `[BUG]`
 

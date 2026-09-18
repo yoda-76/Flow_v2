@@ -2,18 +2,24 @@ package com.flow.rt;
 
 import com.flow.core.Intent;
 import com.flow.journal.Json;
+import com.motivewave.platform.sdk.order_mgmt.Order;
 import com.motivewave.platform.sdk.order_mgmt.OrderContext;
 
 /**
  * The sole holder of an OrderContext (README hard rule) -- package-private,
- * constructed by FlowRuntimeStudy, never handed anywhere else. Dry-run
- * only for now (D-14): reconcile() only ever reads the current position
- * and journals what it would do. There is no order-submission code path
- * in this class at all yet -- not gated by an if(armed), simply absent --
- * because Q-02 (OrderContext write-call thread affinity/flush point) is
- * still open and submission code doesn't get written until that's
- * resolved and the user explicitly asks for it in the moment, per
- * CLAUDE.md's hard rule.
+ * constructed by FlowRuntimeStudy, never handed anywhere else.
+ *
+ * reconcileDryRun() (D-14) remains the only method the automatic intent
+ * pipeline ever calls -- it only reads the current position and journals
+ * what it would do, never places anything. submitRealEntry()/
+ * submitRealBracket() (2026-09-19) are real, callable order-submission
+ * code, but have zero callers anywhere in this codebase: no automatic
+ * path invokes them. Per CLAUDE.md's hard rule, the first call site gets
+ * wired in deliberately, in the same turn as an explicit, in-the-moment
+ * confirmation of exactly what will be submitted -- not as a standing
+ * effect of arming the strategy. Q-02(b) (OrderContext write-call thread
+ * affinity) is still genuinely untested; these methods have never been
+ * exercised against the live SDK.
  */
 final class OrderGateway {
   private final OrderContext ctx;
@@ -45,11 +51,10 @@ final class OrderGateway {
    * Diffs the strategy's desired position against the account's actual
    * position and returns a journal line describing what would happen,
    * including the bracket (stop/target) that would accompany a real
-   * entry (Q-06's "sizing and brackets," dry-run reporting only -- no
-   * bracket order is ever constructed or submitted, same as the
-   * position side). Never calls buy/sell/createXOrder/submitOrders/
-   * cancelOrders/closeAtMarket -- those methods are not called anywhere
-   * in this class.
+   * entry (Q-06's "sizing and brackets"). This method itself never calls
+   * anything order-submitting -- reporting only. submitRealEntry()/
+   * submitRealBracket() below do the real thing, but nothing routes an
+   * automatic intent to them (see the class javadoc).
    */
   String reconcileDryRun(Intent intent) {
     int currentPosition = ctx.getPosition();
@@ -66,6 +71,69 @@ final class OrderGateway {
         .fieldOrNull("wouldSetStopPriceTicks", intent.stopPriceTicks())
         .fieldOrNull("wouldSetTargetPriceTicks", intent.targetPriceTicks())
         .field("reason", intent.reason())
+        .build();
+  }
+
+  // ------------------------------------------------------------------
+  // Real order submission (2026-09-19). Written, but deliberately NOT
+  // called from anywhere in the automatic intent/pipeline path -- no
+  // caller exists yet. CLAUDE.md's hard rule requires the exact
+  // account/instrument/side/quantity/order-type stated and one last
+  // explicit confirmation *immediately before* submitting, which an
+  // automatic per-tick strategy loop cannot satisfy on its own once
+  // wired in. The first real call site gets added deliberately, in the
+  // same conversation turn as that final confirmation -- not before.
+  // ------------------------------------------------------------------
+
+  /**
+   * D-67: goes through createMarketOrder()+submitOrders(), NOT
+   * ctx.buy(int)/sell(int) -- the live 2026-09-19 test used the buy/sell
+   * shortcuts, the entry filled correctly on the account/broker side, but
+   * onOrderFilled was never called back for it (confirmed: session logs
+   * show no ORDER_FILLED line despite 3+ minutes of continued healthy
+   * heartbeats after the fill). buy()/sell() return void, giving the
+   * strategy no Order reference at all -- suspected (not yet confirmed
+   * against SDK source, which isn't available) to mean the platform never
+   * links a later fill callback back to an order submitted this way.
+   * createMarketOrder() returns a real Order, same family as the stop/
+   * target orders below, submitted the same way -- untested as of this
+   * writing, first thing to verify next session.
+   */
+  String submitRealEntry(boolean isBuy, int qty, String reason) {
+    int positionBefore = ctx.getPosition();
+    Order entry = OrderAdapter.marketOrder(ctx, isBuy, qty);
+    ctx.submitOrders(entry);
+    return Json.object()
+        .field("type", "real_order_submitted")
+        .field("orderType", "MARKET")
+        .field("instrument", ctx.getInstrument().getSymbol())
+        .field("side", isBuy ? "BUY" : "SELL")
+        .field("qty", qty)
+        .field("positionBefore", positionBefore)
+        .field("cashBalance", ctx.getCashBalance())
+        .field("reason", reason)
+        .build();
+  }
+
+  /**
+   * Stop + target bracket for an already-filled entry -- call only from
+   * onOrderFilled (confirmed fill), never speculatively ahead of one, so
+   * a rejected/partial entry never leaves an orphaned bracket sized for
+   * a position that doesn't exist. isBuy here is the CLOSING side
+   * (opposite of the entry: SELL-side bracket closes a long).
+   */
+  String submitRealBracket(boolean closingIsBuy, int qty, float stopPrice, float targetPrice, String reason) {
+    Order stop = OrderAdapter.stopOrder(ctx, closingIsBuy, qty, stopPrice);
+    Order target = OrderAdapter.limitOrder(ctx, closingIsBuy, qty, targetPrice);
+    ctx.submitOrders(stop, target);
+    return Json.object()
+        .field("type", "real_bracket_submitted")
+        .field("instrument", ctx.getInstrument().getSymbol())
+        .field("closingSide", closingIsBuy ? "BUY" : "SELL")
+        .field("qty", qty)
+        .field("stopPrice", stopPrice)
+        .field("targetPrice", targetPrice)
+        .field("reason", reason)
         .build();
   }
 }

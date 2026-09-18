@@ -33,8 +33,11 @@ final class MarkerAdapter {
   private static final Class<?> SIZE_CLS;
   private static final Class<?> POSITION_CLS;
   private static final Object CIRCLE;
+  private static final Object ARROW;
   private static final Object MEDIUM;
   private static final Object CENTER;
+  private static final Object TOP;
+  private static final Object BOTTOM;
   private static final Constructor<?> MARKER_CTOR;
 
   @SuppressWarnings({"unchecked", "rawtypes"})
@@ -48,8 +51,11 @@ final class MarkerAdapter {
       SIZE_CLS = Class.forName("com.motivewave.platform.sdk.common.Enums$Size");
       POSITION_CLS = Class.forName("com.motivewave.platform.sdk.common.Enums$Position");
       CIRCLE = enumConst(MARKER_TYPE_CLS, "CIRCLE");
+      ARROW = enumConst(MARKER_TYPE_CLS, "ARROW");
       MEDIUM = enumConst(SIZE_CLS, "MEDIUM");
       CENTER = enumConst(POSITION_CLS, "CENTER");
+      TOP = enumConst(POSITION_CLS, "TOP");
+      BOTTOM = enumConst(POSITION_CLS, "BOTTOM");
       MARKER_CTOR = Marker.class.getConstructor(
           Coordinate.class, MARKER_TYPE_CLS, SIZE_CLS, POSITION_CLS, Color.class, Color.class);
     } catch (ReflectiveOperationException e) {
@@ -64,6 +70,25 @@ final class MarkerAdapter {
       return (Marker) MARKER_CTOR.newInstance(new Coordinate(timeMs, price), CIRCLE, MEDIUM, CENTER, color, color);
     } catch (ReflectiveOperationException e) {
       throw new RuntimeException("failed to construct circle Marker", e);
+    }
+  }
+
+  /**
+   * ARROW MarkerType is one of the types isSupportsOrientation() reports
+   * true for -- orientation comes from Position, not a separate
+   * rotation/direction param (there isn't one on the Marker ctor).
+   * pointingUp=true (long entry) uses BOTTOM (arrow sits under the price,
+   * pointing up into it -- the conventional "buy" glyph); false (short
+   * entry) uses TOP (sits above, pointing down -- "sell"). Unconfirmed
+   * against the live chart yet; matches the standard buy/sell arrow
+   * convention, flag to revisit if it renders upside down.
+   */
+  static Marker arrow(long timeMs, double price, Color color, boolean pointingUp) {
+    try {
+      Object position = pointingUp ? BOTTOM : TOP;
+      return (Marker) MARKER_CTOR.newInstance(new Coordinate(timeMs, price), ARROW, MEDIUM, position, color, color);
+    } catch (ReflectiveOperationException e) {
+      throw new RuntimeException("failed to construct arrow Marker", e);
     }
   }
 }

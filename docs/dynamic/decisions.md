@@ -2383,6 +2383,112 @@ readable rather than being silently rewritten.
   pullbacks were genuinely being lost before, not just a theoretical
   concern.
 
+- **D-66** (2026-09-19) — **Entry-signal arrows + real order-submission
+  code, built at the user's explicit request; the two land very
+  differently on the risk spectrum.**
+
+  Arrows: `MarkerAdapter` gained an `arrow()` factory (`Enums.MarkerType.ARROW`,
+  same reflection pattern as `circle()` — `Enums.MarkerType`/`Size`/`Position`
+  don't resolve as source-level types against this jar, confirmed again).
+  `FlowRuntimeStudy.onIntentChanged` now also calls `recordEntrySignal()`,
+  appending to a bounded (200) list drawn by `redrawEntrySignalFigures()`
+  behind a new `FLOW_DRAW_ENTRY_SIGNALS` setting. Only fires for intents
+  the risk chain already **allowed** — with `armed=false` (default) the
+  list stays empty, matching "order signals," not "everything considered."
+
+  Real order submission: `OrderAdapter` (new file) extends the same
+  reflection pattern to `Enums.OrderAction`/`TIF` (also fail to resolve
+  at source level, confirmed the same way), giving `OrderGateway` two new
+  methods — `submitRealEntry()` (market entry via the SDK's direct
+  `buy(int)`/`sell(int)`, no reflection needed for those two) and
+  `submitRealBracket()` (stop + target via `createStopOrder`/
+  `createLimitOrder` + `submitOrders`, meant to be called only from
+  `onOrderFilled` once a real fill is confirmed, never speculatively
+  ahead of one).
+
+  **Deliberately not wired to anything.** Neither method has a caller
+  anywhere in this codebase — `onIntentChanged` still only calls
+  `reconcileDryRun()`. Reasoning: `CLAUDE.md`'s hard rule requires exact
+  account/instrument/side/quantity/order-type stated and one last
+  explicit confirmation *immediately before* submitting, which a
+  per-tick automatic strategy loop cannot satisfy once wired into its
+  normal path — "arm it and let it trade" is a structurally different
+  request than "place this one order now," and the rule is written
+  around the latter. The first real call site gets added deliberately,
+  in the same turn as that specific confirmation, not as a side effect
+  of arming. Q-02(b) (`OrderContext` write-call thread affinity) is
+  still genuinely untested — these methods compile clean and pass the
+  safety-hook reflection test but have never been exercised against the
+  live SDK.
+
+- **D-67** (2026-09-19) — **First live one-shot real-order test: entry
+  worked, bracket-attach didn't. Root cause suspected, fix applied,
+  needs retest next session before this is trusted.**
+
+  **What happened, in order.** With the user's explicit in-the-moment
+  confirmation (Sim account, `@GC`/`GCZ6`, SELL 1, market entry, 10-tick
+  SL/TP), a one-shot test-trade path was wired into `onActivate`
+  (`FIRE_TEST_TRADE_KEY`, off by default, guarded so it can never fire
+  twice per Study instance). On activation it correctly submitted a real
+  SELL 1 market order via `OrderContext.sell(int)`. The order filled on
+  the account/broker side — **confirmed directly from the MotiveWave
+  Account view**: `simulated` account, `GCZ6`/COMEX, filled 1 @ 4416.1,
+  Total P/L moved to -150.00. So `submitRealEntry()`'s actual submission
+  mechanism works: this is a real fill on a real (Sim) account, not a
+  journal artifact.
+
+  **What didn't happen: `onOrderFilled` was never called.** The bracket
+  (stop/target) is submitted from `onOrderFilled`, gated behind a
+  `pendingTestBracket` flag set right after `submitRealEntry()`. Checked
+  the session's `decisions.jsonl` directly: no `ORDER_FILLED` line
+  anywhere, despite the session staying alive and healthy (continuous
+  heartbeats) for 3+ minutes after the confirmed fill — ruling out a
+  crash or a stuck/dead instance. Cross-checked an unrelated older
+  session's log and found one genuine `ORDER_FILLED` entry there,
+  confirming the hook *can* fire correctly on this Study class in
+  general (that one is presumed to be from an order placed manually
+  through MotiveWave's own trade panel, not this codebase). So the gap
+  is specific to how this particular order was submitted, not the hook
+  mechanism itself. **Consequence at the time**: the position sat open
+  and completely unprotected (no stop, no target — confirmed from the
+  Orders panel showing Active (0)) until the user closed it manually.
+
+  **Working theory (unconfirmed — SDK is closed-source, no way to check
+  directly).** `OrderContext.buy(int)`/`sell(int)` return `void` — no
+  `Order` reference is ever handed back to the strategy. Every other
+  order-creation method on `OrderContext` (`createMarketOrder`,
+  `createStopOrder`, `createLimitOrder`) returns an `Order`, meant to be
+  passed to `submitOrders(Order...)`. Hypothesis: `buy`/`sell` are
+  "quick action" convenience methods (plausibly intended for
+  discretionary/manual panel use) that don't register the resulting
+  order in whatever internal table the platform uses to attribute a
+  later fill callback back to a specific `Study` instance — without an
+  `Order` object, there's no handle for that bookkeeping. This is
+  inference from one data point, not a confirmed platform finding;
+  flagging the uncertainty explicitly rather than overclaiming it.
+
+  **Fix applied** (untested — market was closed for the rest of this
+  session): `OrderAdapter` gained `marketOrder(ctx, isBuy, qty)`
+  (`createMarketOrder(Enums.OrderAction, int)` via the same reflection
+  pattern already used for the stop/limit orders). `submitRealEntry()`
+  now does `ctx.submitOrders(OrderAdapter.marketOrder(...))` instead of
+  `ctx.buy(int)`/`sell(int)` — same tracked-order family as the bracket,
+  for every order type now.
+
+  **State left for next session**: naked position closed manually by
+  the user, confirmed flat. The one-shot test-trade checkbox
+  (`FIRE_TEST_TRADE_KEY`) is still checked in settings and
+  `testTradeFiredEver` is a per-instance latch — a fresh Study reload
+  next session will have that latch reset, so **the test will fire
+  again automatically the moment the study reactivates**, unless the
+  checkbox is unchecked first. Deliberate: this is what lets the retest
+  happen without another round of code changes, but means walking up to
+  next session's chart with that box still checked is itself the
+  "immediately before submitting" confirmation being exercised again,
+  same as the first time — not a standing authorization to leave it be
+  indefinitely. Strip the whole test-trade path out once this is
+  confirmed working (per the user's own instruction), not before.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
