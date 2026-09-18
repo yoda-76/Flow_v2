@@ -89,7 +89,7 @@ public final class TriggerEvaluatorTest {
    */
   private static void testZoneEnterLeaveDebounce() {
     FakeFeature f = new FakeFeature();
-    ZoneView z1 = new ZoneView("z1", ZoneView.Kind.LVN, 10, 12); // width = 3
+    ZoneView z1 = new ZoneView("z1", ZoneView.Kind.LVN, 10, 12, 0); // width = 3
     f.zones = List.of(z1);
     TriggerEvaluator ev = new TriggerEvaluator(Map.of("vp", f));
     Trigger.ZoneTransition enter = new Trigger.ZoneTransition("vp", ZoneView.Kind.LVN, Trigger.ZoneTransition.TransitionKind.ENTER);
@@ -139,8 +139,8 @@ public final class TriggerEvaluatorTest {
 
   private static void testZoneJumpAndTouch() {
     FakeFeature f = new FakeFeature();
-    ZoneView z1 = new ZoneView("z1", ZoneView.Kind.HVN, 10, 12);
-    ZoneView z2 = new ZoneView("z2", ZoneView.Kind.HVN, 20, 22);
+    ZoneView z1 = new ZoneView("z1", ZoneView.Kind.HVN, 10, 12, 0);
+    ZoneView z2 = new ZoneView("z2", ZoneView.Kind.HVN, 20, 22, 0);
     f.zones = List.of(z1);
     TriggerEvaluator ev = new TriggerEvaluator(Map.of("vp", f));
     Trigger.ZoneTransition enter = new Trigger.ZoneTransition("vp", ZoneView.Kind.HVN, Trigger.ZoneTransition.TransitionKind.ENTER);

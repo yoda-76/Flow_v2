@@ -1303,6 +1303,187 @@ readable rather than being silently rewritten.
   needed to add the capture points didn't change any of its behavior),
   replay-equivalence regression still passes.
 
+  **D-47 and D-48 both live-verified 2026-09-18**: ran `level_zone_observer`
+  on `@GC`, 9,943 ticks processed, 876 `level_trace` + 2,194 `zone_trace`
+  fired, zero exceptions. Confirmed correct: a `TOUCH` shows
+  `levelPriceTicks`/`levelPriceDecimal` exactly matching
+  `priceTicks`/`priceDecimal` (right, since touching means price equals
+  the level); a 1-tick-wide zone (`rangeTicks=1`) shows
+  `zoneLowTicks`==`zoneHighTicks`, as it should. Both decisions are now
+  genuinely proven, not just compiled and unit-tested.
+
+- **D-49** (2026-09-18) — **Zone age (time since a zone's id was first
+  assigned) added to `ZoneView` and `zone_trace`.** Cost measured, not
+  guessed, before building: added `firstSeenAtMs` to `ZoneView` (event
+  time, not wall clock — set once when D-38's matching assigns a brand
+  new id, never touched again while that id persists across recomputes)
+  and `zoneAgeMs` to `zone_trace` (`event time - firstSeenAtMs`).
+  Deliberately scoped to zones only, not `level_trace` — POC/VAH/VAL are
+  recomputed values with no persistent id, so "age since first appeared"
+  isn't a coherent concept for them the way it is for a zone.
+
+  **Cost, measured against the same real ~2.6-hour session used for the
+  D-48 estimate**: `zone_trace` lines grew ~259→278 bytes (~7%) with the
+  new field. Scaled to that session's real firing rate (~1058
+  `zone_trace`/hour), that's roughly **+20 KB/hour**, pushing the
+  combined trace total to **~330 KB/hour** (up from D-48's ~310 KB/hour
+  estimate). The tracking map itself (`zoneFirstSeenAtMs`, one entry per
+  zone id ever created this session, never pruned) costs roughly 100
+  bytes/entry; even a few hundred zone ids over a multi-hour session is
+  a few tens of KB — not measured precisely (the journal doesn't carry
+  zone ids, only kind/low/high/age, so exact id-count isn't directly
+  recoverable from it), but clearly negligible by an order of magnitude
+  regardless. No pruning added — ids reset with the session anyway
+  (D-29's boundary), and even an unpruned map never gets large enough
+  within one session to matter.
+
+  Full rebuild clean (both test gates pass), replay-equivalence
+  regression still passes. Not yet live-verified.
+
+- **D-50** (2026-09-18) — **Major sequencing redirect, plus footprint
+  built (first of the newly-ordered construct list).** Not yet
+  live-verified.
+
+  **The redirect, stated by the user directly**: stop per-zone
+  refinement (D-39's ranking, the HVN/LVN density question) and build
+  the remaining core constructs first — footprint, big trades, VWAP,
+  market structure, liquidity map, in that rough order (footprint
+  confirmed first; big trades and VWAP added to the list after it;
+  market structure and liquidity map's relative order was already set
+  earlier the same day). Once all exist, wire **one simple strategy that
+  uses all of them and places real orders** (Sim account) to prove the
+  full pipeline end-to-end. **Only after that is working does
+  optimization of individual parts begin.** This supersedes D-39's
+  pause-in-place with an explicit "build breadth first" plan — D-39
+  itself is not reopened, just deferred further behind more constructs
+  than originally expected.
+
+  **Footprint (`FootprintView`/`SdkFootprintFeature`)**: bar-scoped
+  instead of session-scoped use of the same SDK `VolumeProfile` engine
+  (D-36) — reset at every bar close rather than living for the whole
+  session, which means it needs none of `VolumeProfileView`'s E-3
+  rotation-fix machinery at all: a bar is short-lived by nature, so the
+  underlying SDK object never lives long enough to approach the growth
+  rate E-3 measured on a session-length profile. D-37's partial-bar rule
+  applies directly: the bar already in progress when the feature
+  attaches is discarded at its own close (never published as
+  `lastClosed()`, not backfilled) — `isReady()` flips true only once a
+  bar has been tracked from its own open through its own close.
+
+  **Deliberately no imbalance flag on `FootprintRow`** — just raw
+  `askVolume`/`bidVolume`/`delta` per row. The SDK's
+  `isBidImbalance(per, delta, useDelta)` needs a threshold choice, and
+  picking one now would be exactly the kind of per-construct judgment
+  call this same redirect asked to defer. A consumer can define
+  imbalance however it ends up getting decided later, off the raw
+  numbers already exposed.
+
+  Own settings-panel row (`Footprint Row Width`, ticks, default 1) —
+  independent of `VolumeProfileView`'s own row-width setting, since
+  footprint and session-level volume profile can legitimately want
+  different granularity.
+
+  Full rebuild clean (both test gates pass), replay-equivalence
+  regression still passes. Not yet live-verified.
+
+- **D-51** (2026-09-18) — **Per-construct draw flags, plus an honest
+  architecture fix the user's question exposed rather than papering
+  over.** Not yet live-verified.
+
+  **The question asked**: how much separation of concerns actually
+  exists between constructs, enough that a per-construct draw toggle can
+  be added cleanly. **The honest answer at the time**: not much —
+  `redrawFigures()` was one method that read `SdkVolumeProfileFeature`
+  directly by name, with no separation a second construct's drawing
+  could slot into without extending that same method. Fixed as part of
+  this change, not left as a known gap: `redrawFigures()` is now a thin
+  dispatcher — `clearFigures()` once, then one `if (drawFlag)
+  redrawXFigures()` line per construct — and each construct's drawing
+  lives in its own method (`redrawVolumeProfileFigures()`,
+  `redrawFootprintFigures()`). A future construct's drawing method never
+  has to know or care whether any other construct is currently shown.
+  Deliberately not more than this — no `Drawable` interface, no
+  registry, no plugin mechanism. The user was explicit: not asking for
+  "extremely scalable," just enough that this exact nuance (and the next
+  few like it) don't require a rewrite. A real interface/registry is the
+  natural next step **only if** a third or fourth construct's drawing
+  needs turn out to want something the flag+dispatcher pattern can't
+  express — not speculatively built now.
+
+  **`FootprintView` tightened in the same pass**: was three parallel
+  accessors (`current()`/`currentTotalVolume()`/`currentTotalDelta()`,
+  duplicated again for `lastClosed`) — now one `BarFootprint` record
+  (`startMs`, `endMs`, `rows`, `totalVolume`, `totalDelta`) per bar. Not
+  scope creep for its own sake: drawing footprint "directly over the
+  candles" needs the bar's own time range to position labels correctly,
+  which the old three-accessor shape didn't carry at all — the
+  separation-of-concerns question and this fix are the same fix, not two
+  separate ones.
+
+  **Draw flags**: `Volume Profile > Draw on Chart` (default **false** —
+  stopped per direct instruction) and `Footprint > Draw on Chart`
+  (default **true**). A construct is always calculated and journaled
+  regardless of its draw flag — the flag only controls
+  `redrawFigures()`, nothing upstream of it. `SdkFootprintFeature` grew
+  the same volatile-snapshot pattern `SdkVolumeProfileFeature` already
+  has (`FootprintSnapshot`) for the same reason: drawing runs on a
+  MotiveWave-invoked callback thread, not the drain thread that owns the
+  feature's mutable state.
+
+  **Footprint drawn directly over candles**: one `Label` per row, at
+  (`bar's own time midpoint`, `row's decimal price`) — not "now" or
+  session start, unlike the volume-profile lines, so it visually lines
+  up with that bar's own candle. Text is `bid×ask`, colored green/red by
+  which side dominates that row, gray if roughly equal. **Scope
+  limitation, stated plainly**: only the current (forming) and last
+  closed bar are drawn — `FootprintView` doesn't keep a longer history
+  than that (its existing, deliberate v1 scope), so there is nothing
+  further back to draw yet. Drawing footprint across many historical
+  bars, the way the built-in study or the earlier VP screenshots showed,
+  would need `FootprintView` extended to a rolling bar history first —
+  not attempted here, flagged rather than silently limited.
+
+  Full rebuild clean (both test gates pass), replay-equivalence
+  regression still passes. Not yet live-verified.
+
+- **D-52** (2026-09-18) — **Footprint row merging is draw-time only,
+  never stored.** Not yet live-verified.
+
+  Per the user's explicit instruction: the raw per-tick footprint rows
+  stay exactly as `FootprintView` computes them — "the more granular the
+  data the better" for later analysis — nothing about `FootprintRow`,
+  `BarFootprint`, or `SdkFootprintFeature` changed. A new
+  draw-time-only setting (`Footprint > Draw: Merge N Rows`, default 1 =
+  no merging) controls how many raw rows `FlowRuntimeStudy` groups
+  together *only inside `drawFootprintBar()`*, purely for a "bird's eye
+  view" at runtime.
+
+  Gridded by price, not by row count: `bucketLow = floor(priceTicks /
+  (rawRangeTicks × mergeRows)) × (rawRangeTicks × mergeRows)`. Chosen
+  over grouping by row index/position specifically because footprint
+  rows can have gaps (no row at all where nothing traded) — a
+  position-based grouping would silently shift which prices land
+  together depending on which rows happen to exist; the price grid
+  doesn't, a tick that never traded still correctly contributes zero to
+  its bucket. Matches the user's own worked example exactly: three
+  1-tick rows `0×1`, `1×3`, `4×0` → one merged `5×4` (bid sum, ask sum).
+
+  A merged bucket (`mergeRows > 1`) draws as a genuine zone — a `Box`
+  spanning its low/high price, same visual pattern as the LVN/HVN zones
+  — not a single-point label, since it now legitimately covers a price
+  range. `mergeRows=1` collapses to one bucket per raw row, so there's
+  exactly one drawing code path regardless of the setting, not a special
+  case for "no merging."
+
+  **Explicitly out of scope, per the user's own framing**: if similar
+  merging/downsampling is wanted for offline analysis/backtesting later,
+  that belongs in the analysis/backtest script itself, not in
+  `FootprintView` or any core data structure. Nothing here anticipates
+  or builds toward that.
+
+  Full rebuild clean (both test gates pass), replay-equivalence
+  regression still passes. Not yet live-verified.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

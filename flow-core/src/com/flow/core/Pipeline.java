@@ -1,6 +1,7 @@
 package com.flow.core;
 
 import com.flow.flow.LevelSource;
+import com.flow.flow.ZoneView;
 import com.flow.journal.Json;
 import com.flow.journal.JournalWriter;
 
@@ -202,11 +203,16 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           .build();
     }
     if (t instanceof Trigger.ZoneTransition zt) {
-      int[] range = triggers.lastFiredZoneRange(t);
-      Integer zoneLow = range != null ? range[0] : null;
-      Integer zoneHigh = range != null ? range[1] : null;
+      ZoneView zone = triggers.lastFiredZone(t);
+      Integer zoneLow = zone != null ? zone.lowPriceTicks() : null;
+      Integer zoneHigh = zone != null ? zone.highPriceTicks() : null;
       Double zoneLowDecimal = (zoneLow != null && priceDecoder != null) ? priceDecoder.applyAsDouble(zoneLow) : null;
       Double zoneHighDecimal = (zoneHigh != null && priceDecoder != null) ? priceDecoder.applyAsDouble(zoneHigh) : null;
+      // Age from the zone's own id-creation time (D-38's persistent id),
+      // not from this trace record -- a zone re-entered later still
+      // reports how long it has existed in total, not how long since the
+      // last time it was touched.
+      Long zoneAgeMs = zone != null ? e.eventTimeMs() - zone.firstSeenAtMs() : null;
       return Json.object()
           .field("type", "zone_trace")
           .field("seq", e.seq())
@@ -219,6 +225,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           .fieldOrNull("zoneHighTicks", zoneHigh)
           .fieldOrNull("zoneLowDecimal", zoneLowDecimal)
           .fieldOrNull("zoneHighDecimal", zoneHighDecimal)
+          .fieldOrNull("zoneAgeMs", zoneAgeMs)
           .fieldOrNull("relativeRow", relativeRow)
           .build();
     }

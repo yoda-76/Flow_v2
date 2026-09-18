@@ -5,65 +5,101 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
-## Where we left off (2026-09-17, updated — read this first, assume no memory of the conversation that produced it)
+## Where we left off (2026-09-18, updated — read this first, assume no memory of the conversation that produced it)
 
 **Built, deployed, and live-verified against real `@GC` ticks**: walking
-skeleton (D-41: sequencer, two-tier journal, `NullStrategy`, all 15
-`OrderContext` safety hooks reflection-tested), replay harness (D-42:
-`ReplayHarness`/`ReplayEquivalenceTest`, PASS on the D-41 session),
-`VolumeProfileView` (D-44: SDK engine wrapped with the E-3 rotation fix,
-drawn POC/VAH/VAL matched the built-in study — VAH exact, VAL within 2
-ticks), D-38's `NamedLevel`/`NamedZone` triggers (D-45: `LevelCross`/
-`ZoneTransition`, found and fixed a real pre-existing bug in `Pipeline`'s
-trigger loop along the way), and `LevelZoneObserverStrategy` + the price
-trace (D-46: 96 `level_trace` + 220 `zone_trace` records fired correctly,
-zero exceptions).
+skeleton (D-41), replay harness (D-42), `VolumeProfileView` (D-44, drawn
+POC/VAH/VAL matched the built-in study), D-38's `NamedLevel`/`NamedZone`
+triggers (D-45), `LevelZoneObserverStrategy` + the price trace (D-46),
+POC-relative row numbering on labels/trace (D-47), and the trace's
+level/zone-identity fields — `levelPriceTicks`, `zoneLowTicks`/
+`zoneHighTicks` + decimals (D-48). All of D-41 through D-48 are now
+confirmed working against real ticks, not just compiled.
 
-**Built and deployed, NOT yet live-verified**: D-47 — POC-relative row
-numbering (POC=`0`, `+`/`-` rows scaled by distance, a zone overlapping
-VAH/VAL forced to that level's exact number) on chart labels and in the
-price trace (`relativeRow`/`priceDecimal` fields added to
-`level_trace`/`zone_trace`). D-48 — the trace now also carries the
-level's own value (`levelPriceTicks`/`levelPriceDecimal`, distinct from
-current price) on `level_trace`, and a zone's own low/high
-(`zoneLowTicks`/`zoneHighTicks` + decimals) on `zone_trace`, per the
-user's explicit request. Both built same day, full rebuild and replay
-regression clean for both — needs the study removed and re-added once to
-confirm either live, never watched running against real ticks since.
+**Built and deployed, NOT yet live-verified**: D-49 — zone age
+(`ZoneView.firstSeenAtMs`, `zone_trace`'s new `zoneAgeMs` field). Cost
+was measured before building (not guessed): roughly +20 KB/hour on top
+of D-48's ~310 KB/hour trace estimate, negligible memory for the
+tracking map itself. D-50 — footprint (`FootprintView`/
+`SdkFootprintFeature`), bar-scoped use of the same SDK engine, no
+rotation-fix needed (bars are naturally short-lived), D-37's
+partial-bar-discard rule applied, logs to
+`FLOW_V2/logs/footprint_feature.log` for validation. D-51 — per-construct
+draw flags (`DRAW_VP_KEY` default false, `DRAW_FP_KEY` default true) and
+a `redrawFigures()` dispatcher split into `redrawVolumeProfileFigures()`/
+`redrawFootprintFigures()`, plus `FootprintView` tightened to a single
+`BarFootprint` record (drawing needs the bar's own time range, the
+earlier 3-parallel-accessor design didn't carry that). D-52 —
+footprint row merging for drawing only (`FP_MERGE_ROWS_KEY` setting,
+default 1): raw stored footprint data is never touched, only the
+drawn boxes/labels merge N adjacent price rows by grid bucket
+(`Math.floorDiv`-based, not row-index/count-based, so gaps in the raw
+rows don't skew the merge — verified against the user's own worked
+example `0×1, 1×3, 4×0 → 5×4`). D-49 through D-52 all pass full rebuild
+(`build/build.sh`, both test gates) + replay regression
+(`build/replay_check.sh`) clean. **D-50/D-51/D-52 (footprint,
+draw-flag dispatcher, row merging) are now live-verified** — user
+tested 2026-09-18, confirmed working. **D-49 (zone age) is still
+NOT live-verified** — built and regression-clean only.
+
+**New todo raised after live-testing (2026-09-18)**: footprint drawing
+should show delta *magnitude* via color (currently just sign —
+green/red/gray flat colors), not yet designed. See section 4's
+footprint items below.
 
 **Open observation, action deferred, not a bug report**: HVN/LVN
-classification may be too dense (see the todo item a few lines below
-this one for the full writeup) — but the screenshot comparison that
-surfaced it wasn't apples-to-apples (ours was `rangeTicks=1`, the manual
-comparison was a 4-tick VP), so the real next step there is rerunning the
-comparison at matched granularity before concluding anything, not tuning
-blind.
+classification may be too dense — a screenshot comparison suggested it,
+but wasn't apples-to-apples (ours was `rangeTicks=1`, the manual
+comparison was a 4-tick VP), so the real next step is rerunning the
+comparison at matched granularity before concluding anything. See the
+todo item below for the full writeup.
 
-**D-39 (LVN/HVN reversal ranking) was about to start and was deliberately
-NOT started.** The user's own call, stated directly: further building
-from this point means making ranking-model decisions (Layer 1 factor
-weights, whether/how to scope "confluence" given its dependency features
-don't exist yet, the Bayesian blend's prior-weight constant) that get
-harder to reverse once anything downstream depends on them, and D-39 is
-exactly that kind of decision — better to stop at a clean, validated
-boundary than lock in a ranking model on guesses. This was a deliberate
-pause, not a blocker or an unfinished task.
+**D-39 (LVN/HVN reversal ranking) remains deliberately paused** — the
+user's call: locking in ranking-model decisions (Layer 1 weights,
+confluence scope, the Bayesian prior-weight constant) gets harder to
+reverse once anything depends on them, better to wait.
 
-**When resuming, in order of what's cheapest to close first:**
-1. Live-verify D-47/D-48 together (remove/re-add the study once, confirm
-   the chart labels and all the new trace fields — `relativeRow`,
-   `priceDecimal`, `levelPriceTicks`/`levelPriceDecimal`,
-   `zoneLowTicks`/`zoneHighTicks` + decimals — look right).
-2. Rerun the HVN/LVN density comparison with our `rangeTicks` set to 4
-   (matching the manual comparison), before deciding whether the
-   classifier actually needs tuning.
-3. Resume D-39 — two open sub-decisions were on the table when this
-   session stopped, neither answered yet: (a) build Layer 1 now without
-   a working confluence factor (returns neutral until swing
-   points/big-trades/session-levels exist), or pause D-39 to build those
-   dependencies first; (b) pick a default Bayesian prior-weight constant
-   now (e.g. ~3 "virtual touches") vs. the user specifying one. Don't
-   assume either answer — ask again if picking this back up.
+**Historical retention — design captured, NOT started.** 2026-09-18 the
+user laid out a full retention plan (price trace last 5 days, VP
+daily+session snapshots, footprint last week at a configurable bar
+interval, big trades time series, VWAP stored accurately, market
+structure NOT stored, liquidity map format undecided) and then
+explicitly said not to build it yet — write it to `todo.md` only, build
+incrementally later. Full requirements are in section **4b** below.
+Don't start any of it without a fresh explicit go, same as any other
+`[BUILD]` item.
+
+**Major redirect, 2026-09-18 — read this before doing anything else.**
+The user does not want to resume D-39 (or the HVN/LVN density check)
+next. Explicit instruction: build the remaining core constructs first —
+**footprint, liquidity map, market structure** — before any more
+per-zone refinement (age was the last one allowed in; "let's not get
+involved in finding the strength of zones just yet"). Once those three
+exist, wire **one simple strategy that uses all of them and actually
+places orders** (Sim account, per every existing hard rule — confirm
+account/Sim-Trade-Only before any activation, same as always), proving
+the full pipeline end-to-end. **Only after that full plumbing is
+working does optimization of individual parts begin** — D-39's ranking,
+the HVN/LVN density question, and anything else per-construct all wait
+until after this. This is a deliberate breadth-before-depth choice, not
+a random topic change — don't quietly revert to depth-first work (e.g.
+"let's just polish volume profile a bit more first") without asking.
+
+**Confirmed construct order (2026-09-18)**: footprint (done, D-50, not
+yet live-verified) → big trades → VWAP → market structure → liquidity
+map. Big trades wraps `AggregateFilter` (D-36/E-5, real order-id
+repeat-emission already confirmed live). VWAP is ported (not copied)
+from MotiveWave's own published `VWAP.java` source — doesn't compile
+as-is against our jar. Market structure builds on
+`DataSeries.calcSwingPoints` (E-10, though E-7 found real swing
+instability at low strength worth factoring in). Liquidity map is the
+biggest and most novel — `DOMListener` isn't even wired into the walking
+skeleton yet, so it starts from less existing groundwork than the rest.
+
+**Next concrete step**: live-verify footprint (D-50) once the study is
+re-added — check `FLOW_V2/logs/footprint_feature.log` for sane
+`BAR_CLOSE` rows against real bars, same validate-then-layer discipline
+as everything else. Then start big trades.
 
 **Where the work happens:**
 
@@ -374,9 +410,9 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   D-44. **Built and live-verified**: E-3 rotation fix running clean (150
   ticks / 3 min), zone ids confirmed stable across recomputes, and drawn
   POC/VAH/VAL lines visually converged with the built-in study's own
-  levels after a few minutes live on `@GC`. Session-scoped only;
-  footprint (bar-scoped `FootprintView`, same engine) is a separate
-  not-yet-started item.
+  levels after a few minutes live on `@GC`. Session-scoped only —
+  footprint (bar-scoped `FootprintView`, same engine) is now built
+  separately, see below (D-50).
 - [ ] Replay-inside-MotiveWave (D-43): a mechanism to feed a recorded raw
   journal through the same runtime code but inside a MotiveWave-hosted
   process, so a real `Instrument` exists and SDK-engine-backed features
@@ -411,12 +447,11 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   `MERGED`/`SPLIT`/`DISSOLVED` and the `layer1Score`/`outcome`/
   `bounceRate` pairing (D-39-dependent) are the remaining, not-yet-built
   half — see the next item.
-- [~] (2026-09-16) POC-relative row numbering (D-47): chart labels and
+- [x] (2026-09-16) POC-relative row numbering (D-47): chart labels and
   `level_trace`/`zone_trace` (`relativeRow`, `priceDecimal` fields) both
   use it — POC=0, +/- rows scaled by distance, zones overlapping VAH/VAL
-  forced to that level's exact number. Full rebuild + replay regression
-  clean. **Not yet live-verified** — needs the study re-added.
-- [~] (2026-09-17) Price trace carries level/zone identity, not just
+  forced to that level's exact number. **Live-verified 2026-09-18.**
+- [x] (2026-09-17) Price trace carries level/zone identity, not just
   current price (D-48): `level_trace` gains `levelPriceTicks`/
   `levelPriceDecimal` (the level's own value, can differ from current
   price under D-38's cause-agnostic cross); `zone_trace` gains
@@ -424,8 +459,64 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   not just its kind). Needed `TriggerEvaluator.lastFiredZoneRange()` — a
   fire-time snapshot, since a `LEAVE`'s zone range is already cleared
   from the normal tracking state by the time `Pipeline` would otherwise
-  read it. Full rebuild + replay regression clean. **Not yet
-  live-verified**.
+  read it. **Live-verified 2026-09-18**: 9,943 ticks, 876 `level_trace` +
+  2,194 `zone_trace`, zero exceptions, new fields confirmed correct.
+- [~] (2026-09-18) Zone age (D-49): `ZoneView.firstSeenAtMs` +
+  `zone_trace`'s `zoneAgeMs`. Cost measured before building: ~+20 KB/hour
+  of trace bytes, negligible tracking-map memory. Full rebuild + replay
+  regression clean. **Not yet live-verified.**
+- [x] (2026-09-18, live-verified 2026-09-18) Footprint (D-50):
+  `FootprintView`/`SdkFootprintFeature` — bar-scoped use of the same SDK
+  `VolumeProfile` engine (D-36), reset every bar close instead of
+  session-scoped, so none of `VolumeProfileView`'s E-3 rotation-fix
+  machinery is needed (a bar is naturally short-lived). D-37's
+  partial-bar rule applied directly: the bar in progress at attach is
+  discarded, `isReady()` true only once a full bar has closed.
+  `FootprintRow` deliberately has no imbalance flag — raw
+  `askVolume`/`bidVolume`/`delta` only, imbalance-threshold choice
+  deferred per the same 2026-09-18 redirect that deferred D-39. Own
+  settings row (`Footprint Row Width`, default 1 tick), independent of
+  `VolumeProfileView`'s. User confirmed working live.
+- [x] (2026-09-18, live-verified 2026-09-18) Per-construct draw flags +
+  drawing separation (D-51): `redrawFigures()` is now a dispatcher
+  (`clearFigures()` once, then one `if (drawFlag) redrawXFigures()` per
+  construct) instead of one method hardcoding `SdkVolumeProfileFeature`
+  by name — the gap the user's own question exposed, fixed rather than
+  left. `FootprintView` tightened from three parallel accessors to one
+  `BarFootprint` record (needed the bar's own time range anyway, to draw
+  footprint positioned at its own candle). Volume Profile drawing now
+  **off** by default, Footprint **on** — footprint drawn directly over
+  candles (current + last closed bar only, per `FootprintView`'s
+  existing scope — no longer history to draw yet). User confirmed
+  working live.
+- [x] (2026-09-18, live-verified 2026-09-18) Footprint row merging for
+  drawing (D-52): `FP_MERGE_ROWS_KEY` setting (default 1), merges N
+  adjacent price rows into one drawn box/label by price-grid bucket
+  (`Math.floorDiv`-based, handles gaps in raw rows correctly — not
+  row-index/count-based). Raw stored footprint data untouched, this is
+  display-time only. User confirmed working live.
+- [ ] **Beautify footprint drawing with delta-describing colors**
+  (raised 2026-09-18, after live-testing D-50/D-51/D-52 and confirming
+  the mechanics work). Currently `drawFootprintBar()` only picks one of
+  three flat colors by delta *sign* (green/red/gray) — no sense of
+  *magnitude*. Wants something closer to a proper footprint chart's
+  visual language, e.g. color intensity/gradient scaled by delta size
+  or by bid/ask imbalance ratio, not just up/down/flat. Purely a
+  drawing-layer change (`FlowRuntimeStudy.drawFootprintBar()`) — raw
+  `FootprintRow`/`BarFootprint` data unaffected, consistent with D-52's
+  same draw-only boundary. Design not started: exact color scale,
+  whether it's linear or something else, and whether it needs its own
+  settings (e.g. a max-delta-for-full-saturation value) are all open.
+- [ ] Big trades next (per the 2026-09-18 redirect): `BigTradeEvent`
+  (flow-core) wrapping `AggregateFilter` (flow-runtime, `aggByOrder=true`
+  per D-36/E-5) — dedupe on repeat emission by real order ID (T-3, not
+  the `exchOrderId=0` sentinel). Not started.
+- [ ] VWAP next (per the 2026-09-18 redirect): adapted from MotiveWave's
+  own published `VWAP.java` source (D-36, genuinely tick-weighted, fed
+  via `forEachTick`) — the file itself doesn't compile as-is against our
+  jar (casts to an internal `platform.ui.*` class not in the public SDK),
+  so the algorithm gets ported into `flow-runtime`, not copied. Not
+  started.
 - [ ] **HVN/LVN classification may be too dense — needs a fair
   same-granularity comparison before concluding anything, then tuning if
   still warranted.** Visual observation, 2026-09-16 (screenshots
@@ -489,6 +580,55 @@ journal reconstructs what happened and whose replay reproduces it exactly.
 - [ ] Intent-seq vs execution-seq gap journaled per trade (D-17)
 - [ ] Entry evaluators in `flow/`: absorption, imbalance stacking,
   sweep-and-reclaim (D-27)
+
+## 4b. Historical retention `[DESIGN ONLY, NOT STARTED]`
+
+Laid out by the user 2026-09-18, deliberately **not implemented yet** —
+their own instruction: record it so the plan doesn't get lost, build it
+incrementally later if that's better for quality, don't build it all at
+once now. Treat every item below as a real requirement to eventually
+satisfy, not a suggestion — but none of it starts without an explicit
+go, same as every other `[BUILD]` section in this file. Several items
+below need their own design pass first (file format, exact storage
+location, rotation mechanics) before any code — this section is the
+requirements, not a plan.
+
+- [ ] **Price trace**: last 5 trading days retained (not the current
+  session-only scope `level_trace`/`zone_trace` already have).
+- [ ] **Volume profile — two snapshot cadences, not one**:
+  - Daily: one histogram + zones/levels snapshot per trading day.
+  - Session-wise: 3-4 snapshots per day at session boundaries — Asia,
+    London, New York, London+NY overlap. **Connects to an existing
+    decision, not a fresh concept**: D-34 already defined these exact
+    sub-session boundaries (Asia/London/NY), but explicitly as
+    *informational labeling only* — "they do NOT create separate reset
+    boundaries." This is a genuinely new use of that same boundary
+    concept (triggering a snapshot capture), not just labeling anymore —
+    worth resolving explicitly as its own decision when this is
+    designed, not assumed to fall out of D-34 automatically.
+- [ ] **Footprint**: last week retained, one row-set per bar with
+  per-price-level ask/bid/delta — same raw granularity as live,
+  D-52 applies (any merging stays a display/analysis-time concern, never
+  stored). **Bar interval must be a configurable setting** (clarified by
+  the user 2026-09-18: could be 30s, 1min, 5min — not hardcoded to 1
+  minute).
+- [ ] **Big trades**: a time-ordered series, retained (window not yet
+  specified — assume "last week" matching footprint unless told
+  otherwise when this is designed).
+- [ ] **Liquidity map**: storage approach explicitly **undecided** — the
+  user's own words: "to be discussed." Do not guess a format; ask when
+  this is actually designed.
+- [ ] **Market structure**: explicitly **NOT stored** — cheap to
+  regenerate from retained historical 1-minute data whenever needed, so
+  storing it separately would be redundant.
+- [ ] **VWAP**: **will be stored**, computed accurately from live ticks
+  (tick-weighted, same genuinely-accurate method D-36 already found in
+  MotiveWave's own published source) — specifically *not* reconstructed
+  later from 1-minute bar data, which the user flagged introduces "a
+  very small inaccuracy" versus the real tick-weighted calculation. VWAP
+  itself isn't built yet either (still queued after big trades per the
+  D-50 construct order) — this is a requirement on however it eventually
+  gets built, not a separate feature.
 
 ## 5. Strategies and forward testing
 

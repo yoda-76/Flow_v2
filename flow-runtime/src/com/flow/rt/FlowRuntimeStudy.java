@@ -85,6 +85,19 @@ public class FlowRuntimeStudy extends Study {
   private static final String ARMED_KEY = "FLOW_ARMED";
   private static final String MODE_KEY = "FLOW_MODE";
   private static final String VP_RANGE_TICKS_KEY = "FLOW_VP_RANGE_TICKS";
+  private static final String FP_RANGE_TICKS_KEY = "FLOW_FP_RANGE_TICKS";
+  // Draw-time-only row merging (2026-09-18) -- never changes what
+  // FootprintView computes or stores, only how many raw rows get grouped
+  // into one displayed zone. See drawFootprintBar()'s javadoc.
+  private static final String FP_MERGE_ROWS_KEY = "FLOW_FP_MERGE_ROWS";
+  // Per-construct draw flags (2026-09-18): a construct is always
+  // calculated and journaled regardless of this flag -- it only controls
+  // whether redrawFigures() draws it. One flag per construct, checked in
+  // one place (redrawFigures()'s dispatcher), so a new construct's own
+  // drawing method never has to know or care whether any other
+  // construct is currently shown.
+  private static final String DRAW_VP_KEY = "FLOW_DRAW_VP";
+  private static final String DRAW_FP_KEY = "FLOW_DRAW_FP";
   private static final Path LOG_ROOT = Path.of("C:/yadvendra/trading/FLOW_V2/logs");
 
   private final int instanceId = System.identityHashCode(this);
@@ -98,6 +111,7 @@ public class FlowRuntimeStudy extends Study {
   private volatile OrderGateway gateway;
   private volatile Instrument instrument;
   private volatile SdkVolumeProfileFeature volumeProfile;
+  private volatile SdkFootprintFeature footprint;
   private volatile long sessionStartMs;
 
   // Redraw throttling -- called from onTick, a MotiveWave-invoked
@@ -116,6 +130,11 @@ public class FlowRuntimeStudy extends Study {
     grp.addRow(new StringDescriptor(MODE_KEY, "Mode", "DRY_RUN"));
     var vpGrp = tab.addGroup("Volume Profile");
     vpGrp.addRow(new IntegerDescriptor(VP_RANGE_TICKS_KEY, "Row Width (ticks)", 1, 1, 9999, 1));
+    vpGrp.addRow(new BooleanDescriptor(DRAW_VP_KEY, "Draw on Chart", false));
+    var fpGrp = tab.addGroup("Footprint");
+    fpGrp.addRow(new IntegerDescriptor(FP_RANGE_TICKS_KEY, "Row Width (ticks)", 1, 1, 9999, 1));
+    fpGrp.addRow(new IntegerDescriptor(FP_MERGE_ROWS_KEY, "Draw: Merge N Rows (display only, not stored)", 1, 1, 999, 1));
+    fpGrp.addRow(new BooleanDescriptor(DRAW_FP_KEY, "Draw on Chart", true));
     createRD();
   }
 
@@ -158,8 +177,12 @@ public class FlowRuntimeStudy extends Study {
     int rangeTicks = getSettings().getInteger(VP_RANGE_TICKS_KEY);
     volumeProfile = new SdkVolumeProfileFeature(
         com.flow.flow.VolumeProfileView.FEATURE_ID, instrument, priceCodec, rangeTicks);
-    Map<String, com.flow.core.Feature> features =
-        Map.of(com.flow.flow.VolumeProfileView.FEATURE_ID, volumeProfile);
+    int fpRangeTicks = getSettings().getInteger(FP_RANGE_TICKS_KEY);
+    footprint = new SdkFootprintFeature(
+        com.flow.flow.FootprintView.FEATURE_ID, instrument, priceCodec, fpRangeTicks);
+    Map<String, com.flow.core.Feature> features = Map.of(
+        com.flow.flow.VolumeProfileView.FEATURE_ID, volumeProfile,
+        com.flow.flow.FootprintView.FEATURE_ID, footprint);
 
     IntentSink sink = this::onIntentChanged;
     pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks);
@@ -224,6 +247,21 @@ public class FlowRuntimeStudy extends Study {
   }
 
   /**
+   * The one shared dispatcher: clears every figure this Study has drawn,
+   * then redraws whichever constructs the user has asked to see, each in
+   * its own method. Each construct's draw flag (settings.getBoolean) is
+   * checked here, once, rather than each drawing method deciding for
+   * itself whether it should run -- so adding a fourth/fifth construct
+   * later is "add a flag + a redrawXFigures() method + one line here,"
+   * not a change to how any existing construct's drawing works.
+   */
+  private void redrawFigures() {
+    clearFigures();
+    if (getSettings().getBoolean(DRAW_VP_KEY)) redrawVolumeProfileFigures();
+    if (getSettings().getBoolean(DRAW_FP_KEY)) redrawFootprintFigures();
+  }
+
+  /**
    * All reads here go through VolumeProfileSnapshot (volatile-published)
    * or this Study's own settings/final fields -- never SdkVolumeProfileFeature's
    * mutable poc()/vah()/zones() directly, which are drain-thread-only.
@@ -236,7 +274,7 @@ public class FlowRuntimeStudy extends Study {
    * own number exactly (forced equal, not independently computed and
    * coincidentally close) rather than its own midpoint-based one.
    */
-  private void redrawFigures() {
+  private void redrawVolumeProfileFigures() {
     SdkVolumeProfileFeature vp = volumeProfile;
     PriceCodec codec = priceCodec;
     if (vp == null || codec == null) return;
@@ -246,7 +284,6 @@ public class FlowRuntimeStudy extends Study {
     int rangeTicks = getSettings().getInteger(VP_RANGE_TICKS_KEY);
     int pocTicks = snap.poc();
 
-    clearFigures();
     long start = sessionStartMs;
     long now = System.currentTimeMillis();
 
@@ -289,6 +326,76 @@ public class FlowRuntimeStudy extends Study {
 
       Label label = new Label(new Coordinate(now, (lo + hi) / 2.0), z.kind() + " " + formatRelative(row));
       label.setLineColor(fill);
+      addFigure(label);
+    }
+  }
+
+  /**
+   * Directly over the candles: each row sits at the bar's own time
+   * midpoint (not "now" or session start, unlike the volume profile
+   * lines above), so it visually lines up with that bar's own candle.
+   * Draws the last CLOSED bar and the CURRENT (still forming) bar only --
+   * FootprintView doesn't keep a longer history than that (D-50's stated
+   * scope), so there's nothing further back to draw yet.
+   */
+  private void redrawFootprintFigures() {
+    SdkFootprintFeature fp = footprint;
+    PriceCodec codec = priceCodec;
+    if (fp == null || codec == null) return;
+    FootprintSnapshot snap = fp.snapshot();
+    int mergeRows = Math.max(1, getSettings().getInteger(FP_MERGE_ROWS_KEY));
+    int rawRangeTicks = getSettings().getInteger(FP_RANGE_TICKS_KEY);
+    drawFootprintBar(snap.lastClosed(), codec, mergeRows, rawRangeTicks);
+    drawFootprintBar(snap.current(), codec, mergeRows, rawRangeTicks);
+  }
+
+  /**
+   * Merge is draw-time only (user, 2026-09-18): the raw per-tick rows
+   * from FootprintView are never touched or re-stored at reduced
+   * granularity -- this method reads them, groups them into wider price
+   * buckets purely for this redraw, and throws the grouping away.
+   * Gridded by price (bucketLow = floor(priceTicks / mergeSpan) *
+   * mergeSpan), not by row index/count -- a row that never traded at some
+   * tick still correctly contributes zero to its bucket, rather than the
+   * grouping shifting if rows are missing because nothing traded there.
+   * mergeRows=1 collapses to one bucket per raw row, so this is the only
+   * drawing code path regardless of the setting -- no special case.
+   */
+  private void drawFootprintBar(com.flow.flow.BarFootprint bar, PriceCodec codec, int mergeRows, int rawRangeTicks) {
+    if (bar.rows().isEmpty()) return;
+    int mergeSpan = rawRangeTicks * mergeRows;
+    java.util.TreeMap<Integer, double[]> merged = new java.util.TreeMap<>();
+    for (com.flow.flow.FootprintRow r : bar.rows()) {
+      int bucketLow = Math.floorDiv(r.priceTicks(), mergeSpan) * mergeSpan;
+      double[] acc = merged.computeIfAbsent(bucketLow, k -> new double[2]);
+      acc[0] += r.bidVolume();
+      acc[1] += r.askVolume();
+    }
+
+    long mid = (bar.startMs() + bar.endMs()) / 2;
+    for (var e : merged.entrySet()) {
+      int lowTicks = e.getKey();
+      int highTicks = lowTicks + mergeSpan - rawRangeTicks; // inclusive high tick of this bucket
+      double bid = e.getValue()[0];
+      double ask = e.getValue()[1];
+      double delta = ask - bid;
+      Color color = delta > 0 ? new Color(0, 200, 0) : delta < 0 ? new Color(220, 60, 60) : Color.LIGHT_GRAY;
+
+      double lo = codec.fromTicks(lowTicks);
+      double hi = codec.fromTicks(highTicks) + instrument.getTickSize(); // cover the top row's own width
+      if (mergeRows > 1) {
+        // A merged bucket is a genuine zone (low/high), not one price point --
+        // draw the box so that's visible, same pattern as the LVN/HVN zones.
+        Box box = new Box(mid - 1, lo, mid + 1, hi);
+        Color fill = new Color(color.getRed(), color.getGreen(), color.getBlue(), 50);
+        box.setFillColor(fill);
+        box.setLineColor(color);
+        addFigure(box);
+      }
+
+      String text = String.format("%.0fx%.0f", bid, ask);
+      Label label = new Label(new Coordinate(mid, (lo + hi) / 2.0), text);
+      label.setLineColor(color);
       addFigure(label);
     }
   }
@@ -349,6 +456,11 @@ public class FlowRuntimeStudy extends Study {
     if (vp != null) {
       vp.closeLog();
       volumeProfile = null;
+    }
+    SdkFootprintFeature fp = footprint;
+    if (fp != null) {
+      fp.closeLog();
+      footprint = null;
     }
   }
 

@@ -101,6 +101,8 @@ final class SdkVolumeProfileFeature implements VolumeProfileView {
   private final Map<String, int[]> lvnRanges = new LinkedHashMap<>();
   private final Map<String, int[]> hvnRanges = new LinkedHashMap<>();
   private int nextZoneSeq = 0;
+  /** id -> event time the id was first assigned. Never updated again for that id after that. */
+  private final Map<String, Long> zoneFirstSeenAtMs = new java.util.HashMap<>();
 
   // Diagnostic-only logging so live output can be compared against the
   // chart's built-in study (same purpose as E-2), without reading this
@@ -161,7 +163,7 @@ final class SdkVolumeProfileFeature implements VolumeProfileView {
     ticksSinceRotation++;
     ready = true;
     maybeRotate(te.eventTimeMs());
-    recompute();
+    recompute(te.eventTimeMs());
     maybeLog(te.eventTimeMs());
   }
 
@@ -233,7 +235,7 @@ final class SdkVolumeProfileFeature implements VolumeProfileView {
   }
 
   @SuppressWarnings("unchecked") // see mergeRowsInto's note on VolumeProfile.getRows()'s raw List
-  private void recompute() {
+  private void recompute(long nowEventTimeMs) {
     Map<Integer, double[]> combined = new TreeMap<>();
     for (Map.Entry<Integer, double[]> en : persistentBuckets.entrySet()) {
       combined.put(en.getKey(), en.getValue().clone());
@@ -318,14 +320,14 @@ final class SdkVolumeProfileFeature implements VolumeProfileView {
     this.val = prices.get(lo);
     this.totalVolume = total;
     this.totalDelta = delta;
-    this.zones = buildZones(lvnKeys, hvnKeys);
+    this.zones = buildZones(lvnKeys, hvnKeys, nowEventTimeMs);
     this.snapshot = new VolumeProfileSnapshot(poc, vah, val, zones, totalVolume, totalDelta);
   }
 
-  private List<ZoneView> buildZones(List<Integer> lvnKeys, List<Integer> hvnKeys) {
+  private List<ZoneView> buildZones(List<Integer> lvnKeys, List<Integer> hvnKeys, long nowEventTimeMs) {
     List<ZoneView> result = new ArrayList<>();
-    result.addAll(matchClusters(cluster(lvnKeys), lvnRanges, ZoneView.Kind.LVN, "lvn"));
-    result.addAll(matchClusters(cluster(hvnKeys), hvnRanges, ZoneView.Kind.HVN, "hvn"));
+    result.addAll(matchClusters(cluster(lvnKeys), lvnRanges, ZoneView.Kind.LVN, "lvn", nowEventTimeMs));
+    result.addAll(matchClusters(cluster(hvnKeys), hvnRanges, ZoneView.Kind.HVN, "hvn", nowEventTimeMs));
     return result;
   }
 
@@ -357,7 +359,7 @@ final class SdkVolumeProfileFeature implements VolumeProfileView {
    * promises.
    */
   private List<ZoneView> matchClusters(List<int[]> newClusters, Map<String, int[]> prevRanges,
-                                        ZoneView.Kind kind, String prefix) {
+                                        ZoneView.Kind kind, String prefix, long nowEventTimeMs) {
     record Pair(String oldId, int newIdx, int overlap) {}
     List<Pair> pairs = new ArrayList<>();
     for (Map.Entry<String, int[]> old : prevRanges.entrySet()) {
@@ -382,10 +384,14 @@ final class SdkVolumeProfileFeature implements VolumeProfileView {
     List<ZoneView> out = new ArrayList<>();
     for (int ni = 0; ni < newClusters.size(); ni++) {
       String zid = assignedId[ni];
-      if (zid == null) zid = prefix + "-" + (nextZoneSeq++);
+      if (zid == null) {
+        zid = prefix + "-" + (nextZoneSeq++);
+        zoneFirstSeenAtMs.put(zid, nowEventTimeMs); // brand new id -- age starts now
+      }
       int[] nc = newClusters.get(ni);
       nextRanges.put(zid, nc);
-      out.add(new ZoneView(zid, kind, nc[0], nc[1]));
+      long firstSeenAtMs = zoneFirstSeenAtMs.getOrDefault(zid, nowEventTimeMs);
+      out.add(new ZoneView(zid, kind, nc[0], nc[1], firstSeenAtMs));
     }
     prevRanges.clear();
     prevRanges.putAll(nextRanges);

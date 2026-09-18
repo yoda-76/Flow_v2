@@ -26,8 +26,8 @@ final class TriggerEvaluator {
   private final Map<Trigger, Boolean> lastAbove = new HashMap<>();
   private final Map<Trigger, Double> lastBookSize = new HashMap<>();
   private final Map<Trigger, String> lastZoneId = new HashMap<>();
-  private final Map<Trigger, int[]> lastZoneRange = new HashMap<>();
-  private final Map<Trigger, int[]> lastFiredZoneRange = new HashMap<>();
+  private final Map<Trigger, ZoneView> lastZone = new HashMap<>();
+  private final Map<Trigger, ZoneView> lastFiredZone = new HashMap<>();
 
   private final Map<String, Feature> features;
 
@@ -36,16 +36,16 @@ final class TriggerEvaluator {
   }
 
   /**
-   * The [low, high] range of the zone involved in the most recent true
-   * result from shouldWake() for this exact ZoneTransition trigger --
-   * captured at fire time, so it's still available for a LEAVE even
-   * though lastZoneRange itself gets cleared right before returning.
-   * Null if this trigger has never fired. Called by Pipeline immediately
-   * after a true shouldWake(), for the price trace (D-40's zone
-   * low/high, per the user's own request).
+   * The full ZoneView involved in the most recent true result from
+   * shouldWake() for this exact ZoneTransition trigger -- captured at
+   * fire time, so it's still available for a LEAVE even though lastZone
+   * itself gets cleared right before returning. Null if this trigger has
+   * never fired. Called by Pipeline immediately after a true
+   * shouldWake(), for the price trace (D-40's zone low/high/age, per the
+   * user's own requests).
    */
-  int[] lastFiredZoneRange(Trigger key) {
-    return lastFiredZoneRange.get(key);
+  ZoneView lastFiredZone(Trigger key) {
+    return lastFiredZone.get(key);
   }
 
   boolean shouldWake(Trigger t, Event e, long nowMs) {
@@ -128,7 +128,7 @@ final class TriggerEvaluator {
     if (zt.kind() == Trigger.ZoneTransition.TransitionKind.TOUCH) {
       for (ZoneView z : candidates) {
         if (price == z.lowPriceTicks() || price == z.highPriceTicks()) {
-          lastFiredZoneRange.put(key, new int[]{z.lowPriceTicks(), z.highPriceTicks()});
+          lastFiredZone.put(key, z);
           return true;
         }
       }
@@ -148,9 +148,9 @@ final class TriggerEvaluator {
     if (containing != null) {
       boolean isNewMembership = !Objects.equals(containing.id(), prevId);
       lastZoneId.put(key, containing.id());
-      lastZoneRange.put(key, new int[]{containing.lowPriceTicks(), containing.highPriceTicks()});
+      lastZone.put(key, containing);
       if (isNewMembership && zt.kind() == Trigger.ZoneTransition.TransitionKind.ENTER) {
-        lastFiredZoneRange.put(key, new int[]{containing.lowPriceTicks(), containing.highPriceTicks()});
+        lastFiredZone.put(key, containing);
         return true;
       }
       return false;
@@ -158,17 +158,17 @@ final class TriggerEvaluator {
 
     // price is outside every current zone of this kind
     if (prevId == null) return false; // already outside, nothing changed
-    int[] prevRange = lastZoneRange.get(key);
-    int width = Math.max(1, prevRange[1] - prevRange[0] + 1);
-    boolean clearedBelow = price < prevRange[0] - width;
-    boolean clearedAbove = price > prevRange[1] + width;
+    ZoneView prevZone = lastZone.get(key);
+    int width = Math.max(1, prevZone.highPriceTicks() - prevZone.lowPriceTicks() + 1);
+    boolean clearedBelow = price < prevZone.lowPriceTicks() - width;
+    boolean clearedAbove = price > prevZone.highPriceTicks() + width;
     if (!clearedBelow && !clearedAbove) {
       return false; // inside the debounce margin -- same open trial, not a confirmed LEAVE
     }
     lastZoneId.remove(key);
-    lastZoneRange.remove(key);
+    lastZone.remove(key);
     if (zt.kind() == Trigger.ZoneTransition.TransitionKind.LEAVE) {
-      lastFiredZoneRange.put(key, prevRange); // the zone as it was known before this LEAVE, not "outside"
+      lastFiredZone.put(key, prevZone); // the zone as it was known before this LEAVE, not "outside"
       return true;
     }
     return false;
