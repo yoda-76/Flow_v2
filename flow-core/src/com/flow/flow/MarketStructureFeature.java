@@ -178,15 +178,23 @@ public final class MarketStructureFeature implements MarketStructureView {
       return;
     }
 
-    // VALID: keep growing while counter-trend candles continue (#3);
-    // the first trend-colored candle either confirms continuation or
-    // ends the attempt inconclusively (not explicitly specified by the
-    // source either way -- reverting to NONE is the simplest default).
+    // VALID: keep growing while counter-trend candles continue (#3).
     if (counterTrend) {
       pullbackBars.add(bar);
       return;
     }
 
+    // Bugfix D-65, found live 2026-09-19 (user's own observation): the
+    // rules say "if A LATER candle closes below that low" -- confirming
+    // continuation can take several candles, not necessarily the very
+    // next one. This used to give up (revert to NONE) the moment one
+    // trend-colored candle failed to confirm, silently discarding any
+    // pullback whose confirming candle wasn't immediately next. Now: a
+    // non-confirming trend-colored candle is simply ignored (not added
+    // to pullbackBars, doesn't reset anything) and the state stays
+    // VALID, waiting for a later candle -- of either color -- to
+    // eventually confirm. Only a genuine confirmation resolves the
+    // pullback; nothing here ever gives up on one.
     Bar highBar = argmaxHigh(pullbackBars);
     Bar lowBar = argminLow(pullbackBars);
     int pullbackExtreme = trend == Trend.UP ? highBar.highTicks() : lowBar.lowTicks();
@@ -196,9 +204,10 @@ public final class MarketStructureFeature implements MarketStructureView {
 
     if (continuation) {
       formTjlPair(bar, highBar, lowBar);
+      pullbackState = PullbackState.NONE;
+      pullbackBars.clear();
     }
-    pullbackState = PullbackState.NONE;
-    pullbackBars.clear();
+    // else: stay VALID, keep waiting -- see the bugfix note above.
   }
 
   private void formTjlPair(Bar continuationBar, Bar highBar, Bar lowBar) {

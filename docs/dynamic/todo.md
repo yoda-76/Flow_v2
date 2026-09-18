@@ -5,7 +5,20 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
-## Where we left off (2026-09-18, updated again same day — read this first, assume no memory of the conversation that produced it)
+## Where we left off (2026-09-19, updated — read this first, assume no memory of the conversation that produced it)
+
+**Most recent (2026-09-19)**: market structure got its historical
+warm-start + chart drawing (D-64), and the user's own visual read of
+the resulting chart caught a real bug (D-65) — continuation
+confirmation was giving up after the first non-confirming candle
+instead of waiting for a later one, silently discarding pullbacks
+whose real confirming candle wasn't the immediate next bar. Fixed;
+live-verified the same 100-bar warm-start now produces 4 TJL
+formations instead of 1. Full detail in `decisions.md` D-64/D-65.
+Liquidity map's best-bid/ask bug (D-63) is still open, not resolved —
+see below.
+
+## Older (2026-09-18)
 
 **Most recent**: footprint (D-50) got a second, stronger live confirmation
 today — compared directly against MotiveWave's built-in footprint study,

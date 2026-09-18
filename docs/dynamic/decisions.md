@@ -2348,6 +2348,41 @@ readable rather than being silently rewritten.
   drawing itself is not yet visually confirmed** — same "built, not yet
   eyeballed" gap every other construct's first drawing pass has had.
 
+- **D-65** (2026-09-19) — **Real bug found by the user's own visual
+  read of the chart, not a documented ambiguity: continuation
+  confirmation gave up after the first non-confirming candle instead
+  of waiting for a later one.** `marketStructureRules.md` §3 says "if
+  **a later candle** closes below that low → continuation confirmed" —
+  the wording itself implies confirmation can take several candles.
+  D-60's original implementation checked only the very next trend-
+  colored candle after a pullback validated, and if that specific one
+  didn't confirm, discarded the whole attempt (`pullbackState = NONE`)
+  unconditionally. Any pullback whose real confirming candle wasn't
+  the immediate next one was silently thrown away — exactly why the
+  user's own downtrend read (expecting a TJL1 near "LVN -5") found
+  nothing there: a genuine pullback had very likely formed and been
+  discarded before its actual continuation candle arrived.
+
+  This was a misreading on inspection, not one of the 7 already-
+  flagged, still-unconfirmed resolutions in `marketStructureRulesTemp.md`
+  — worth being precise about the distinction: those seven are
+  genuinely ambiguous in the source text; this one wasn't ambiguous,
+  it was read wrong.
+
+  **Fix**: once a pullback is `VALID`, a trend-colored candle that
+  fails to confirm continuation is now simply ignored — not added to
+  `pullbackBars`, doesn't reset anything, doesn't end the attempt. The
+  state stays `VALID`, waiting for a later candle (of either color) to
+  eventually confirm. Only a genuine confirmation resolves the
+  pullback now; nothing gives up on one anymore.
+
+  Full rebuild clean (both test gates pass), redeployed. **Live-
+  verified immediately, dramatically**: the same 100-bar historical
+  warm-start that previously produced only 1 `TJL_FORMED` event now
+  produces 4, in the same batch — direct, measurable confirmation that
+  pullbacks were genuinely being lost before, not just a theoretical
+  concern.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
