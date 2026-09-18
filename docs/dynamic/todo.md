@@ -1018,6 +1018,60 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   user's actual first-strategy design used absorption/aggression/sweep
   instead; imbalance stacking stays unbuilt until something needs it.
 
+## Open bug, not resolved `[BUG]`
+
+- [ ] **Liquidity map bestBid/bestAsk still intermittently wrong**
+  (D-63, found + partially fixed 2026-09-19, monitoring the first real
+  strategy live). A genuine stale resting order ~$22 below market
+  (`4396.90` on `@GC`) was making `bestAskTicks` freeze at that value
+  for whole sessions. Fixed by anchoring best-bid/ask to the last
+  genuinely traded price instead of the raw DOM extreme — this measurably
+  improved things (mostly sane values now) but **the same stale value
+  still intermittently reappears**, confirmed still happening well
+  after real ticks were flowing (so "no trade seen yet" doesn't fully
+  explain it). Root cause of the remaining intermittent cases not
+  found — need more targeted live debugging (e.g. logging the full raw
+  row count/extremes at the exact moment it reverts, not just periodic
+  1s samples) than this session's log-polling allowed. Does **not**
+  affect the first strategy's actual entry logic (`SweepEvaluator`
+  reads exact-price liquidity, never best-bid/ask) — affects the
+  heatmap's window centering (D-59) and the periodic snapshot (D-58)
+  only.
+
+## 4c. Market structure: historical warm-start + chart drawing `[BUILD, NOT STARTED]`
+
+Raised by the user directly, 2026-09-19, while checking on `MarketStructureFeature` (D-60) live. Two related asks, both real, neither started:
+
+- [ ] **Historical warm-start on activation.** Confirmed live: `MarketStructureFeature`
+  is currently forward-only from attach (D-37's pattern, same as every
+  other construct here) — it does **not** pull any prior bars, so
+  activating mid-session starts trend/CHOCH/pullback tracking from a
+  blank slate rather than from whatever structure was already forming.
+  The user wants this specific construct to be different: on
+  activation, pull the **last N historical bars** (`N` configurable —
+  default TBD, the user's own example used 100) and run them through
+  the *same* state machine (§2-§6 of `marketStructureRules.md`) to
+  build up trend/TJL/A+/SBR-RBS/DT-DB state as if it had been running
+  the whole time, then hand off to live data seamlessly from the
+  activation point forward. Needs: a way to pull N historical bars from
+  the SDK (`DataSeries`/`Instrument` history — not yet checked what's
+  available or how far back it goes for `@GC`), and confirming the
+  state machine can process a batch of historical bars identically to
+  live ones (it should — `MarketStructureFeature.onEvent()` only cares
+  about `BarEvent`/`BarPhase.CLOSE`, not about where the bar came from —
+  but this needs an actual historical-bar-to-`BarEvent` conversion path
+  that doesn't exist yet, since ingest so far has only ever been
+  live-tick-driven).
+- [ ] **Draw market structure on the chart.** Not drawn at all yet
+  (log-only per D-60's original scope) — TJL1/TJL2/A+/SBR-RBS/DT-DB
+  zones, trend state, and ideally the historical-warm-started portion
+  visually distinguished from the live-continued portion, matching the
+  color scheme already specified in `marketStructureRules.md` §8
+  (TJL1 blue, TJL2 orange, A+ purple, SBR/RBS gray, DT/DB yellow).
+
+Both explicitly **not being picked up right now** — recorded per the
+user's own instruction ("ADD THIS TO THE TODO") for later.
+
 ## 4b. Historical retention `[DESIGN ONLY, NOT STARTED]`
 
 Laid out by the user 2026-09-18, deliberately **not implemented yet** —

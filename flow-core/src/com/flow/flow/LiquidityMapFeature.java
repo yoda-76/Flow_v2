@@ -3,6 +3,7 @@ package com.flow.flow;
 import com.flow.core.DomEvent;
 import com.flow.core.DomRow;
 import com.flow.core.Event;
+import com.flow.core.TickEvent;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +39,7 @@ public final class LiquidityMapFeature implements LiquidityMapView {
 
   private volatile List<DomRow> bidRows = List.of();
   private volatile List<DomRow> askRows = List.of();
+  private volatile Integer lastTradedPriceTicks = null;
   private volatile boolean ready = false;
 
   public LiquidityMapFeature(String id) {
@@ -61,20 +63,47 @@ public final class LiquidityMapFeature implements LiquidityMapView {
 
   @Override
   public void onEvent(Event e) {
-    if (!(e instanceof DomEvent de)) return;
-    bidRows = de.bidRows();
-    askRows = de.askRows();
-    ready = true;
+    if (e instanceof DomEvent de) {
+      bidRows = de.bidRows();
+      askRows = de.askRows();
+      ready = true;
+    } else if (e instanceof TickEvent te) {
+      lastTradedPriceTicks = te.priceTicks();
+    }
   }
 
+  /**
+   * D-63 bugfix, found live 2026-09-19, root cause confirmed (not just
+   * patched blind): a genuine resting sell order was sitting ~$22 below
+   * the actual market on `@GC` for many minutes straight, confirmed via
+   * the raw `DOMRow.isAsk()` flag agreeing with which list it came from
+   * (so not a misclassification) and via the diagnostic per-second log
+   * showing `bestBid` tracking price normally while `bestAsk` stayed
+   * frozen at that one far price the whole time. A real, if unusual,
+   * resting order -- not a data-quality artifact -- but "the lowest ask
+   * price anywhere in the full ~900-row book" is not what "best ask"
+   * should mean regardless of why that one row is there.
+   *
+   * First attempt (filtering each side against the OTHER side's raw,
+   * unfiltered extreme) turned out fragile the moment BOTH sides could
+   * have a stray far-off row at once -- it kept surfacing whichever
+   * extreme happened to survive its own bound check, on either side,
+   * across different sessions. Replaced with a much more robust
+   * reference: the last genuinely TRADED price (from TickEvent, tracked
+   * here too now) -- trades are authoritative in a way resting orders
+   * aren't, so "best bid" is the highest bid at or below the last trade,
+   * "best ask" the lowest ask at or above it. Falls back to the
+   * unfiltered extreme only if no trade has been seen yet or filtering
+   * removes every row.
+   */
   @Override
   public Integer bestBidTicks() {
-    return maxPrice(bidRows); // highest bid price is best
+    return maxPriceAtOrBelow(bidRows, lastTradedPriceTicks);
   }
 
   @Override
   public Integer bestAskTicks() {
-    return minPrice(askRows); // lowest ask price is best
+    return minPriceAtOrAbove(askRows, lastTradedPriceTicks);
   }
 
   @Override
@@ -131,6 +160,28 @@ public final class LiquidityMapFeature implements LiquidityMapView {
       if (min == null || r.priceTicks() < min) min = r.priceTicks();
     }
     return min;
+  }
+
+  /** Max price at or below ref; ref == null means no filtering. Falls back to the plain max if filtering removes everything. */
+  private static Integer maxPriceAtOrBelow(List<DomRow> rows, Integer ref) {
+    if (ref == null) return maxPrice(rows);
+    Integer max = null;
+    for (DomRow r : rows) {
+      if (r.priceTicks() > ref) continue;
+      if (max == null || r.priceTicks() > max) max = r.priceTicks();
+    }
+    return max != null ? max : maxPrice(rows);
+  }
+
+  /** Min price at or above ref; ref == null means no filtering. Falls back to the plain min if filtering removes everything. */
+  private static Integer minPriceAtOrAbove(List<DomRow> rows, Integer ref) {
+    if (ref == null) return minPrice(rows);
+    Integer min = null;
+    for (DomRow r : rows) {
+      if (r.priceTicks() < ref) continue;
+      if (min == null || r.priceTicks() < min) min = r.priceTicks();
+    }
+    return min != null ? min : minPrice(rows);
   }
 
   private static Double sizeAt(List<DomRow> rows, int priceTicks) {

@@ -146,6 +146,9 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   private volatile java.io.PrintWriter vwapLog;
   private volatile long lastVwapLogTime = 0;
   private static final long VWAP_LOG_INTERVAL_MS = 1000;
+  // D-63: anchors update(DOM)'s own best-bid/ask against the last
+  // genuinely traded price -- same fix as LiquidityMapFeature's.
+  private volatile Integer lastTradedPriceTicks = null;
   // D-58: liquidity map, built from the live MBO DOM stream (DOMListener,
   // subscribed once the instrument is known -- same pattern already
   // proven in ../../motivewave/experiments/src/flow_diag/DomDetailCapture.java).
@@ -371,6 +374,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     int priceTicks = codec.toTicks(tick.getPrice());
     int bidTicks = codec.toTicks(tick.getBidPrice());
     int askTicks = codec.toTicks(tick.getAskPrice());
+    lastTradedPriceTicks = priceTicks; // D-63: reference for update(DOM)'s own best-bid/ask, same fix as LiquidityMapFeature's
     s.publish((seq, et, rt) -> new TickEvent(seq, et, rt, priceTicks, tick.getVolume(),
         tick.isAskTick(), bidTicks, askTicks, tick.getExchOrderId(), tick.getAggExchOrderId()), tick.getTime());
     maybeRedraw();
@@ -415,29 +419,78 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     Sequencer s = sequencer;
     PriceCodec codec = priceCodec;
     if (s == null || codec == null) return;
-    List<com.flow.core.DomRow> bidRows = convertDomRows(dom.getBidRows(), codec);
-    List<com.flow.core.DomRow> askRows = convertDomRows(dom.getAskRows(), codec);
-    int bestBidTicks = maxPriceTicks(bidRows);
+    List<com.flow.core.DomRow> bidRows = convertDomRows(dom.getBidRows(), codec, false);
+    List<com.flow.core.DomRow> askRows = convertDomRows(dom.getAskRows(), codec, true);
+    Integer ref = lastTradedPriceTicks;
+    int bestBidTicks = maxPriceAtOrBelow(bidRows, ref);
     double bestBidSize = sizeAtMax(bidRows, bestBidTicks);
-    int bestAskTicks = minPriceTicks(askRows);
+    int bestAskTicks = minPriceAtOrAbove(askRows, ref);
     double bestAskSize = sizeAtMin(askRows, bestAskTicks);
     long now = System.currentTimeMillis();
     s.publish((seq, et, rt) -> new com.flow.core.DomEvent(seq, et, rt,
         bestBidTicks, bestBidSize, bestAskTicks, bestAskSize, bidRows, askRows), now);
-    maybeLogDom(bidRows, askRows);
+    maybeLogDom(bidRows, askRows, bestBidTicks, bestAskTicks);
   }
 
+  /**
+   * D-63: `dom.getBidRows()`/`getAskRows()` trusted blindly to assign
+   * every row to the right side -- this cross-checks each row's own
+   * `isAsk()` flag against which list it came from and discards any row
+   * that disagrees. Kept as defense-in-depth even though it turned out
+   * NOT to be the cause of the actual bug found live (see
+   * maxPriceAtOrBelow's javadoc): the one row responsible really was a
+   * genuine, correctly-flagged resting order, just an unusual one.
+   */
   @SuppressWarnings("unchecked") // DOM.getBidRows()/getAskRows() return a raw List in this jar -- same T-6-class mismatch as VolumeProfile.getRows()
-  private static List<com.flow.core.DomRow> convertDomRows(java.util.List rawRows, PriceCodec codec) {
+  private static List<com.flow.core.DomRow> convertDomRows(java.util.List rawRows, PriceCodec codec, boolean expectAsk) {
     List<com.flow.core.DomRow> out = new java.util.ArrayList<>(rawRows.size());
     for (Object o : rawRows) {
       DOMRow row = (DOMRow) o;
+      if (row.isAsk() != expectAsk) continue; // disagrees with which list it came from -- discard, don't trust the outer split alone
       out.add(new com.flow.core.DomRow(codec.toTicks(row.getPrice()), row.getSize()));
     }
     return List.copyOf(out); // immutable -- LiquidityMapFeature stores this reference directly, never copies it again
   }
 
-  private static int maxPriceTicks(List<com.flow.core.DomRow> rows) {
+  /**
+   * D-63 bugfix, found live 2026-09-19 and root-caused (not just
+   * patched blind): a genuine resting sell order was sitting ~$22 below
+   * the actual `@GC` market for many minutes straight -- confirmed via
+   * `DOMRow.isAsk()` agreeing with its list (not a misclassification)
+   * and via the diagnostic log showing `bestBid` tracking price
+   * normally while `bestAsk` stayed frozen at that one far price the
+   * whole time. "The lowest ask anywhere in the ~900-row book" isn't a
+   * meaningful "best ask" regardless of why that one row exists.
+   *
+   * Same fix as `LiquidityMapFeature.maxPriceAtOrBelow`/
+   * `minPriceAtOrAbove` (that class's javadoc has the fuller writeup,
+   * including why an earlier attempt -- filtering each side against the
+   * other side's own raw extreme -- turned out fragile): anchor against
+   * the last genuinely TRADED price instead, which is authoritative in
+   * a way resting orders aren't. `ref == null` (no trade seen yet) or
+   * filtering removing every row both fall back to the plain extreme.
+   */
+  private static int maxPriceAtOrBelow(List<com.flow.core.DomRow> rows, Integer ref) {
+    Integer max = null;
+    for (com.flow.core.DomRow r : rows) {
+      if (ref != null && r.priceTicks() > ref) continue;
+      if (max == null || r.priceTicks() > max) max = r.priceTicks();
+    }
+    if (max != null) return max;
+    return plainMax(rows);
+  }
+
+  private static int minPriceAtOrAbove(List<com.flow.core.DomRow> rows, Integer ref) {
+    Integer min = null;
+    for (com.flow.core.DomRow r : rows) {
+      if (ref != null && r.priceTicks() < ref) continue;
+      if (min == null || r.priceTicks() < min) min = r.priceTicks();
+    }
+    if (min != null) return min;
+    return plainMin(rows);
+  }
+
+  private static int plainMax(List<com.flow.core.DomRow> rows) {
     int max = 0;
     boolean any = false;
     for (com.flow.core.DomRow r : rows) {
@@ -446,7 +499,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     return max;
   }
 
-  private static int minPriceTicks(List<com.flow.core.DomRow> rows) {
+  private static int plainMin(List<com.flow.core.DomRow> rows) {
     int min = 0;
     boolean any = false;
     for (com.flow.core.DomRow r : rows) {
@@ -465,15 +518,14 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   }
 
   /** Diagnostic-only live-validation log, same discipline as every other construct's first pass. */
-  private void maybeLogDom(List<com.flow.core.DomRow> bidRows, List<com.flow.core.DomRow> askRows) {
+  private void maybeLogDom(List<com.flow.core.DomRow> bidRows, List<com.flow.core.DomRow> askRows,
+                            int bestBidTicks, int bestAskTicks) {
     java.io.PrintWriter w = domLog;
     PriceCodec codec = priceCodec;
     if (w == null || codec == null) return;
     long now = System.currentTimeMillis();
     if (now - lastDomLogTime < DOM_LOG_INTERVAL_MS) return;
     lastDomLogTime = now;
-    int bestBidTicks = maxPriceTicks(bidRows);
-    int bestAskTicks = minPriceTicks(askRows);
     w.println(now + " bidRowCount=" + bidRows.size() + " askRowCount=" + askRows.size()
         + " bestBid=" + String.format("%.4f", codec.fromTicks(bestBidTicks))
         + " bestAsk=" + String.format("%.4f", codec.fromTicks(bestAskTicks)));

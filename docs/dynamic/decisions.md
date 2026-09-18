@@ -2249,6 +2249,52 @@ readable rather than being silently rewritten.
   `market_structure_lvn_reversal` in the settings panel and watched it
   run yet.
 
+- **D-63** (2026-09-19) — **Liquidity map best-bid/ask bug found live,
+  partially fixed, NOT fully resolved — recorded honestly as still
+  open, not claimed as done.** Found while monitoring the first real
+  strategy's live session per the user's request: `bestAskTicks` sat
+  frozen at exactly one value (~$22 below the real market, `4396.90` on
+  `@GC`) for an entire session while `bestBidTicks` tracked price
+  normally — an ask price below the current bid is never a meaningful
+  "best ask" in a real book.
+
+  **Root cause confirmed, not just patched blind**: a genuine resting
+  sell order at that price, correctly flagged `isAsk()=true` (so not a
+  bid/ask misclassification) — persisted across multiple study
+  restarts at the identical decimal price, strongly suggesting one real
+  stale/forgotten order rather than a feed artifact.
+
+  **First fix attempt (filtering each side against the other side's own
+  raw, unfiltered extreme) was tried and found fragile**: it worked when
+  only one side had a stray far row, but surfaced the *same class* of
+  bug on whichever side happened to have the anomaly, across different
+  sessions (`bestBidTicks` was the one stuck once, `bestAskTicks`
+  another time). Replaced with anchoring against the last genuinely
+  **traded** price (from `TickEvent`, now tracked in
+  `LiquidityMapFeature` too) — trades are authoritative in a way
+  resting orders aren't. Applied in two places: `LiquidityMapFeature.
+  bestBidTicks()`/`bestAskTicks()` (flow-core) and
+  `FlowRuntimeStudy.update(DOM)`'s own separate, duplicate best-bid/ask
+  computation (flow-runtime, previously unfixed entirely — feeds
+  `DomEvent`'s top-of-book fields and the diagnostic log).
+
+  **Live-checked after the fix — still not fully resolved**: the
+  diagnostic log (`logs/liquidity_map_feature.log`) shows the fix
+  working *most* of the time (sane, tight bid/ask spreads), but the
+  same stale `4396.90` value still intermittently reappears, well after
+  the session had real ticks flowing (ruling out "no trade seen yet" as
+  the explanation for at least some occurrences). Exact remaining
+  trigger condition not identified — plausibly a genuine transient gap
+  in top-of-book rows in a specific DOM snapshot, but not confirmed.
+  **This bug is left open, not closed** — flagged in `todo.md` to
+  revisit with more targeted live debugging than periodic log-polling
+  allowed this session. Does not affect the first real strategy's
+  actual entry logic (D-62's `SweepEvaluator` reads `bidSizeAt`/
+  `askSizeAt` at an exact price, never `bestBidTicks`/`bestAskTicks`) —
+  it affects the liquidity-map heatmap's window centering (D-59) and
+  the periodic journal snapshot (D-58) only, both display/historical
+  concerns, not the live trading decision path.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
