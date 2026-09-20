@@ -5,9 +5,100 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
-## Where we left off (2026-09-19, updated — read this first, assume no memory of the conversation that produced it)
+## Where we left off (2026-09-20, updated — read this first, assume no memory of the conversation that produced it)
 
-**Most recent (2026-09-19)**: real order-submission code was built
+**Most recent (2026-09-20)**: today's plan (per direct instruction):
+market structure rework first → then whatever can be done off-market for
+(1) forward-testing workflow and (2) historical retention → then, if
+tokens remain, start the plain-OHLC market structure backtest (§5, added
+to todo — explicitly not reversing D-06's "no order-flow backtesting"
+stance). Status:
+
+1. **Market structure rework — done (D-74).** All 5 behavioral fixes
+   plus the new `tradeableLevels()` concept built, `MarketStructureFeatureTest`
+   (D-68) rewritten entirely (53 checks, all passing against the real
+   code on the first run), full rebuild + replay regression clean,
+   deployed. `MarketStructureFileLogger`/`redrawMarketStructureFigures()`/
+   `MarketStructureLvnReversalStrategy` all updated to match (`lastDt()`/
+   `lastDb()` replace the old shared `lastDtDb()`; the strategy now
+   gates its area-of-interest read on `tradeableLevels()` so it can't
+   trade the non-tradeable CHOCH placeholder).
+2. **Forward-testing workflow, off-market half — done.** Offline journal
+   comparison tooling (D-76, `analysis/journal_summary.py`) — the only
+   item in that section not gated on a live/Sim session actually
+   running. Everything else there (dry-run review, Sim sessions, a
+   second strategy, committing fixtures) needs either live market data
+   or a strategy design the user hasn't specified — left for when the
+   market's open.
+3. **Historical retention, off-market half — done.** Raw-log 48h
+   auto-deletion (D-75, `LogRetention`) — the one concrete, unambiguous
+   requirement in §4b. The rest of that section (price trace 5-day
+   storage, VP daily/session snapshots, footprint week storage, big
+   trades time series, VWAP storage) each need a format/location design
+   pass first, and liquidity map's format is explicitly "to be
+   discussed" per the user's own words — not guessed at rather than
+   built wrong.
+
+Everything built today is compile-clean, all 7 `flow-core` test gates +
+the safety reflection test pass, replay-equivalence regression holds,
+deployed — **none of it has been live-verified**, market's closed
+throughout. Checking in with the user before either designing the
+remaining retention formats or moving to the backtest phase.
+
+**Just before that (2026-09-20)**: point 10, the last open rules
+question, is answered directly (D-73) — `marketStructureRules.md`'s
+review fully closed, all 10 points.
+
+**Before that (2026-09-20)**: the 2 new ambiguities D-71 raised got
+answered too (`market_structure_new_review.md` → D-72). Both resolved
+cleanly: warm-start bars count for CHOCH's anchor (use the first fed
+bar's open); and the chained-flip A+/SBR-RBS question resolved more
+precisely than either guess D-71 offered — they're tradeable for
+exactly the chain's first flip, then drop out for good, with the
+tradeable set becoming `{DT, DB}` from the second flip onward,
+refreshing one side at a time.
+
+**Just before that (2026-09-20)**: the user's `marketStructureRules.md`
+review landed (`market_structure_review.md`) — see D-71 and the
+"⚠️ RESOLVED 2026-09-20" note further down this file. **Headline: 5 of
+the 7 original ambiguities were guessed wrong**, and
+`MarketStructureFeature`/`MarketStructureFeatureTest` (D-60/D-68)
+currently implement/test those wrong guesses — a real rework is needed,
+not yet started, sequencing is the user's call.
+
+**Just before that (2026-09-20, weekend/no-live-market session)**: while
+the user was still reviewing `marketStructureRules.md`, worked through
+parked, live-market-independent todo items, per direct instruction
+("continue with all the parked items in todo, keep asking questions if
+ambiguity").
+
+1. Built `MarketStructureFeatureTest` (D-68) — first synthetic-sequence
+   regression test for `MarketStructureFeature` (D-60), 30 checks, all
+   passing against the current implementation. **Two things surfaced,
+   flagged to the user, not yet acted on**: (1) the CHOCH-driven first
+   flip (before any real TJL pair exists) never calls `listener.onFlip`,
+   silently missing from `market_structure_feature.log` even though the
+   trend genuinely changes and the chart still draws it correctly; (2)
+   the flip-watch runs against the CHOCH bootstrap point on every bar
+   until a real pair forms, so how far price has drifted from the
+   session's first candle governs whether an early pullback can complete
+   before being reinterpreted as a flip.
+2. Built the session-boundary-detection machinery (D-69) — asked the
+   user for the exact rollover time (nothing had ever pinned this down),
+   got 17:00 CT, built `SessionBoundary` + wired it into `RiskChain` and
+   `VWAPFeature`. **A real RiskChain gap surfaced while testing it,
+   flagged not fixed**: `checkDailyLoss` can block an exit exactly like
+   an entry, so a position can get stuck open past the point where
+   flattening would be correct — the opposite of what a kill switch
+   should do.
+
+Full detail on both in `decisions.md` D-68/D-69. Both are compile-clean,
+all 5 test gates + the replay-equivalence regression pass, deployed —
+**neither has been live-verified**, consistent with everything else
+built this session (market's closed). Continuing with other parked
+items next.
+
+**Before this (2026-09-19)**: real order-submission code was built
 (D-66) and live-tested with the user's explicit in-the-moment
 confirmation (D-67) — a one-shot SELL 1 `GCZ6` market test order, 10-tick
 SL/TP. **Entry worked** (confirmed filled on the Sim account from the
@@ -402,20 +493,22 @@ dont have time to review... fill the ambiguity with whatever u feel
 good and move ahead... and complete the market structure part") — build
 proceeded without waiting, per explicit instruction.
 
-**⚠️ IMPORTANT — COME BACK TO THIS**: all 7 ambiguities were resolved
-by best guess, not confirmed, recorded in
-`docs/dynamic/marketStructureRulesTemp.md` (CHOCH = first bar's close;
-pullback validity anchored to the run's first candle; a valid
-pullback's range keeps growing until continuation; "1%" = 1% of that
-candle's own high-low range; SBR/RBS plays CHOCH's bootstrap role after
-the first flip; the DT/DB scan window is `[A+ candle, flip-confirming
-candle]`; CHOCH is retired permanently once any real TJL pair forms).
-**`MarketStructureFeature` (D-60) is built and deployed against these
-guesses.** When the user does review `marketStructureRules.md`, any
-answer that contradicts `marketStructureRulesTemp.md` means the
-*already-built* feature needs to change, not just a doc — this is a
-real, load-bearing gap between "built" and "confirmed correct," not a
-formality.
+**⚠️→✅ RESOLVED 2026-09-20, AND FIXED — this was exactly the gap the
+note below used to warn about, and it has now been closed end to end.**
+The user reviewed `marketStructureRules.md` across three rounds
+(`market_structure_review.md`, `market_structure_new_review.md`, and a
+direct chat answer → D-71/D-72/D-73), all 10 points resolved, zero open
+⚠️ items left in that document. **`MarketStructureFeature` (D-60) has
+now been reworked to match (D-74)** — all 5 corrected behaviors (CHOCH
+anchor at init-time/open-based, sliding-pair pullback validation,
+body-height 1% base, DT/DB as the post-flip reference, DT/DB window
+anchored to the SBR/RBS candle, chaining correctly across multiple
+pair-less flips) plus the new `tradeableLevels()` concept are built and
+passing. `MarketStructureFeatureTest` (D-68) is rewritten entirely — 53
+checks against the real reviewed rules, not the old guesses. Full
+detail in `marketStructureRules.md`'s closing section and
+`decisions.md` D-71 through D-74. **Not yet live-verified** — market's
+closed as of this writing.
 
 **Market structure built (D-60)**: `MarketStructureFeature` (flow-core,
 zero SDK dependency — pure bar OHLC logic), bar-close-triggered only.
@@ -431,8 +524,8 @@ live-verified beyond "doesn't crash"** — no bar had closed in the short
 window checked right after redeploy, so no pullback/TJL/flip event has
 fired yet against real data.
 
-**Market structure rules review explicitly deferred**: "yes i will
-comeback to it dont worry" — not blocking further work.
+**Market structure rules review — done 2026-09-20**, see the resolved
+note above and D-71. No longer deferred.
 
 **Went straight at the exec/risk-chain backbone (2026-09-18)**, per
 direct instruction, "one by one": external config store → exec
@@ -608,6 +701,11 @@ System questions — decided here:
   journal / build+measure a delta encoding / accept a short full-detail
   window). Hinges on whether D-22's forward-only features (order resting
   time, liquidity-pull frequency) need replay-grade order-ID history.
+  Related but separate: §4b now has a stated **48h raw-log
+  auto-deletion** window (2026-09-20 scratch note) — that's the
+  *duration* half of D-07's own still-open "2-3 days, TBD" figure, not
+  an answer to Q-10's *content* question (whether per-order detail gets
+  captured at all in the first place).
 
 ## 1b. SDK capability audit `[EXP]` — see `docs/dynamic/
 sdk-capability-findings.md` for full detail per item; live results in
@@ -769,9 +867,17 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   unexercised).
 - [~] Event-sequence test DSL in `flow-core` (D-20). `TriggerEvaluatorTest`
   (D-45) is a direct, non-DSL synthetic test covering the same territory
-  for trigger logic specifically and already caught one real bug — the
-  general-purpose DSL README describes (`seq().trade(...).expectIntent(...)`)
-  for strategy-level fixtures is still not built.
+  for trigger logic specifically and already caught one real bug.
+  `MarketStructureFeatureTest` (D-68, 2026-09-20) is the same direct,
+  non-DSL pattern applied to the state machine — 30 checks, caught 2 real
+  findings (CHOCH-driven first flip never calls `onFlip`; flip-watch
+  sensitivity to CHOCH's position relative to later price action), both
+  flagged not fixed. The general-purpose DSL README describes
+  (`seq().trade(...).expectIntent(...)`) for strategy-level fixtures is
+  still not built — every direct synthetic test so far has covered a
+  specific construct instead, and each one has paid for itself (this is
+  now three-for-three: real bugs found before any live run, matching
+  D-45's original one).
 
 ## 4. Core features and execution `[BUILD]`
 
@@ -962,20 +1068,21 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   fields yet since D-39 doesn't exist.
 - [ ] Session / prior-session levels, ATR, overnight high/low (VWAP
   itself is done, see D-57 above — this item is the rest of the bundle)
-- [ ] **Session-boundary-detection machinery** — noted as a real gap
-  while building VWAP (D-57), not picked up now. Nothing in this
-  codebase currently detects "a new session started" at all —
-  `VolumeProfileView`/`FootprintView`/`VWAPFeature` all run
-  forward-only from feature attach time (D-37's pattern), not from a
-  calendar/session boundary. At least four things will eventually need
-  this same mechanism rather than each inventing their own: VWAP's
-  daily reset (its source's own default is `BarSize.getBarSize(1440)`,
-  D-57), D-19's reversal-cap counter, D-21's session price anchor, and
-  D-29/D-34's 24h session boundary (already decided *where* the
-  boundary falls — Asia/London/NY sub-splits, informational only, reset
-  once per full 24h day — just not *detected* anywhere in running code
-  yet). Build once, shared, when the first of these actually needs it
-  live rather than four one-off reimplementations.
+- [x] (2026-09-20) **Session-boundary-detection machinery** → D-69:
+  `SessionBoundary` (flow-core), 17:00 CT rollover (decided directly with
+  the user this session — no exact time existed anywhere before this).
+  Wired into two of the four things flagged here as eventually needing
+  it: VWAP's daily reset (now real, not deferred) and D-19's
+  reversal-cap counter (plus D-30's daily-loss PnL, not originally
+  listed here but the same "per session" concept). **Deliberately NOT
+  wired**: D-21's session price anchor (`PriceCodec`) — re-anchoring
+  ticks mid-run would desync every already-live tick-keyed feature's
+  state, a materially bigger change than resetting a counter, flagged as
+  a real design question if it's ever wanted, not silently done. The
+  24h boundary itself (D-29/D-34) was already decided *where* it falls;
+  this just makes it detectable in running code. Full detail + a real
+  RiskChain finding (daily-loss can block an exit, not just an entry —
+  flagged to the user, not fixed) in `decisions.md` D-69.
 - [x] (2026-09-18) Liquidity map (D-58): `DOMListener` finally wired
   into `FlowRuntimeStudy` (`DomEvent` grows `bidRows`/`askRows`, its own
   original comment's anticipated evolution). `LiquidityMapFeature`
@@ -1030,9 +1137,10 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   manipulation, hindsight market-mover analysis, etc. — or does it turn
   out too noisy/ambiguous to be useful. A real research question, not
   assumed either way; not started.
-- [ ] Book imbalance (derived DOM view — near-price bid/ask size ratio,
-  reads through `LiquidityMapView` now that it exists): not yet built,
-  README's original plan for it, no code yet.
+- [x] (2026-09-20) Book imbalance → D-70: `LiquidityMapView.
+  imbalanceAtLevels(int n)`, nearest-N-rows-per-side, `[-1,1]`, already
+  reachable via `MarketState.liquidityMap()` — no strategy consumes it
+  yet, available when one wants it.
 - [x] (2026-09-18) Big trades: see the D-53 entry above (§4's own big
   trades item) — built as `BigTradeFeature` directly against `TickEvent`,
   not `AggregateFilter`, after the wrapped-engine plan broke live. Fixed
@@ -1063,6 +1171,20 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   `ExternalConfig`), `RiskChain`'s size cap is a separate safety check
   against `maxContracts`. Brackets: see the `exec/` reconciliation item
   above.
+- [ ] **Fix `RiskChain.checkDailyLoss()` blocking an exit, not just an
+  entry** (found 2026-09-20 while building `SessionResetWiringTest`,
+  D-69 — flagged then, still awaiting a go-ahead, not yet fixed). Today
+  it runs unconditionally on every `evaluate()` call, so an exit whose
+  own mark-to-market loss alone breaches the daily-loss limit gets
+  **blocked exactly like an entry would**, leaving a losing position
+  stuck open instead of letting the kill switch actually flatten it. One
+  proven consequence: a **flat** position's `realizedPnlTicks` can never
+  legitimately exceed the limit through the chain's own gate at all (the
+  exit that would cross the line gets blocked before it can realize it).
+  Likely fix: exempt risk-*reducing* intents (moving toward flat) from
+  `checkDailyLoss` and probably `checkSizeCap` too — not applied
+  unilaterally since it's safety-relevant logic. Full detail in
+  `decisions.md` D-69.
 - [ ] Intent-seq vs execution-seq gap journaled per trade (D-17) — still
   not done; moot until a real strategy's intents actually reach
   `OrderGateway` with any latency worth measuring.
@@ -1073,6 +1195,26 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   prior reading). "Imbalance stacking" specifically not built — the
   user's actual first-strategy design used absorption/aggression/sweep
   instead; imbalance stacking stays unbuilt until something needs it.
+- [ ] **Order-flow execution rules review — planned by the user, explicitly
+  NOT picked up yet** (raised 2026-09-20, same session as the market
+  structure backtest ask). Same process as `marketStructureRules.md`'s
+  review: the user intends to review the order-flow **execution** rules
+  the same way — likely covering the entry evaluators just above
+  (`AbsorptionEvaluator`/`AggressionEvaluator`/`SweepEvaluator` and how
+  `MarketStructureLvnReversalStrategy` combines them, "any one, not all
+  three required," per that strategy's own D-62 javadoc) and probably
+  the stop/target rules (D-62 points 7/8: stop = a small buffer beyond
+  the area of interest's far edge, target = a fixed 2:1 reward:risk
+  multiple) — all of which were explicitly built by best judgment, not
+  reviewed, exactly the same "unreviewed, flag for later" status
+  `marketStructureRulesTemp.md` had before its own review. **Do not
+  start this review or rework unprompted** — wait for the user to
+  actually bring the review, the same way `marketStructureRules.md`'s
+  review arrived as its own explicit files/messages, not inferred from
+  context. When it does happen, the precedent is: distill the rules into
+  a `docs/dynamic/` doc first (own review pass, ⚠️ AMBIGUOUS flags for
+  anything under-specified), get the user's direct answers, fold them
+  into that doc, only then touch the code — not the other way around.
 
 ## Strategy signals — chart drawing `[DONE]`
 
@@ -1156,6 +1298,27 @@ below need their own design pass first (file format, exact storage
 location, rotation mechanics) before any code — this section is the
 requirements, not a plan.
 
+- [x] (2026-09-20) **Raw log auto-deletion: 48 hours after creation** → D-75:
+  `com.flow.journal.LogRetention` (flow-core), wired into
+  `FlowRuntimeStudy.startSession()`. **Not yet live-verified** — runs
+  only on an actual MotiveWave activation, market's closed. Original
+  note (triaged
+  2026-09-20 from a `temp.txt` scratch note, note now cleared). Raw
+  session logs get automatically deleted 48h after creation; only the
+  *analysed* outputs survive — the user's own list matches this
+  section's existing per-construct bullets below almost exactly (price
+  trace through VP, big trades, liquidity map snapshots, footprint
+  chart data, VP histogram) — so this doesn't add new *kept* items, it
+  adds the missing **deletion mechanism** itself. Connects to two
+  already-open items rather than replacing them: D-07/D-35 left the raw
+  tier's retention window at "2-3 days, exact figure TBD" — 48h is a
+  firm, specific number that fits inside that range and is worth
+  formally closing that TBD against, not a new decision on its own. The
+  system-requirements snapshot (§7 below) separately noted retention is
+  "still manual, not automatic — no code anywhere actually deletes old
+  session directories" as of 2026-09-20; this is the concrete number
+  that mechanism should use once built. Not yet designed or built —
+  same "requirements, not a plan" status as the rest of this section.
 - [ ] **Price trace**: last 5 trading days retained (not the current
   session-only scope `level_trace`/`zone_trace` already have).
 - [ ] **Volume profile — two snapshot cadences, not one**:
@@ -1219,8 +1382,34 @@ requirements, not a plan.
   at every activation)
 - [ ] Second real strategy — tests whether the layer boundaries hold;
   revisit package layout and `ZoneEntryStrategy` only after this (D-27)
-- [ ] Offline journal comparison tooling (Python OK)
+- [x] (2026-09-20) Offline journal comparison tooling (Python OK) → D-76:
+  `analysis/journal_summary.py` — single-session summary + two-session
+  comparison, verified against real recorded sessions under `logs/`.
 - [ ] Commit first recorded fixtures from real sessions (D-20)
+- [ ] **Backtest the finalized market structure rules — plain OHLC only,
+  no order-flow execution modeling** (raised by the user 2026-09-20,
+  sequenced explicitly *after* the market-structure rework, the
+  off-market forward-testing/historical-retention work, and only "if we
+  have any tokens left" — not started, no design yet). **A deliberate,
+  narrow carve-out from D-06's "no backtesting, forward-test only"
+  stance, not a reversal of it**: D-06's rationale was that
+  order-flow/tick-level entries don't survive bar-granularity replay
+  honestly (MotiveWave's own optimizer fills are flagged optimistic, and
+  this system's actual edge is tick/DOM-level). Pure market-structure
+  logic (trend/pullback/TJL/flip, §1-§7 of `marketStructureRules.md`)
+  is different — it's bar-close-only by construction (§9's
+  non-repainting principle) and needs nothing tick-level to evaluate, so
+  a plain-OHLC backtest of *just the structure logic* (not the eventual
+  order-flow-confirmed entries `MarketStructureLvnReversalStrategy`
+  layers on top) doesn't inherit D-06's original objection. Scope, once
+  picked up: validate the reworked state machine (trend calls,
+  TJL/A+/SBR/DT/DB formation, tradeable-level lifecycle) against
+  historical OHLC directly, without needing footprint/big-trades/
+  liquidity-map confirmation or live/Sim order placement at all. Needs
+  its own design pass (data source — MotiveWave's own historical bars vs.
+  an external OHLC feed; what "backtest" even means here given
+  `ReplayHarness`/`ReplayEquivalenceTest` already exist for a different
+  purpose — replay-equivalence, not signal backtesting) before any code.
 
 ## 6. Doc housekeeping
 
@@ -1232,51 +1421,105 @@ requirements, not a plan.
   said system questions get experiments here — now states platform
   questions (Q-01/02/03/07/08) get a `../motivewave` experiment and system
   questions (Q-04/05/06) are decided directly, no experiment needed
+- [ ] **"Problem Ledger" session-end format — proposed, not adopted**
+  (triaged 2026-09-20 from a `temp.txt` scratch note, note now cleared).
+  The user's idea: end each session with a short, structured note —
+  `Solved` / `Decided` / `Disproved` / `Learned` / `Open` / `Next` —
+  tracking actual intellectual progress rather than lines of code or
+  commits ("Code is an output. Problems solved are progress."). This
+  file's own "Where we left off" handoffs already informally cover
+  similar ground but not in this exact structured shape. This is a
+  workflow/process idea, not a FLOW_V2 code task — it may fit better as
+  a `CLAUDE.md` convention than a `todo.md` item; recorded here per
+  direct instruction rather than moved unprompted. Not yet adopted
+  either way — needs an explicit decision on whether/where to use it.
 
-## 7. System requirements snapshot `[MEASURE]` — not started
+## 7. System requirements snapshot `[MEASURE]` — assembled 2026-09-20, CPU still open
 
 Raised by the user 2026-09-18 (scratch note in `temp.txt`, triaged into
 here and the note cleared): "maintain a system requirement snapshot of
 the current system — how much RAM, storage, and CPU will the system need
-to run comfortably." A real deliverable, not a passing question — bigger
-than a quick answer, since it means pulling together evidence that's
-currently scattered across several sessions' findings plus at least one
-genuinely unmeasured dimension (CPU), so it's parked here rather than
-attempted inline.
+to run comfortably." Assembled this session (weekend, no live market) by
+pulling together numbers already measured elsewhere plus everything
+built since 2026-09-18 (D-60/61/62 market structure, risk chain, first
+strategy; D-68/69/70 this session) — no new experiments needed except
+CPU, exactly as this section originally predicted.
 
-**What already exists and shouldn't be re-derived:**
-- **RAM** — `SdkVolumeProfileFeature`'s E-3 finding (`../../motivewave/
-  docs/dynamic/findings.md`, 2026-09-15) found ~1.1-1.2 MB retained per
-  tick *unbounded*, tripping a 300MB guard in ~220s — but this was fixed
-  by a periodic rotation mechanism, **built and live-verified running
-  clean** (D-44, "150 ticks/3 min"), so current real-world growth is
-  bounded per rotation cycle, not the raw unbounded number. Footprint
-  (D-50) needs none of this — bar-scoped, naturally short-lived. Big
-  trades/order-repeat tracking (D-53–D-56) are all explicitly capped
-  (500-entry recent windows, 5000-entry order-id running map) — small,
-  bounded, already sized in each decision's own cost note. No holistic
-  JVM heap number has been measured with everything running together.
-- **Storage** — Q-03/D-35 measured ticks+top-of-book DOM at ~28 MB/hr raw
-  (~1.35 MB/hr gzip) and full per-order DOM detail at ~31.5 GB/hr raw
-  (~3.89 GB/hr gzip) — but **`DOMListener` still isn't wired into the
-  pipeline at all** (§2 above), so today's actual raw journal only
-  carries ticks/bars/clock events, not DOM, and is far smaller than
-  either figure. D-48/D-49 measured the decisions-tier price trace at
-  ~310-330 KB/hour. Q-10 (how much DOM detail to retain, if any) is
-  still an open decision this snapshot would have to either resolve or
-  explicitly bound around. The full historical-retention plan (§4b) is
-  design-only, not built — its eventual storage cost isn't in this
-  snapshot until it exists.
-- **CPU** — genuinely unmeasured, the one dimension with no existing
-  number at all. E-3's "~1.2µs/tick steady-state" is processing latency
-  per event, not a CPU utilization/core-count figure — would need an
-  actual profiling pass (live, this repo, not `../motivewave`, since
-  it's about *our* runtime's footprint) to answer honestly.
+**RAM — bounded, no single holistic heap measurement, but every piece is
+individually sized:**
+- `SdkVolumeProfileFeature` (session-scoped VP): E-3 found ~1.1-1.2 MB/
+  tick *unbounded* before the fix; the rotation mechanism (D-44, every
+  150 ticks/3 min) bounds the PEAK just before a rotation to roughly
+  150 × ~1.1-1.2 MB ≈ **~165-180 MB worst-case**, dropping back down
+  every rotation as ticks merge into the small persistent bucket map.
+  This is the dominant, and only large, RAM consumer in the system.
+- Footprint (D-50): same engine, but bar-scoped and reset every bar
+  close — peak is bounded by one bar's own tick count (typically far
+  fewer than VP's 150-tick rotation window at 1-min bars), not
+  independently measured but structurally much smaller than VP's peak.
+- Big trades / order repeats (D-53–D-56): explicitly capped (500-entry
+  recent windows, 5000-entry order-id LRU map) — low single-digit MB at
+  most.
+- Liquidity map (D-58): replaced wholesale each DOM update, never
+  accumulates — bounded by book depth (~600-700 rows/side on `@GC`),
+  well under 1 MB.
+- Market structure (D-60), risk chain (D-61), session-boundary tracking
+  (D-69) — all a handful of primitive fields and small lists (a handful
+  of `Bar`/`ZoneRange` records, a 60s-window deque). Negligible
+  individually. **One theoretical, not practical, gap noted while
+  writing this**: `MarketStructureFeature.barsSincePair` only clears on
+  a new TJL pair forming, not on a fixed cadence — an extremely long
+  trend with no pullback ever validating would let it grow unbounded.
+  Each `Bar` is 4 ints, so even thousands of accumulated bars costs
+  under a few hundred KB — not a real RAM risk in practice, but flagged
+  as the one construct without an explicit bound, unlike everything
+  else in this list.
+- **Net**: peak system RAM is dominated by VP's rotation cycle
+  (~165-180 MB worst-case, just before a rotation), everything else
+  combined adds low single-digit MB. No JVM/platform baseline included
+  (MotiveWave's own footprint is out of scope for this snapshot).
 
-**Scope for when this actually gets picked up**: a "current system, as
-actually built today" snapshot (walking skeleton + footprint + big
-trades + order repeats + VP, no DOM, no historical retention) is
-answerable now without new experiments except CPU. A complete answer
-that also covers Q-10's eventual DOM policy and §4b's retention plan
-can't be pinned down until those close — note that explicitly rather
-than guess ahead of them.
+**Storage — the "DOMListener isn't wired" premise this section
+originally noted (2026-09-18) is now stale; D-58 wired it the same day.
+Today's raw journal genuinely does carry top-of-book DOM, not just
+ticks/bars:**
+- Raw tier: D-35's ticks + top-of-book DOM measurement (~28.0 MB/hr raw,
+  ~1.35 MB/hr gzip) now applies directly to what's actually running —
+  `RawEventCodec` only ever encodes `DomEvent`'s top-of-book fields
+  (D-58's own javadoc), matching that measurement's scope exactly. Full
+  per-order DOM detail (~31.5 GB/hr raw) is NOT what gets written —
+  that number only ever applied to the option D-58 explicitly declined
+  (per-order tracking). For a full 24h session: **~670 MB/day raw,
+  ~32 MB/day gzip**.
+- Decisions tier: price trace (`level_trace`/`zone_trace`, D-48/D-49)
+  ~310-330 KB/hour; liquidity snapshots (D-58) ~3.6 KB/snapshot × ~360/
+  day (10s cadence) ≈ ~1.3 MB/hour, ~31 MB/day; heartbeat/risk_verdict/
+  intent_changed records are sparse and cheap by comparison. **Net for a
+  full 24h session: roughly ~40-50 MB/day.**
+- Retention is still **manual**, not automatic — D-07/D-35 settled on a
+  2-3 day rolling window *in principle*, but no code anywhere actually
+  deletes old session directories under `logs/`; every activation's
+  directory just accumulates until someone removes it by hand. Not a
+  new decision, just restated plainly here since a requirements snapshot
+  should say this out loud rather than imply retention is enforced.
+- **New, previously-unflagged item found while assembling this**: the
+  diagnostic-only file loggers (`market_structure_feature.log`,
+  `big_trade_feature.log`, `order_repeat_feature.log`,
+  `vwap_feature.log`, `volume_profile_feature.log`,
+  `footprint_feature.log`, `liquidity_map_feature.log`) are opened in
+  **append mode with no rotation or pruning at all** — unlike the real
+  two-tier journal (which at least has a stated, if unenforced,
+  retention policy), these throwaway validation logs just grow across
+  every session forever at whatever their fixed path is. Low severity
+  (they're explicitly diagnostic, not the system of record) but worth an
+  occasional manual cleanup rather than assuming they're bounded.
+- Q-10 (full per-order DOM retention policy, if ever wanted) and §4b's
+  full historical-retention plan remain open/design-only — their
+  eventual cost still isn't in this snapshot, unchanged from before.
+
+**CPU — still genuinely unmeasured, unchanged from 2026-09-18, and this
+weekend's market-closed constraint is exactly why**: E-3's "~1.2µs/tick
+steady-state" is per-event processing latency, not a utilization/core
+figure, and a meaningful profile needs real tick rates flowing through
+the live pipeline — an idle/no-market profiling pass wouldn't represent
+anything. Needs a live session once the market's open again.

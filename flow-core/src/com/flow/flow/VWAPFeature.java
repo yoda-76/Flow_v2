@@ -1,6 +1,7 @@
 package com.flow.flow;
 
 import com.flow.core.Event;
+import com.flow.core.SessionBoundary;
 import com.flow.core.TickEvent;
 
 import java.util.function.IntToDoubleFunction;
@@ -10,14 +11,16 @@ import java.util.function.IntToDoubleFunction;
  * javadoc for the "why" and what was deliberately left out (std-dev
  * bands).
  *
- * Session-anchored to construction time (feature attach), not a
- * calendar-day boundary -- matches VolumeProfileView/FootprintView's own
- * "forward-only from attach" behavior (D-37) rather than inventing
- * session-boundary-detection machinery nothing else in this codebase has
- * built yet either. A true daily reset matching D-29/D-34's 24h session
- * boundary is deferred until that mechanism gets built generally (it
- * will eventually be needed by D-19's reversal counters and D-21's price
- * anchor too, not just this).
+ * Resets on every real 17:00 CT session rollover (D-68b's
+ * SessionBoundary), not construction time -- closes the "true daily
+ * reset" gap this class's own D-57 note originally deferred. Checked on
+ * every event, not just ticks, since a quiet book must still cross the
+ * boundary on schedule via the synthetic ClockEvent (D-23) -- otherwise
+ * VWAP would silently keep accumulating through an idle rollover until
+ * the next real trade. Between rollovers this is still forward-only from
+ * whenever the feature actually attached (D-37's pattern), same as
+ * before -- the first session a feature attaches mid-way through is
+ * naturally partial, exactly like every other construct here.
  *
  * Prices are decimal here, not integer ticks (D-21) -- unlike every
  * other feature, VWAP's formula (price * volume, summed, divided by
@@ -41,6 +44,7 @@ import java.util.function.IntToDoubleFunction;
 public final class VWAPFeature implements VWAPView {
   private final String id;
   private final IntToDoubleFunction priceDecoder;
+  private final SessionBoundary.Tracker sessionTracker = new SessionBoundary.Tracker();
 
   private double totalPriceVolume = 0;
   private double totalVolumeSum = 0;
@@ -71,6 +75,13 @@ public final class VWAPFeature implements VWAPView {
 
   @Override
   public void onEvent(Event e) {
+    if (sessionTracker.advance(e.eventTimeMs())) {
+      totalPriceVolume = 0;
+      totalVolumeSum = 0;
+      ready = false; // forward-only from the new session's own first tick, same bootstrap as attach (D-37)
+      vwapSnapshot = null;
+      totalVolumeSnapshot = 0;
+    }
     if (!(e instanceof TickEvent te)) return;
     double price = priceDecoder.applyAsDouble(te.priceTicks());
     totalPriceVolume += price * te.volume();

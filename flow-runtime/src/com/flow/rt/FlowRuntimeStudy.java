@@ -275,6 +275,19 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         .field("mode", "DRY_RUN")
         .build());
 
+    // D-75: raw-log retention (com.flow.journal.LogRetention, flow-core
+    // -- zero SDK dependency, tested synthetically there). decisions.jsonl
+    // is NEVER touched here (D-15's own "long retention" tier, and
+    // already exactly what the user called "the analysed data" -- price
+    // trace, liquidity snapshots, etc. all live there, not in raw.jsonl).
+    int prunedRawLogs = com.flow.journal.LogRetention.pruneOldRawLogs(
+        LOG_ROOT, sessionStartMs, com.flow.journal.LogRetention.DEFAULT_RETENTION_MS);
+    journal.writeDecision(0, Json.object()
+        .field("type", "log_retention_pruned")
+        .field("retentionHours", com.flow.journal.LogRetention.DEFAULT_RETENTION_MS / 3_600_000L)
+        .field("rawJsonlFilesDeleted", prunedRawLogs)
+        .build());
+
     int rangeTicks = getSettings().getInteger(VP_RANGE_TICKS_KEY);
     volumeProfile = new SdkVolumeProfileFeature(
         com.flow.flow.VolumeProfileView.FEATURE_ID, instrument, priceCodec, rangeTicks);
@@ -907,17 +920,25 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   }
 
   /**
-   * D-64: draws the current TJL1/TJL2/A+/SBR-RBS/DT-DB zones per
-   * marketStructureRules.md §8's color scheme. SBR-vs-RBS and DT-vs-DB
-   * are the same field (`lastSbrRbs()`/`lastDtDb()`) under two
-   * different labels depending on which flip direction produced them --
-   * inferred from the CURRENT trend (a Down trend means the last flip
-   * was Up->Down, so the label is SBR/DT; an Up trend means Down->Up,
-   * so RBS/DB), since `MarketStructureFeature` doesn't need a separate
-   * field to track that. Zones drawn from session start to now, same
-   * convention `redrawVolumeProfileFigures()` already uses for POC/VAH/
-   * VAL, since a TJL zone has no historical anchor time of its own
-   * currently exposed (`ZoneRange` is price-only).
+   * D-64, reworked D-74: draws the current TJL1/TJL2/A+/SBR-RBS/DT/DB
+   * zones per marketStructureRules.md §8's color scheme. DT and DB are
+   * now separate fields (`lastDt()`/`lastDb()`, D-74 -- the reviewed
+   * rules require both to persist simultaneously during a chain of
+   * pair-less flips, §6 points 9/10) rather than one shared slot
+   * relabeled by current trend, so both get drawn directly, whichever
+   * are non-null; SBR-vs-RBS is still the one field
+   * (`lastSbrRbs()`) relabeled by current trend, since only one of the
+   * two is ever meaningful at a time (point 9: A+/SBR-RBS are tradeable
+   * for exactly one flip, never both directions at once). Non-tradeable
+   * zones (per `tradeableLevels()`) are still drawn, just dimmer --
+   * matches the getters' own "still returns the last value even when
+   * not tradeable" contract (`MarketStructureView`'s javadoc) rather
+   * than disappearing outright, so a chart-watcher can see what a level
+   * WAS without the drawing implying it's currently actionable. Zones
+   * drawn from session start to now, same convention
+   * `redrawVolumeProfileFigures()` already uses for POC/VAH/VAL, since a
+   * TJL zone has no historical anchor time of its own currently exposed
+   * (`ZoneRange` is price-only).
    */
   private void redrawMarketStructureFigures() {
     com.flow.flow.MarketStructureFeature ms = marketStructure;
@@ -926,12 +947,19 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     long start = sessionStartMs;
     long now = System.currentTimeMillis();
     boolean down = ms.trend() == com.flow.flow.MarketStructureView.Trend.DOWN;
+    java.util.Set<com.flow.flow.MarketStructureView.TradeableLevel> tradeable = ms.tradeableLevels();
 
-    drawMsZone(ms.lastTjl1(), codec, start, now, new Color(0, 100, 255), "TJL1");
-    drawMsZone(ms.lastTjl2(), codec, start, now, new Color(255, 140, 0), "TJL2");
-    drawMsZone(ms.lastAPlus(), codec, start, now, new Color(160, 32, 240), "A+");
-    drawMsZone(ms.lastSbrRbs(), codec, start, now, Color.GRAY, down ? "SBR" : "RBS");
-    drawMsZone(ms.lastDtDb(), codec, start, now, Color.YELLOW, down ? "DT" : "DB");
+    drawMsZone(ms.lastTjl1(), codec, start, now, new Color(0, 100, 255), "TJL1", true);
+    drawMsZone(ms.lastTjl2(), codec, start, now, new Color(255, 140, 0), "TJL2",
+        tradeable.contains(com.flow.flow.MarketStructureView.TradeableLevel.TJL2));
+    drawMsZone(ms.lastAPlus(), codec, start, now, new Color(160, 32, 240), "A+",
+        tradeable.contains(com.flow.flow.MarketStructureView.TradeableLevel.A_PLUS));
+    drawMsZone(ms.lastSbrRbs(), codec, start, now, Color.GRAY, down ? "SBR" : "RBS",
+        tradeable.contains(com.flow.flow.MarketStructureView.TradeableLevel.SBR_RBS));
+    drawMsZone(ms.lastDt(), codec, start, now, Color.YELLOW, "DT",
+        tradeable.contains(com.flow.flow.MarketStructureView.TradeableLevel.DT));
+    drawMsZone(ms.lastDb(), codec, start, now, Color.YELLOW, "DB",
+        tradeable.contains(com.flow.flow.MarketStructureView.TradeableLevel.DB));
 
     com.flow.flow.ZoneRange anchor = ms.lastTjl2();
     if (anchor != null) {
@@ -942,16 +970,17 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     }
   }
 
-  private void drawMsZone(com.flow.flow.ZoneRange zone, PriceCodec codec, long start, long now, Color color, String label) {
+  private void drawMsZone(com.flow.flow.ZoneRange zone, PriceCodec codec, long start, long now, Color color,
+                           String label, boolean tradeable) {
     if (zone == null) return;
     double lo = codec.fromTicks(zone.lowTicks());
     double hi = codec.fromTicks(zone.highTicks()) + instrument.getTickSize();
     Box box = new Box(start, lo, now, hi);
-    Color fill = new Color(color.getRed(), color.getGreen(), color.getBlue(), 50);
+    Color fill = new Color(color.getRed(), color.getGreen(), color.getBlue(), tradeable ? 50 : 15);
     box.setFillColor(fill);
-    box.setLineColor(color);
+    box.setLineColor(tradeable ? color : new Color(color.getRed(), color.getGreen(), color.getBlue(), 90));
     addFigure(box);
-    Label labelFigure = new Label(new Coordinate(now, (lo + hi) / 2.0), label);
+    Label labelFigure = new Label(new Coordinate(now, (lo + hi) / 2.0), tradeable ? label : label + " (inactive)");
     labelFigure.setLineColor(color);
     addFigure(labelFigure);
   }

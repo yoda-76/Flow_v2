@@ -21,11 +21,17 @@ import java.util.List;
  * returned allowed, so a blocked intent never pollutes churn/rate/PnL
  * tracking as if it had actually happened.
  *
- * "Session open" is currently a hard-coded ALLOW -- no session-boundary-
- * detection machinery exists anywhere in this codebase yet (a gap noted
- * independently while building VWAP, D-57, and market structure, D-60),
- * and D-29 already settled on a 24h session with no defined "closed"
- * window to check against. Revisit once that machinery exists generally.
+ * "Session open" is still a hard-coded ALLOW -- D-29 settled on a 24h
+ * session with no defined "closed" window to check against, so there is
+ * nothing for this specific verdict to gate on even now that
+ * SessionBoundary exists (D-68b). What SessionBoundary DOES do here:
+ * reversalsThisSession (D-19) and realizedPnlTicks (D-30's "daily"-loss
+ * PnL) are zeroed at the 17:00 CT rollover, same reset SessionBoundary's
+ * own javadoc explains. lastPosition/entryPriceTicks are deliberately
+ * NOT touched by this -- they track the actual live position, which must
+ * survive a calendar boundary untouched (flatten-at-session-end, D-24's
+ * sibling policy for the *start* of a session, isn't itself built yet,
+ * so a position can genuinely still be open when the boundary crosses).
  *
  * Daily-loss PnL is tracked in integer ticks, not dollars -- sidesteps
  * needing a per-instrument dollar-per-tick multiplier as a separate
@@ -56,6 +62,7 @@ public final class RiskChain {
   ) {}
 
   private final ExternalConfig config;
+  private final SessionBoundary.Tracker sessionTracker = new SessionBoundary.Tracker();
 
   // Churn guard + PnL state (drain-thread-only, same as every Feature).
   private int lastPosition = 0;
@@ -73,6 +80,16 @@ public final class RiskChain {
   }
 
   public Result evaluate(Intent intent, Context ctx) {
+    // Checked lazily here rather than per-event: evaluate() is only called
+    // on an actual intent change (Pipeline.handle()), so the reversal
+    // counter and daily PnL are only ever READ at that same cadence --
+    // catching the rollover by the next intent change after 17:00 CT is
+    // exactly as correct as catching it the instant it happens.
+    if (sessionTracker.advance(ctx.nowEventTimeMs())) {
+      reversalsThisSession = 0;
+      realizedPnlTicks = 0;
+    }
+
     List<Verdict> verdicts = new ArrayList<>();
 
     Verdict armedV = ctx.armed() ? allow("armed") : block("armed", "not armed");

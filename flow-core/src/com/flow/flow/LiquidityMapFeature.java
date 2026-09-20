@@ -190,4 +190,28 @@ public final class LiquidityMapFeature implements LiquidityMapView {
     }
     return null;
   }
+
+  @Override
+  public Double imbalanceAtLevels(int n) {
+    List<DomRow> bids = bidRows;
+    List<DomRow> asks = askRows;
+    if (bids.isEmpty() && asks.isEmpty()) return null;
+    double bidSum = sumNearest(bids, n, true);  // closest-to-market bid rows = highest prices first
+    double askSum = sumNearest(asks, n, false); // closest-to-market ask rows = lowest prices first
+    double total = bidSum + askSum;
+    return total == 0.0 ? 0.0 : (bidSum - askSum) / total;
+  }
+
+  /** Sums the n rows closest to the market (highest price first if descending, else lowest first). Not the hot path -- see class javadoc's O(n) reasoning. */
+  private static double sumNearest(List<DomRow> rows, int n, boolean descending) {
+    if (rows.isEmpty() || n <= 0) return 0.0;
+    List<DomRow> sorted = new ArrayList<>(rows);
+    sorted.sort(descending
+        ? (a, b) -> Integer.compare(b.priceTicks(), a.priceTicks())
+        : (a, b) -> Integer.compare(a.priceTicks(), b.priceTicks()));
+    double sum = 0.0;
+    int limit = Math.min(n, sorted.size());
+    for (int i = 0; i < limit; i++) sum += sorted.get(i).size();
+    return sum;
+  }
 }

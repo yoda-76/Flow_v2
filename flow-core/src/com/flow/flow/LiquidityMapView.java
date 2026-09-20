@@ -51,4 +51,23 @@ public interface LiquidityMapView extends Feature {
 
   /** Ask rows within windowTicks of the current mid-price, sorted by price. */
   List<DomRow> askRowsWithin(int windowTicks);
+
+  /**
+   * Book imbalance over the N nearest price LEVELS to the market on each
+   * side (README's own "imbalance at N levels" -- row count, not a tick
+   * window, unlike bidRowsWithin/askRowsWithin above): sum the resting
+   * size of the closest-to-market n bid rows and the closest-to-market n
+   * ask rows, then (bidSum - askSum) / (bidSum + askSum), in [-1, 1].
+   * Positive = bid-heavy (more resting size to buy near the market),
+   * negative = ask-heavy. 0.0 if both sums are zero (n <= 0, or rows
+   * exist but all report zero size). Null only if there's no book data
+   * on EITHER side at all yet (feature not ready) -- distinct from a
+   * genuine 0.0 reading, same nullable-means-"can't answer yet"
+   * convention as bestBidTicks()/bestAskTicks().
+   *
+   * If one side has fewer than n rows, every row it has is used (not
+   * padded with zeros) -- a thin side reads as genuinely thin rather
+   * than artificially diluted.
+   */
+  Double imbalanceAtLevels(int n);
 }

@@ -2489,6 +2489,408 @@ readable rather than being silently rewritten.
   indefinitely. Strip the whole test-trade path out once this is
   confirmed working (per the user's own instruction), not before.
 
+- **D-68** (2026-09-20) — **`MarketStructureFeatureTest` built: first
+  synthetic-sequence regression test for `MarketStructureFeature` (D-60),
+  weekend/no-live-market work per the user's own framing ("continue with
+  all the parked items in todo") while the user reviews
+  `marketStructureRules.md` separately.** Same discipline as
+  `TriggerEvaluatorTest` (D-45) — plain `main()`, no JUnit, direct
+  synthetic bar sequences, no MotiveWave involved
+  (`flow-core/src/com/flow/flow/MarketStructureFeatureTest.java`). Wired
+  into `build/build.sh` as a third gate (after the trigger test, before
+  compiling `flow-runtime`) — a future change that breaks the state
+  machine now fails the build, not just a live session.
+
+  **What it proves, and what it doesn't**: 30 checks across 5 scenarios
+  (CHOCH bootstrap, pullback validation anchored to the run's first
+  candle per resolution #2, the 1%-of-own-range zone math per resolution
+  #4 hand-verified against the real code and confirmed exact, the D-65
+  "don't give up on a non-confirming candle" bugfix, the first
+  flip-with-a-real-pair exercising resolutions #5 and #6 together, and
+  the CHOCH-driven bootstrap flip) all pass against the **current**
+  implementation. This is a regression baseline proving the code does
+  what `marketStructureRulesTemp.md`'s guesses say it should do — it is
+  **not** independent confirmation that those guesses are correct.
+  `marketStructureRules.md`'s pending review is still the open item; when
+  it lands, any contradicted resolution means this test's expected values
+  change too, not just the feature.
+
+  **Real finding surfaced while writing it, not yet acted on — flagged to
+  the user rather than fixed unilaterally, since it touches the state
+  machine under active review**: `performFlip()`'s CHOCH-driven branch
+  (`!hasRealPair`, i.e. the very first flip, before any real TJL pair has
+  ever formed) returns without ever calling `listener.onFlip(...)`. Since
+  `MarketStructureFileLogger` only logs discrete events through that
+  listener interface, today's behavior is that **the first flip is
+  invisible in `market_structure_feature.log`** — the trend genuinely
+  changes (confirmed by this test) and chart drawing still reflects it
+  correctly (`redrawMarketStructureFigures()` polls `trend()` directly,
+  not through the listener), but there is no journaled record explaining
+  why. Test `testChochDrivenFirstFlip_NoRealPair` locks in this as
+  *current, observed* behavior rather than silently relying on it —
+  deliberately named to make clear it's flagged, not endorsed.
+
+  **Second, incidental finding while hand-deriving test numbers**: the
+  flip-watch (`checkFlip`) runs on *every* bar against whatever
+  `lastTjl2` currently is, which is the CHOCH bootstrap point zone until
+  a real TJL pair forms. If that CHOCH close sits inside the price range
+  a later pullback trades through, two ordinary pullback-formation closes
+  below it trigger a premature CHOCH-driven flip before the pullback ever
+  reaches VALID — not a bug (CHOCH really is supposed to be a live
+  invalidation boundary from bar one), but a real, previously
+  undocumented sensitivity: how far price has drifted from the session's
+  very first candle governs whether early pullbacks can even complete
+  before getting reinterpreted as a trend flip. Worth keeping in mind
+  when reviewing `marketStructureRules.md`'s own framing of CHOCH's role,
+  not itself a defect in the test or the feature.
+
+- **D-69** (2026-09-20) — **Session-boundary-detection machinery built:
+  `SessionBoundary` (flow-core), 17:00 America/Chicago rollover, wired
+  into `RiskChain` (D-19's reversal cap, D-30's "daily"-loss PnL) and
+  `VWAPFeature` (D-57's own deferred true daily reset).** Closes the gap
+  flagged independently while building VWAP (D-57) and market structure
+  (D-60), and answers Q: "what exact clock time is the 24h session
+  boundary" — decided directly with the user (17:00 CT, matching CME
+  Globex's real electronic-session rollover for `@GC` and D-34's existing
+  Asia/London/NY windows already being in that zone), not derived from
+  any prior doc.
+
+  **Deliberately narrow scope**: `SessionBoundary.sessionIdFor(epochMillis)`
+  (pure, `ZoneId`-based, handles DST on its own) plus a small stateful
+  `Tracker` (`advance()`, drain-thread-only, first observation never
+  itself a transition so a feature attaching mid-session doesn't see a
+  spurious reset). Wired into exactly two places, both self-contained
+  counters safe to zero out: `RiskChain.reversalsThisSession`/
+  `realizedPnlTicks` (checked lazily at the top of `evaluate()`, since
+  that's only ever called on an intent change anyway — no need to check
+  every event) and `VWAPFeature`'s two running totals (checked on every
+  event including `ClockEvent`, so a quiet book still resets on schedule,
+  same reason D-23 injects synthetic clock events at all). **Deliberately
+  NOT wired**: D-21's `PriceCodec` tick anchor (flow-runtime) and the
+  journal's per-activation session file — re-anchoring ticks mid-run
+  would shift the coordinate system every tick-keyed feature already has
+  live state in (zone ranges, VP buckets, TJL zones), a materially bigger
+  and riskier change than zeroing a counter; the journal file boundary is
+  already handled at a coarser grain by MotiveWave's own study lifecycle.
+  `RiskChain.lastPosition`/`entryPriceTicks` are also deliberately left
+  untouched by the reset — they track the actual live position, which
+  must survive a calendar rollover unchanged (flatten-at-session-end
+  isn't built yet, so a position can genuinely still be open when the
+  boundary crosses).
+
+  Verified with three new synthetic test files (`SessionBoundaryTest`,
+  10 checks on the pure rollover math; `SessionResetWiringTest`, 17
+  checks exercising the actual `RiskChain`/`VWAPFeature` reset behavior
+  end to end), both wired into `build/build.sh` as permanent gates. Full
+  rebuild clean (5 test gates total now), replay-equivalence regression
+  still passes.
+
+  **Real finding surfaced while building the RiskChain test, flagged to
+  the user, not fixed unilaterally (safety-relevant logic)**:
+  `RiskChain.checkDailyLoss()` runs unconditionally on every `evaluate()`
+  call, including an exit — there is no "this intent reduces risk"
+  exemption. An exit whose own mark-to-market loss (at the price it's
+  evaluated against) alone breaches the daily-loss limit is **blocked
+  exactly like an entry would be**, which means a position can get stuck
+  open past the point where flattening it would be the correct move — the
+  opposite of what a "kill switch" should do. One provable consequence:
+  because of this, a **flat** position's `realizedPnlTicks` can never
+  legitimately end up past the limit through the chain's own gate at all
+  (the exit that would cross the line gets blocked before it can realize
+  it) — confirmed by construction while writing the test, not just
+  argued. The obvious fix is an explicit exemption for
+  risk-reducing/flattening intents from `checkDailyLoss` (and arguably
+  `checkSizeCap`), but this touches the daily-loss kill switch's actual
+  behavior, so it's recorded here rather than changed without sign-off.
+
+- **D-70** (2026-09-20) — **Book imbalance built: `LiquidityMapView.
+  imbalanceAtLevels(int n)`, closing README's original "imbalance at N
+  levels" item (line 175's own phrase) that had never gotten built.**
+  Added directly to `LiquidityMapView`/`LiquidityMapFeature` rather than
+  as a separate feature/view — it's a pure derived read over data
+  `LiquidityMapFeature` already stores (D-58's bid/ask rows), not new
+  state to track. Sums resting size over the N rows closest to the
+  market on each side (row COUNT, i.e. "levels" — deliberately not a
+  tick-distance window, unlike the existing `bidRowsWithin`/
+  `askRowsWithin`), returns `(bidSum-askSum)/(bidSum+askSum)` in
+  `[-1, 1]` (positive = bid-heavy). A side with fewer than n rows uses
+  every row it has rather than padding with zeros, so a thin book reads
+  as genuinely thin. Null only when there's no book data on either side
+  at all (not ready yet) — distinct from a genuine `0.0` reading, same
+  convention `bestBidTicks()`/`bestAskTicks()` already use.
+
+  Verified with `LiquidityMapFeatureTest` (5 checks: no-data-yet,
+  nearest-N-both-sides, thinner-side-uses-what-it-has, one-side-empty,
+  n=0 degenerate case), wired into `build/build.sh` as a sixth gate. Full
+  rebuild clean, replay-equivalence regression still passes. **Not wired
+  into the one existing real strategy** — nothing currently needs it,
+  matching README's own "don't over-abstract ahead of need"; it's just
+  available on `MarketState` for whichever strategy wants it next, same
+  as every other derived DOM view.
+
+- **D-71** (2026-09-20) — **`marketStructureRules.md`'s review is in.**
+  The user answered all 7 originally-flagged ambiguities directly
+  (`market_structure_review.md`), folded into that document's own text
+  now (each section marked `REVIEWED 2026-09-20`). This is a doc update,
+  not a code change — recorded here because of what it implies, not
+  because anything got rebuilt yet.
+
+  **5 of the 7 answers contradict `marketStructureRulesTemp.md`'s
+  guesses and what `MarketStructureFeature.java` (D-60) actually runs
+  today** — concrete, specific disagreements, not philosophical ones:
+  1. **CHOCH anchor** (point 3) — should be set at *initialization time*
+     (candle open if init lands exactly at a candle start, else the
+     first live price) — the code currently waits for the first bar's
+     **close** instead (the old guess).
+  2. **Pullback validation past 2 candles** (point 1) — should be a
+     *sliding* consecutive-pair check (`current vs. immediately
+     preceding`) — the code currently checks every candle against the
+     run's *first* candle only (the old guess).
+  3. **The "1%" base** (point 4) — should be the candle's own **body
+     height** (`|close-open|`) — the code currently uses the full
+     **high-low range** (the old guess), which produces different (and
+     currently probably wider) TJL/DT/DB zones than intended.
+  4. **Flip-watch's reference after a flip** (point 5) — should become
+     **DT/DB**, replacing `lastTJL2` in that role — the code currently
+     leaves `lastTJL2` equal to the old SBR/RBS value and never involves
+     DT/DB in flip-watch at all (the old guess, which
+     `MarketStructureFeatureTest`'s own "Resolution #5" checks currently
+     lock in as correct — they now test the *wrong* behavior).
+  5. **DT/DB search window start** (point 6) — should start at the
+     **SBR/RBS candle's own open time** — the code currently starts from
+     the **A+ candle** (`tjl1AnchorBar`) instead (the old guess).
+
+  Points 2 (pullback keeps growing) and 7 (CHOCH permanently retired)
+  matched the guesses exactly — no change needed there.
+
+  **2 new ambiguities surfaced by the review's own answers, not
+  pre-existing** (both written up in full in `marketStructureRules.md`'s
+  closing section, §1a and §6):
+  - Point 3's "at initialization time" CHOCH anchor collides with D-64's
+    historical warm-start, which feeds bars through the same state
+    machine *before* any live event — does CHOCH use whatever's fed
+    first (warm-start included) or specifically the first live price?
+  - Point 5/6's chained-flip mechanism (`CHOCH1 → DT1 → CHOCH2 → DB1`)
+    only ever shows DT/DB updating across the chain — does A+/SBR-RBS
+    stay frozen at the first flip's assignment for the whole chain, or
+    get reassigned somehow at each link too?
+
+  **Not yet acted on**: `MarketStructureFeature.java`,
+  `MarketStructureFeatureTest` (D-68), and `MarketStructureFileLogger`'s
+  behavior all need to change to match points 1/4/5/6 above — this is a
+  real implementation rework, not a doc-only fix, and hasn't been
+  started. `marketStructureRulesTemp.md` is marked superseded (banner
+  added) rather than deleted, kept as the historical record of what was
+  actually built against. Sequencing and the 2 new ambiguities are the
+  user's call, not decided here.
+
+- **D-72** (2026-09-20) — **The 2 new ambiguities D-71 raised are now
+  answered too** (`market_structure_new_review.md`), folded into
+  `marketStructureRules.md` (§1a, §6, closing section). Both resolved
+  cleanly, but one of the two answers introduces a real gap beyond what
+  D-71 already flagged.
+
+  1. **CHOCH-vs-warm-start (point 8)**: resolved — **historical
+     warm-start bars count as "the first candle."** If N historical bars
+     are fed through `MarketStructureFeature` before any live event
+     (D-64), the CHOCH anchor is the first fed bar's **open**, not
+     skipped and not overridden once live data begins. This doesn't
+     reopen point 3's separate open-vs-first-live-price branch for
+     whenever no warm-start bar exists at all — that still stands as
+     originally answered.
+  2. **Chained-flip A+/SBR-RBS fate (point 9)**: resolved, and more
+     precisely than either of D-71's two guessed readings — neither
+     "frozen forever" nor "reassigned every link." **A+/SBR-RBS are
+     tradeable for exactly the chain's first flip, then permanently drop
+     out for good.** From the chain's second flip onward, the tradeable
+     set is always exactly `{DT, DB}`: whichever of the two was just
+     crossed gets replaced by a freshly computed one of the same kind
+     (using D-71's already-established window-chaining rule), the other
+     carries over untouched, direction alternating with the newly
+     confirmed trend.
+
+  **New gap surfaced by point 9's own answer, not resolved by it**: point
+  9 introduces "tradeable levels" as a first-class concept —
+  `MarketStructureView`'s interface has no notion of it at all today
+  (only raw A+/SBR-RBS/DT-DB zone values, no "which of these should a
+  strategy currently treat as tradeable" signal), so this is a real API
+  gap beyond D-71's 5 already-flagged value-computation fixes, not just
+  another arithmetic correction. It also leaves one thing unanswered:
+  once a real new TJL1/TJL2 pair finally ends a chain, does the existing
+  `{DT,DB}` tradeable pair drop out immediately (replaced outright) or
+  stay tradeable alongside the fresh pair until the next flip? (The
+  flip-watch *reference* itself already reverts to the fresh `lastTJL2`
+  automatically per point 5's own wording — only the tradeable-set
+  question is open.) Full detail in `marketStructureRules.md`'s closing
+  section, point 10.
+
+  **Still not acted on**: no code has changed. The rework this decision
+  and D-71 together describe (5 behavioral fixes plus a new
+  tradeable-levels concept) remains fully queued, sequencing is the
+  user's call.
+
+- **D-73** (2026-09-20) — **`marketStructureRules.md`'s last open point
+  (10) is answered, directly in chat: the market-structure rules review
+  is now fully closed, all 10 points (the original 7 plus 3 that
+  surfaced along the way).** Resolution, stronger than either reading
+  D-72 offered: the moment a real new TJL1/TJL2 pair forms (at
+  continuation-confirmed, not waiting for the next flip), **every
+  previously-tradeable DT/DB level becomes non-tradeable immediately**,
+  fully replaced by the fresh pair, and flip-watch's reference switches
+  back to the fresh `lastTJL2` at that same moment — from then on, only
+  the latest TJL1/TJL2 pair is tradeable, exactly like normal
+  (non-chained) operation. No residual ambiguity.
+
+  **Where this leaves things**: `marketStructureRules.md` now has zero
+  open ⚠️ items — every section is marked REVIEWED/RESOLVED. The full
+  rework list stands exactly as D-71/D-72 already described: 5 concrete
+  behavioral fixes to `MarketStructureFeature.java` (CHOCH anchor timing
+  and value, sliding-pair pullback validation, body-height 1% base,
+  DT/DB as the post-flip reference, DT/DB window anchored to the
+  SBR/RBS candle) plus 1 new interface concept (`MarketStructureView`
+  needs a "which levels are currently tradeable" notion it doesn't have
+  today, including this decision's own immediate-replacement-on-new-pair
+  rule). `MarketStructureFeatureTest` (D-68) needs the same rework, not
+  just the feature — it currently locks in the wrong guesses as
+  passing tests. **Still not started** — no code has changed under any
+  of D-71/D-72/D-73; this decision only closes the rules question, the
+  implementation work is queued, sequencing is the user's call.
+
+- **D-74** (2026-09-20) — **Market structure rework complete:
+  `MarketStructureFeature`/`MarketStructureView` now implement the fully
+  reviewed rules (D-71/D-72/D-73), not `marketStructureRulesTemp.md`'s
+  superseded guesses.** All 5 concrete behavioral fixes plus the new
+  tradeable-levels concept are built and passing.
+
+  **The 5 fixes**:
+  1. CHOCH anchor = the first-processed bar's **open**, not close (works
+     for warm-start bars too, point 8 — same code path, no special-casing).
+  2. Pullback validation past 2 candles is a **sliding consecutive-pair**
+     check (current vs. immediately preceding), not anchored to the
+     run's first candle.
+  3. The "1%" zone offset is **body height** (`|close-open|`), not the
+     high-low range — `rangeOffsetTicks` renamed `bodyOffsetTicks` and
+     recomputed accordingly, applied identically to TJL1/TJL2 and DT/DB.
+  4. On a flip, the fresh **DT/DB (not SBR/RBS) becomes flip-watch's
+     reference** — `lastTjl2` is reassigned to the freshly computed
+     DT/DB at every flip, not left pointing at the old TJL2 value.
+  5. The DT/DB search window starts at the **SBR/RBS candle's own open**
+     (the TJL2-producing bar), not the A+ candle — tracked via a new
+     `windowAnchorBar`/`barsSinceAnchor` pair that replaces the old
+     `tjl1AnchorBar` entirely (A+'s own candle is no longer load-bearing
+     for anything). Chains correctly across multiple pair-less flips:
+     each flip's window starts from wherever the *previous* flip's
+     DT/DB was computed, not always from the original SBR/RBS candle —
+     verified with a live-diverging test case (see below).
+
+  **The new concept**: `MarketStructureView.TradeableLevel` (`TJL2`,
+  `A_PLUS`, `SBR_RBS`, `DT`, `DB` — TJL1 deliberately excluded, it's
+  never itself the tradeable/invalidation boundary) and
+  `tradeableLevels(): Set<TradeableLevel>`, implementing the full
+  lifecycle points 9/10 describe: empty while only CHOCH is active;
+  `{TJL2}` in normal operation; `{A_PLUS, SBR_RBS, DT-or-DB}` for
+  exactly the chain's first flip; `{DT, DB}` from the second flip
+  onward, refreshing whichever side was just crossed (`lastDt()`/
+  `lastDb()` are now two separate fields, not one shared `lastDtDb()`
+  slot — required, since both must persist simultaneously mid-chain);
+  reset to `{TJL2}` (and `lastAPlus`/`lastSbrRbs`/`lastDt`/`lastDb` all
+  nulled) the instant a fresh real TJL pair forms, at any point, not
+  waiting for the next flip.
+
+  **Downstream consumers updated to match**: `MarketStructureFileLogger`
+  (flow-runtime) now logs `tradeableLevels` on every `TJL_FORMED`/`FLIP`
+  line. `FlowRuntimeStudy.redrawMarketStructureFigures()` draws `lastDt()`/
+  `lastDb()` as separate boxes (no more trend-inferred relabeling of one
+  shared slot) and dims non-tradeable zones rather than hiding them, so a
+  chart-watcher can see what a level *was* without the drawing implying
+  it's currently actionable. `MarketStructureLvnReversalStrategy` gained
+  a guard so its area-of-interest read (`ms.lastTjl2()`) only fires when
+  `tradeableLevels()` actually contains `TJL2`, `DT`, or `DB` — fixes the
+  exact CHOCH foot-gun point 3 warned about (the strategy could
+  previously have treated the non-tradeable CHOCH bootstrap zone as a
+  real area of interest). Not expanded to also trade off `A_PLUS`/
+  `SBR_RBS` — that stays a single-zone area-of-interest concept per its
+  own D-62 design; using the other tradeable levels is separate,
+  not-yet-scoped strategy work.
+
+  **Verification**: `MarketStructureFeatureTest` (D-68) rewritten
+  entirely — 53 checks, including one continuous scenario that forms a
+  real TJL pair, chains through 3 flips (CHOCH1→CHOCH2→CHOCH3), and ends
+  the chain with a fresh real pair, exercising points 5/6/9/10 together
+  against hand-derived numbers. One check is deliberately adversarial:
+  the CHOCH2 DT/DB-window test uses a candle (the original SBR/RBS bar)
+  whose own low is numerically LOWER than the correct chained anchor's
+  low — if the window had wrongly stayed anchored to the original
+  SBR/RBS candle forever (the pre-rework behavior), the test's expected
+  DB value would be provably different from what a correctly-chained
+  window produces, so this isn't just checking numbers match, it
+  actively distinguishes the two possible implementations. All 53 pass
+  against the real code, on the first run, no debugging needed. Full
+  rebuild clean (6 `flow-core` test gates + the safety reflection test),
+  replay-equivalence regression still passes, deployed. **Not yet
+  live-verified** — market's closed, consistent with everything else
+  built this weekend.
+
+- **D-75** (2026-09-20) — **Raw-log auto-deletion built: `LogRetention`
+  (flow-core), 48h window, per the user's own stated policy** (triaged
+  from a `temp.txt` scratch note into `todo.md` §4b earlier this
+  session). Deletes `raw.jsonl` from any session directory whose
+  embedded start time is older than 48 hours — `decisions.jsonl` and the
+  directory itself are **never** touched, since that tier is already
+  exactly what the user called "the analysed data" (price trace,
+  liquidity snapshots, etc. all live there per D-15's own design, not in
+  `raw.jsonl`). Closes the *duration* half of D-07/D-35's long-open
+  "2-3 days, TBD" figure with a firm number; Q-10 (whether per-order DOM
+  detail gets captured in the raw tier at all) is unaffected, still open.
+
+  Zero SDK dependency — pure file I/O, so it lives in flow-core (not
+  buried as a private `FlowRuntimeStudy` helper) and is testable the same
+  way everything else this session was: `LogRetentionTest` runs against a
+  real temp directory (not mocked), 13 checks covering the directory-name
+  parsing (including a strategyId containing underscores, which could
+  otherwise be mis-parsed, and a negative `instanceId`, since
+  `System.identityHashCode` can return one) and the actual prune
+  behavior (an old directory's `raw.jsonl` is deleted while its
+  `decisions.jsonl` survives; a recent directory is untouched; a
+  non-matching directory name is skipped entirely rather than
+  misinterpreted; an old directory with no `raw.jsonl` at all doesn't
+  crash). Wired into `build/build.sh` as a seventh gate.
+
+  Called once per activation from `FlowRuntimeStudy.startSession()`
+  (same "check once at session start" pattern risk config loading
+  already uses), journaled as a `log_retention_pruned` decisions-tier
+  record so a session's own startup is traceable. Full rebuild clean,
+  replay-equivalence regression still passes, deployed. **Not yet
+  live-verified** — the code path only runs on an actual MotiveWave
+  activation, which hasn't happened since this was built (market's
+  closed).
+
+- **D-76** (2026-09-20) — **Offline journal comparison/summary tooling
+  built, per README's own plan** ("Comparison across strategies is done
+  offline, from the journals... can be Python"), §5 of `todo.md`.
+  `analysis/journal_summary.py` (new top-level directory, first Python in
+  this repo — matches README's own "the constraint is the *runtime* is
+  all-Java, not every script").
+
+  Two modes: single-session summary (session header, per-record-type
+  counts, a health check for `DISARM`/`GAP_MARKER`, and a chronological
+  list of every non-heartbeat "notable" record — rendered compactly for
+  known types like `intent_changed`/`risk_verdict`/`level_trace`/
+  `zone_trace`, falling back to raw JSON for anything new so it never
+  silently drops an unrecognized record type) and two-session comparison
+  (per-type count diff, `intent_changed` sequence equality check).
+  Deliberately scoped to `decisions.jsonl` only — not `raw.jsonl`
+  (tick-level, not meant for human reading, D-15's own split) and not
+  the diagnostic `*_feature.log` files (a separate, throwaway thing from
+  the real two-tier journal this tool is about).
+
+  Verified directly against real recorded sessions under `logs/` (not
+  synthetic — this tool's whole job is reading real journal output), both
+  modes, output confirmed sensible by inspection. No test harness of its
+  own (matches this project's existing stance that analysis tooling is
+  outside the Java-only runtime's testing discipline) — its own output
+  was manually checked against the same sessions' known content instead.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

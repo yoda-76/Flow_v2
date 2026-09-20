@@ -21,6 +21,26 @@ echo "== trigger evaluator synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.TriggerEvaluatorTest
 echo "(trigger test passed -- see output above)"
 
+echo "== market structure feature synthetic test =="
+"$JAVA" -cp build/classes/core com.flow.flow.MarketStructureFeatureTest
+echo "(market structure test passed -- see output above)"
+
+echo "== session boundary synthetic test =="
+"$JAVA" -cp build/classes/core com.flow.core.SessionBoundaryTest
+echo "(session boundary test passed -- see output above)"
+
+echo "== session-reset wiring synthetic test (RiskChain + VWAPFeature) =="
+"$JAVA" -cp build/classes/core com.flow.core.SessionResetWiringTest
+echo "(session-reset wiring test passed -- see output above)"
+
+echo "== liquidity map book-imbalance synthetic test =="
+"$JAVA" -cp build/classes/core com.flow.flow.LiquidityMapFeatureTest
+echo "(liquidity map test passed -- see output above)"
+
+echo "== log retention synthetic test =="
+"$JAVA" -cp build/classes/core com.flow.journal.LogRetentionTest
+echo "(log retention test passed -- see output above)"
+
 echo "== flow-runtime (SDK + flow-core) =="
 rm -rf build/classes/runtime
 mkdir -p build/classes/runtime

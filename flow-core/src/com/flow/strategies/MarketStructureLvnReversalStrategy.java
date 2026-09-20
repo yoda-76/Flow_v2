@@ -192,7 +192,23 @@ public final class MarketStructureLvnReversalStrategy implements FlowStrategy {
 
   private Intent search(MarketState state, MarketStructureView ms, int price) {
     ZoneRange aoi = ms.lastTjl2();
-    if (aoi == null) return Intent.none(id(), intentSeq.incrementAndGet());
+    // D-74 rework: lastTjl2() also holds the CHOCH bootstrap point
+    // (never tradeable, marketStructureRules.md §1a) and, during a chain
+    // of pair-less flips, whichever DT/DB is currently flip-watch's
+    // reference -- both of which ARE genuinely tradeable per §6's
+    // reviewed rules. Gate on tradeableLevels() rather than just
+    // null-checking, so this strategy never treats the CHOCH placeholder
+    // as a real area of interest (the exact foot-gun the review's own
+    // point 3 warned about). Deliberately NOT expanded to also trade off
+    // A+/SBR-RBS during a chain's first flip -- this strategy's area-of-
+    // interest concept stays single-zone, per its own D-62 design; using
+    // the other tradeable levels is future strategy work, not folded in
+    // here.
+    Set<MarketStructureView.TradeableLevel> tradeable = ms.tradeableLevels();
+    boolean aoiIsTradeable = tradeable.contains(MarketStructureView.TradeableLevel.TJL2)
+        || tradeable.contains(MarketStructureView.TradeableLevel.DT)
+        || tradeable.contains(MarketStructureView.TradeableLevel.DB);
+    if (aoi == null || !aoiIsTradeable) return Intent.none(id(), intentSeq.incrementAndGet());
 
     if (trackedAreaOfInterest == null || !trackedAreaOfInterest.equals(aoi)) {
       trackedAreaOfInterest = aoi; // (re)defined -- see class javadoc point 2

@@ -1,5 +1,29 @@
 # Market Structure Rules — TEMPORARY, ambiguities resolved by best judgment
 
+**SUPERSEDED 2026-09-20 — kept only as historical record, do not build
+against this file anymore.** The user has now reviewed
+`marketStructureRules.md` directly (`market_structure_review.md`), and
+the real answers are folded into that file's own text (each marked
+`REVIEWED 2026-09-20`). **5 of the 7 guesses below turned out wrong**:
+points 1 (CHOCH anchor — this file guessed "close of first candle,"
+actual answer is "at init time, open-or-live-price"), 2's N>2 case (this
+file guessed "anchored to the run's first candle," actual answer is
+"sliding consecutive-pair"), 4 ("1% of what" — this file guessed
+high-low range, actual answer is body height), 5 (flip-watch's next
+reference — this file guessed SBR/RBS, actual answer is DT/DB), and 6
+(DT/DB window — this file guessed "from the A+ candle," actual answer is
+"from the SBR/RBS candle"). Only points 3 and 7 turned out to match this
+file's guesses. `MarketStructureFeature.java` (D-60) and
+`MarketStructureFeatureTest` (D-68) still implement/test THIS file's
+(wrong) guesses as of 2026-09-20 — see `marketStructureRules.md`'s own
+closing section and `decisions.md` for the pending rework.
+
+---
+
+**Original framing below, preserved verbatim as the historical record of
+what was actually built against, not updated to match the real
+answers:**
+
 **Status: unreviewed by the user.** `marketStructureRules.md` (the
 original distillation, all 7 ambiguities left open) stays as the
 source of truth pending review. This file exists only so implementation
