@@ -2891,6 +2891,114 @@ readable rather than being silently rewritten.
   outside the Java-only runtime's testing discipline) — its own output
   was manually checked against the same sessions' known content instead.
 
+- **D-77** (2026-09-20) — **Backtest data source: MotiveWave's own
+  `DataSeries`, ~24.2 days of `@GC` 1-minute OHLC, not TradingView.**
+  Platform question answered by a throwaway experiment in
+  `../motivewave/experiments/` (`HistoricalDepthProbe.java`, full
+  progression in `../motivewave/docs/dynamic/findings.md`, 2026-09-20):
+  MotiveWave's `DataSeries` reached exactly 25,000 1-minute `@GC` bars
+  (2026-08-25T15:34Z through 2026-09-18T21:00Z) after raising the
+  client-side "Max Linear Bars" chart setting and manually scrolling the
+  chart back — the series stopped precisely at that configured number,
+  not an independent, lower data-provider wall, so more may be reachable
+  by raising the setting further. Not pursued further this session — the
+  user chose to proceed with the ~24.2 days already reached rather than
+  push for more.
+
+  Per the user's own stated preference ("if the data is provided i want
+  to keep everything in motivewave only"), this closes the data-source
+  question in MotiveWave's favor — the TradingView fallback that was on
+  the table if MotiveWave's own data proved insufficient is not needed.
+  `HistoricalOhlcExporter.java` (same experiments directory) dumps the
+  currently-loaded `DataSeries` to a plain CSV
+  (`timestampMs,open,high,low,close,volume`) in `FLOW_V2/analysis/data/`
+  — deliberately written into FLOW_V2's own tree rather than the
+  experiments repo's `logs/`, since the CSV is a dataset FLOW_V2's
+  backtest consumes, not a finding about the platform itself.
+
+  **Revisit later**: ~24.2 days is enough to exercise the backtest
+  engine and get a first read, but is genuinely thin for a swing/trend
+  system that needs many pullback-flip cycles to say anything
+  statistically meaningful — worth pushing "Max Linear Bars" higher (or
+  actually falling back to TradingView) once the harness itself is
+  proven out and more history is actually wanted.
+
+- **D-78** (2026-09-20) — **Order-flow execution rules distilled for a
+  future review, prep work only — not picked up yet, per the user's own
+  explicit instruction.** Same precedent as `marketStructureRules.md`,
+  but distilled from the already-written code itself (no external spec
+  exists for this one) rather than external Pine Script drafts: an
+  agent read `AbsorptionEvaluator`/`AggressionEvaluator`/`SweepEvaluator`
+  and `MarketStructureLvnReversalStrategy` in full, plus D-27/D-62, and
+  wrote `docs/dynamic/orderFlowExecutionRules.md` — same structure as
+  the market-structure precedent (numbered sections, ⚠️ AMBIGUOUS
+  markers, a closing "Open questions, collected" section), touching no
+  other file.
+
+  **15 points flagged**, covering: LVN "biggest" selection (width vs.
+  volume, no persistent identity across wakes), the shared
+  `TOUCH_TOLERANCE_TICKS` constant reused across three different
+  proximity checks, absorption's concentration multiple and single-bar-
+  only scope, aggression's recency window (and the underlying "big
+  trade" threshold, flagged as out-of-scope/relevant rather than
+  distilled since its own source wasn't in the reading list), sweep's
+  drop-ratio threshold and single-prior-sample comparison, the
+  ANY-one-of-three (absorption OR aggression OR sweep) combination rule,
+  the stop buffer size, the 2:1 reward:risk ratio (D-62's own javadoc
+  already self-flags this one — "revisit once this actually gets tested
+  for real"), and the `EveryTick` wake cadence versus D-27's stated
+  proximity-trigger architectural preference.
+
+  No code changed, no fixes proposed — pure distillation, same as
+  `marketStructureRules.md`'s own pre-review form. Waiting on the user
+  to actually pick up this review, same status as the todo item that
+  requested it.
+
+- **D-79** (2026-09-20) — **Market structure backtest engine built and
+  run end-to-end against real MotiveWave-exported `@GC` data — first
+  real result obtained, not yet trusted as a signal, just a working
+  harness.** `MarketStructureBacktest` (flow-core, zero SDK dependency,
+  `com.flow.backtest`): reads a plain CSV
+  (`timestampMs,open,high,low,close,volume`), feeds each bar through the
+  real, reworked `MarketStructureFeature` (D-74), and simulates the
+  proposed pure-market-structure entry rule (trade direction = current
+  `trend()`, enter on any bar whose range touches a zone in
+  `tradeableLevels()`, stop `stopBufferTicks` beyond that zone's far
+  edge, target at a fixed reward:risk multiple — defaults 2 ticks / 2:1,
+  matching `MarketStructureLvnReversalStrategy`'s own convention). One
+  position at a time; a stop/target hit and a fresh signal on the exact
+  same bar deliberately does **not** re-enter same-bar (an unrealistic
+  whipsaw artifact of checking exit-then-entry against one bar's OHLC
+  range, not a real trading decision — found and fixed while writing the
+  synthetic test below, before ever running on real data).
+
+  Verified with `MarketStructureBacktestTest` (13 checks: exact R-multiple
+  math on a target-hit win and a stop-hit loss, hand-derived against the
+  same bar-construction technique `MarketStructureFeatureTest` already
+  uses; the no-same-bar-re-entry guard explicitly exercised; a CSV
+  round-trip). Wired into `build/build.sh` as an eighth gate. One real
+  bug caught by the test before real data was ever touched: an early
+  version of the test's own setup bars had the continuation bar dip back
+  into the freshly-formed TJL2 zone, triggering entry a bar earlier than
+  intended — not an engine bug, but a reminder that the continuation bar
+  itself can legitimately touch the zone it just helped create.
+
+  **First real run**, `analysis/data/GC_1m_1789910262328.csv` (D-77's
+  MotiveWave export, 25,000 bars / ~24.2 days): 734 valid pullbacks, 501
+  TJL pairs formed, 245 flips, 1,206 trades (545W/631L/30 flat),
+  totalR=189.00, avgR=+0.16/trade, maxDrawdownR=36.00. **Read with real
+  caveats, not as a signal to trust**: ~1 trade every 20 bars is a very
+  loose entry filter (expected — this is deliberately the unconfirmed,
+  no-order-flow pass), no transaction costs/slippage modeled, and 24.2
+  days is thin for a swing system to say anything statistically
+  meaningful. Full trade list in
+  `analysis/data/backtest_run_1_output.txt`. This is a first working
+  end-to-end pass, not a conclusion about the strategy's edge.
+
+  **Not yet decided**: whether `analysis/data/` (the raw CSV + run
+  output, ~1.1 MB) should be gitignored or committed — flagged, not
+  decided, since it's real exported market data rather than source.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

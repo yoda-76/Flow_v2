@@ -39,11 +39,38 @@ stance). Status:
    discussed" per the user's own words — not guessed at rather than
    built wrong.
 
-Everything built today is compile-clean, all 7 `flow-core` test gates +
+4. **Backtest — first real run done (D-79).** Data source resolved via
+   a throwaway MotiveWave experiment (D-77: `HistoricalDepthProbe`/
+   `HistoricalOhlcExporter` in `../motivewave/experiments/`) — found
+   MotiveWave's own `DataSeries` caps at the client-side "Max Linear
+   Bars" setting (25,000 bars / ~24.2 days of `@GC` 1-min, not an
+   independent data-provider wall), exported to
+   `analysis/data/GC_1m_1789910262328.csv`, MotiveWave-only per the
+   user's stated preference. `MarketStructureBacktest` (flow-core,
+   `com.flow.backtest`) built, tested (13 checks, real bug caught before
+   touching real data), wired into `build/build.sh` as an eighth gate,
+   and actually run against that CSV: 1,206 trades, totalR=189.00,
+   avgR=+0.16/trade — explicitly not a signal to trust yet (loose entry
+   filter by design, no costs modeled, thin sample). **Also**: at the
+   user's own request, an agent distilled the order-flow execution
+   rules into `docs/dynamic/orderFlowExecutionRules.md` for a *future*
+   review (D-78, 15 points flagged) — prep only, the user explicitly is
+   not picking up that review yet.
+
+   **Learned the hard way, worth remembering**: `FLOW_V2` and
+   `../motivewave/experiments` deploy into the SAME `MotiveWave
+   Extensions/dev` directory and each wipes it before deploying its own
+   classes — running either side's build again silently removes
+   whatever the other side had deployed. Caught mid-session running
+   FLOW_V2's `build.sh` for an unrelated compile-check, which briefly
+   removed the deployed OHLC exporter study (recovered fine — MotiveWave
+   had the class cached from the same running session).
+
+Everything built today is compile-clean, all 8 `flow-core` test gates +
 the safety reflection test pass, replay-equivalence regression holds,
-deployed — **none of it has been live-verified**, market's closed
-throughout. Checking in with the user before either designing the
-remaining retention formats or moving to the backtest phase.
+deployed (FLOW_V2's runtime, as of the last `build.sh` run) —
+**nothing except the backtest's own offline run has been live-verified**,
+market's closed throughout.
 
 **Just before that (2026-09-20)**: point 10, the last open rules
 question, is answered directly (D-73) — `marketStructureRules.md`'s
@@ -1195,26 +1222,20 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   prior reading). "Imbalance stacking" specifically not built — the
   user's actual first-strategy design used absorption/aggression/sweep
   instead; imbalance stacking stays unbuilt until something needs it.
-- [ ] **Order-flow execution rules review — planned by the user, explicitly
-  NOT picked up yet** (raised 2026-09-20, same session as the market
-  structure backtest ask). Same process as `marketStructureRules.md`'s
-  review: the user intends to review the order-flow **execution** rules
-  the same way — likely covering the entry evaluators just above
-  (`AbsorptionEvaluator`/`AggressionEvaluator`/`SweepEvaluator` and how
-  `MarketStructureLvnReversalStrategy` combines them, "any one, not all
-  three required," per that strategy's own D-62 javadoc) and probably
-  the stop/target rules (D-62 points 7/8: stop = a small buffer beyond
-  the area of interest's far edge, target = a fixed 2:1 reward:risk
-  multiple) — all of which were explicitly built by best judgment, not
-  reviewed, exactly the same "unreviewed, flag for later" status
-  `marketStructureRulesTemp.md` had before its own review. **Do not
-  start this review or rework unprompted** — wait for the user to
-  actually bring the review, the same way `marketStructureRules.md`'s
-  review arrived as its own explicit files/messages, not inferred from
-  context. When it does happen, the precedent is: distill the rules into
-  a `docs/dynamic/` doc first (own review pass, ⚠️ AMBIGUOUS flags for
-  anything under-specified), get the user's direct answers, fold them
-  into that doc, only then touch the code — not the other way around.
+- [~] **Order-flow execution rules review — distillation done (D-78),
+  review itself explicitly NOT picked up yet.** Same process as
+  `marketStructureRules.md`: `docs/dynamic/orderFlowExecutionRules.md`
+  now exists, distilled from the actual code (no external spec exists
+  for this one, unlike market structure's Pine Script drafts) —
+  `AbsorptionEvaluator`/`AggressionEvaluator`/`SweepEvaluator`, how
+  `MarketStructureLvnReversalStrategy` combines them ("any one, not all
+  three required"), and the stop/target rules, all originally built by
+  best judgment per D-62's own javadoc. 15 points flagged ⚠️ AMBIGUOUS,
+  collected in that document's closing section — full list in
+  `decisions.md` D-78. **Do not start the actual review or any code
+  rework unprompted** — wait for the user to bring their own answers,
+  the same way `marketStructureRules.md`'s review arrived as its own
+  explicit files/messages, not inferred from context.
 
 ## Strategy signals — chart drawing `[DONE]`
 
@@ -1386,8 +1407,57 @@ requirements, not a plan.
   `analysis/journal_summary.py` — single-session summary + two-session
   comparison, verified against real recorded sessions under `logs/`.
 - [ ] Commit first recorded fixtures from real sessions (D-20)
-- [ ] **Backtest the finalized market structure rules — plain OHLC only,
-  no order-flow execution modeling** (raised by the user 2026-09-20,
+- [~] **Backtest the finalized market structure rules — plain OHLC only,
+  no order-flow execution modeling.** **First real run done (2026-09-20,
+  D-79) — working end to end, results not yet trusted as a signal.**
+
+  Data source resolved (D-77): `HistoricalDepthProbe.java` (throwaway
+  experiment, `../motivewave/experiments/`) found MotiveWave's own
+  `DataSeries` caps at exactly the client-side "Max Linear Bars" chart
+  setting (25,000 in this account) after raising that setting and
+  manually scrolling the chart back — not an independent data-provider
+  wall, so more may be reachable by raising it further (not pursued).
+  `HistoricalOhlcExporter.java` (same experiments dir) dumped the loaded
+  25,000-bar `@GC` 1-minute series (~24.2 days,
+  2026-08-25T15:34Z–2026-09-18T21:00Z) to
+  `analysis/data/GC_1m_1789910262328.csv`. MotiveWave-only, per the
+  user's stated preference — the TradingView fallback wasn't needed.
+
+  Entry rule as proposed (trade direction = current trend, enter on any
+  bar touching a `tradeableLevels()` zone, stop 2 ticks beyond its far
+  edge, target 2:1 R:R) is now actually implemented and run, not just
+  proposed — no objection raised, proceeded on "let's jump on the
+  backtest."
+
+  `MarketStructureBacktest` (flow-core, `com.flow.backtest`, zero SDK)
+  built, verified with `MarketStructureBacktestTest` (13 checks,
+  including a real bug caught before real data was touched — a
+  continuation bar dipping back into the zone it just formed, triggering
+  entry a bar earlier than a test intended), wired into `build/build.sh`
+  as an eighth gate.
+
+  **First real run**: 734 valid pullbacks, 501 TJL pairs, 245 flips,
+  1,206 trades (545W/631L/30 flat), totalR=189.00, avgR=+0.16/trade,
+  maxDrawdownR=36.00 — full trade list in
+  `analysis/data/backtest_run_1_output.txt`. Explicitly **not** a signal
+  to trust yet: ~1 trade/20 bars is a loose entry filter by design (no
+  order-flow confirmation at all, per this item's own framing), no
+  costs/slippage modeled, and 24.2 days is thin for a swing system.
+  Whether `analysis/data/`'s exported CSV + run output should be
+  gitignored or committed is flagged, not decided (D-79).
+
+  **Cross-repo note carried over from setting this up**: both this repo
+  and `../motivewave/experiments` deploy into the same
+  `MotiveWave Extensions/dev` directory and each wipes it before
+  copying its own classes in — running FLOW_V2's `build/build.sh` again
+  (e.g. to build a new feature) will silently remove the deployed
+  experiment studies (`HistoricalDepthProbe`/`HistoricalOhlcExporter`)
+  and vice versa. Caught this the hard way mid-session (see
+  `decisions.md` D-77's trail) — worth remembering before either side
+  runs its own build/deploy again while the other's study is still
+  needed live.
+
+  Original framing (raised by the user 2026-09-20,
   sequenced explicitly *after* the market-structure rework, the
   off-market forward-testing/historical-retention work, and only "if we
   have any tokens left" — not started, no design yet). **A deliberate,

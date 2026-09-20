@@ -41,6 +41,10 @@ echo "== log retention synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.journal.LogRetentionTest
 echo "(log retention test passed -- see output above)"
 
+echo "== market structure backtest engine synthetic test =="
+"$JAVA" -cp build/classes/core com.flow.backtest.MarketStructureBacktestTest
+echo "(backtest engine test passed -- see output above)"
+
 echo "== flow-runtime (SDK + flow-core) =="
 rm -rf build/classes/runtime
 mkdir -p build/classes/runtime
