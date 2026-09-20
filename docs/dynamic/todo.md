@@ -1408,8 +1408,43 @@ requirements, not a plan.
   comparison, verified against real recorded sessions under `logs/`.
 - [ ] Commit first recorded fixtures from real sessions (D-20)
 - [~] **Backtest the finalized market structure rules — plain OHLC only,
-  no order-flow execution modeling.** **First real run done (2026-09-20,
-  D-79) — working end to end, results not yet trusted as a signal.**
+  no order-flow execution modeling.** **Engine working end to end,
+  4 exploratory runs done (2026-09-20, D-79/D-80) — explicitly
+  hit-and-trial, not a conclusion, per the user's own framing; paused
+  here to return to other work.**
+
+  Extended (D-80) beyond the first run: `StopRule.ZONE_SIZE_MULTIPLE`
+  (stop = a multiple of the touched zone's own width, not a fixed tick
+  buffer) alongside the original `FIXED_BUFFER_TICKS`, and
+  `aggregate(bars, intervalMs)` to build coarser bars (5-minute tried)
+  directly from the already-exported 1-minute CSV rather than
+  re-exporting from MotiveWave per timeframe. Both verified
+  synthetically first (16 checks total in `MarketStructureBacktestTest`).
+
+  | Run | Timeframe | Stop | R:R | Trades | Win% | avgR | maxDD(R) |
+  |---|---|---|---|---|---|---|---|
+  | 1 | 1m | 2 ticks fixed | 2:1 | 1206 | ~45.2% | +0.16 | 36.00 |
+  | 2 | 5m | 1.5× zone size | 2:1 | 218 | ~22.5% | -0.30 | 70.00 |
+  | 3 | 5m | 1.5× zone size | 1:1 | 234 | ~27.8% | -0.42 | 100.00 |
+  | 4 | 1m | 1.0× zone size | 1:1 | 2016 | ~34.3% | -0.23 | 477.00 |
+  | 5 | 1m | $3 fixed distance | 1:1 | 1013 | ~50.3% | +0.01 | 38.00 |
+
+  Added a third stop convention for run 5, `StopRule.FIXED_PRICE_DISTANCE`
+  (flat $-distance from entry, independent of the touched zone's own
+  size — its own synthetic check added first). Run 1's fixed-tick-buffer
+  stop is the only clearly positive result; the zone-size-based runs
+  (2/3/4) were clearly negative; the flat-$-distance run (5) landed at
+  breakeven. Not enough runs to call it a real pattern (no run isolates
+  stop-convention as the only changed variable), but the one consistent
+  thread so far.
+
+  All three share the same entry filter (touch any tradeable zone, zero
+  order-flow confirmation) — consistent with that filter alone not being
+  a real edge on its own, which is exactly what
+  `orderFlowExecutionRules.md`'s confirmation logic exists to add, not a
+  finding against the market-structure rules themselves. Full output
+  per run under `analysis/data/backtest_run_{1,2,3}*.txt`. Full detail
+  and caveats in `decisions.md` D-79/D-80.
 
   Data source resolved (D-77): `HistoricalDepthProbe.java` (throwaway
   experiment, `../motivewave/experiments/`) found MotiveWave's own

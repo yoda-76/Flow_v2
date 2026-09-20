@@ -2999,6 +2999,77 @@ readable rather than being silently rewritten.
   output, ~1.1 MB) should be gitignored or committed — flagged, not
   decided, since it's real exported market data rather than source.
 
+- **D-80** (2026-09-20) — **Backtest engine extended (configurable stop
+  rule + bar aggregation), three exploratory runs done, explicitly
+  "hit and trial" per the user's own framing — not a conclusion about
+  the strategy, a first read on parameter sensitivity.**
+
+  `MarketStructureBacktest.StopRule` added (`FIXED_BUFFER_TICKS`, the
+  original D-79 convention, kept — and `ZONE_SIZE_MULTIPLE`, stop
+  distance from entry = a multiple of the touched zone's own width, not
+  a fixed tick buffer). `aggregate(bars, intervalMs)` added — buckets
+  already-loaded bars by each bar's own start-time floor-divided to the
+  interval boundary (not by row count, so a gap in the source data can't
+  silently misalign grouping), used to build 5-minute bars directly from
+  the already-exported 1-minute CSV (D-77) rather than re-exporting from
+  MotiveWave for every timeframe tried. Both verified with 2 new
+  synthetic checks in `MarketStructureBacktestTest` (16 total now) before
+  touching real data again — exact stop/target arithmetic for the new
+  rule, and an aggregation test with deliberately mismatched bucket
+  boundaries (a single trailing 1-minute bar forming its own partial 5m
+  bucket) to catch a row-count-based bug the timestamp-bucketing approach
+  specifically avoids.
+
+  **Three runs, same `GC_1m_1789910262328.csv` source, saved in full
+  under `analysis/data/`:**
+
+  | Run | Timeframe | Stop | R:R | Trades | Win% | totalR | avgR | maxDD(R) |
+  |---|---|---|---|---|---|---|---|---|
+  | 1 (D-79) | 1m | 2 ticks fixed buffer | 2:1 | 1206 | ~45.2% | 189.00 | +0.16 | 36.00 |
+  | 2 | 5m | 1.5× zone size | 2:1 | 218 | ~22.5% | -65.00 | -0.30 | 70.00 |
+  | 3 | 5m | 1.5× zone size | 1:1 | 234 | ~27.8% | -98.00 | -0.42 | 100.00 |
+  | 4 | 1m | 1.0× zone size | 1:1 | 2016 | ~34.3% | -470.00 | -0.23 | 477.00 |
+
+  | 4 | 1m | 1.0× zone size | 1:1 | 2016 | ~34.3% | -470.00 | -0.23 | 477.00 |
+  | 5 | 1m | $3 fixed distance | 1:1 | 1013 | ~50.3% | 7.00 | +0.01 | 38.00 |
+
+  **Runs 4 and 5 added after the "last hit and trial" note above** — the
+  user kept going a couple more rounds. Run 4: 1-minute bars, stop =
+  exactly 1.0× zone size, 1:1 R:R — negative (win rate ~34.3% against a
+  50% breakeven at 1:1). Run 5: a third, new stop convention added,
+  `StopRule.FIXED_PRICE_DISTANCE` (a flat $-distance from entry,
+  independent of the touched zone's own size entirely — verified with
+  its own synthetic check first, same discipline as the other two stop
+  rules) — 1-minute bars, $3 fixed SL and TP (1:1 by construction),
+  landed essentially at breakeven (win rate ~50.3%, totalR +7.00 over
+  1013 trades — noise-level, not a real edge either direction).
+
+  Notable across all five: **every zone-size-based stop variant tried
+  (runs 2/3/4) came out clearly negative; the original fixed-2-tick-
+  buffer stop (run 1) was the only clearly positive one; the flat
+  $-distance stop (run 5) landed at breakeven.** Not enough runs to call
+  this a real pattern (stop convention vs. timeframe vs. R:R are still
+  not disentangled — no run here holds timeframe and R:R fixed while
+  only swapping the stop convention), but worth noting as the one
+  consistent thread across all the trials done so far.
+
+  **Reading with real caveats, not as a conclusion**: run 2→3 changed
+  only R:R (both 5m/zone-size) — win rate rose (closer target, easier to
+  hit) but expectancy still worsened, consistent with the underlying
+  signal not being strong enough to clear breakeven at either ratio
+  (33.3% needed at 2:1, 50% at 1:1; actual 22.5%/27.8%). Run 1→2 changed
+  BOTH timeframe and stop rule at once, so it doesn't isolate which one
+  flipped the sign — not disentangled, and not asked to be. All three
+  runs share the same underlying entry filter (touch any
+  `tradeableLevels()` zone, no order-flow confirmation at all) — this is
+  consistent with that filter alone not being a real edge, which is
+  exactly the gap `orderFlowExecutionRules.md`'s eventual confirmation
+  logic (absorption/aggression/sweep) exists to close, not a finding
+  about the market-structure rules themselves being wrong.
+
+  **Explicitly the last hit-and-trial pass for now** — the user's own
+  framing, returning to other work next.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

@@ -41,6 +41,9 @@ public final class MarketStructureBacktestTest {
     testTargetHitProducesExpectedRMultiple();
     testStopHitProducesMinusOneR_andNoSameBarReentry();
     testCsvRoundTrip();
+    testZoneSizeMultipleStopRule();
+    testFixedPriceDistanceStopRule();
+    testAggregateBucketsByTimestampNotRowCount();
 
     if (failures > 0) {
       System.err.println(failures + " FAILURE(S)");
@@ -114,6 +117,90 @@ public final class MarketStructureBacktestTest {
     check("Exit reason is stop", tr.exitReason(), "stop");
     checkDouble("R multiple is exactly -1.0 (a full stop-out, by definition)", tr.rMultiple(), -1.0);
     check("0 wins, 1 loss", r.wins() + "/" + r.losses(), "0/1");
+  }
+
+  private static void testZoneSizeMultipleStopRule() {
+    List<MarketStructureBacktest.Bar> bars = setupBars();
+    long t = bars.get(bars.size() - 1).timestampMs();
+    // Same touch as the fixed-buffer test: TJL2=(850,861), width=11.
+    bars.add(bar(t += 60_000, 900, 905, 845, 870)); // entry @870
+    // stopParam=1.5 -> risk = round(1.5*11) = round(16.5) = 17 (half-up).
+    // stop = entry(870) - 17 = 853. target = 870 + round(17*2.0) = 870+34 = 904.
+    bars.add(bar(t += 60_000, 870, 910, 865, 890)); // high=910 >= 904 -> target hit
+
+    MarketStructureBacktest.Report r = MarketStructureBacktest.run(
+        bars, 1.0, 2.0, MarketStructureBacktest.StopRule.ZONE_SIZE_MULTIPLE, 1.5);
+    check("Exactly one trade", r.trades().size(), 1);
+    MarketStructureBacktest.Trade tr = r.trades().get(0);
+    checkDouble("Stop = entry - round(1.5 * zoneWidth=11) = 870-17", tr.stopPrice(), 853.0);
+    checkDouble("Target = entry + round(risk(17)*2.0) = 870+34", tr.targetPrice(), 904.0);
+    checkDouble("Exit at the target price exactly", tr.exitPrice(), 904.0);
+    checkDouble("R multiple is exactly +2.0 (reward:risk = 2:1, by construction)", tr.rMultiple(), 2.0);
+  }
+
+  private static void testFixedPriceDistanceStopRule() {
+    List<MarketStructureBacktest.Bar> bars = setupBars();
+    long t = bars.get(bars.size() - 1).timestampMs();
+    // Same touch as before: TJL2=(850,861), but the stop distance is now a flat
+    // $3 (tickSize=1.0 here, so 3 ticks) from entry, completely independent of
+    // the zone's own width (11) -- proves this rule ignores zone size entirely.
+    bars.add(bar(t += 60_000, 900, 905, 845, 870)); // entry @870
+    // stop = 870-3 = 867. RR=1.0 -> target = 870+3 = 873.
+    bars.add(bar(t += 60_000, 870, 880, 868, 875)); // high=880 >= 873 -> target hit
+
+    MarketStructureBacktest.Report r = MarketStructureBacktest.run(
+        bars, 1.0, 1.0, MarketStructureBacktest.StopRule.FIXED_PRICE_DISTANCE, 3.0);
+    check("Exactly one trade", r.trades().size(), 1);
+    MarketStructureBacktest.Trade tr = r.trades().get(0);
+    checkDouble("Stop = entry - flat $3, NOT scaled by the zone's own width (11)", tr.stopPrice(), 867.0);
+    checkDouble("Target = entry + $3 (RR=1.0)", tr.targetPrice(), 873.0);
+    checkDouble("Exit at the target price exactly", tr.exitPrice(), 873.0);
+    checkDouble("R multiple is exactly +1.0", tr.rMultiple(), 1.0);
+  }
+
+  private static void testAggregateBucketsByTimestampNotRowCount() {
+    List<MarketStructureBacktest.Bar> oneMin = new ArrayList<>();
+    // Bucket 0 (minutes 0-4, t=0..240000): open=100 (1st), high=110, low=95, close=101 (last).
+    oneMin.add(bar1m(0, 100, 105, 95, 102));
+    oneMin.add(bar1m(60_000, 102, 108, 101, 107));
+    oneMin.add(bar1m(120_000, 107, 110, 106, 108));
+    oneMin.add(bar1m(180_000, 108, 109, 103, 104));
+    oneMin.add(bar1m(240_000, 104, 106, 100, 101));
+    // Bucket 1 (minutes 5-9, t=300000..540000): open=200, high=210, low=198, close=206.
+    oneMin.add(bar1m(300_000, 200, 203, 198, 201));
+    oneMin.add(bar1m(360_000, 201, 210, 200, 205));
+    oneMin.add(bar1m(420_000, 205, 206, 199, 202));
+    oneMin.add(bar1m(480_000, 202, 204, 201, 203));
+    oneMin.add(bar1m(540_000, 203, 207, 202, 206));
+    // Bucket 2 (minute 10 only, t=600000): a single source bar -> a "partial" 5m bar.
+    oneMin.add(bar1m(600_000, 300, 305, 295, 302));
+
+    List<MarketStructureBacktest.Bar> fiveMin = MarketStructureBacktest.aggregate(oneMin, 5 * 60_000L);
+    check("3 five-minute buckets from 11 one-minute bars", fiveMin.size(), 3);
+
+    MarketStructureBacktest.Bar b0 = fiveMin.get(0);
+    check("bucket0 timestamp = its own bucket start (0)", b0.timestampMs(), 0L);
+    checkDouble("bucket0 open = first source bar's open", b0.open(), 100.0);
+    checkDouble("bucket0 high = max across all 5 source bars", b0.high(), 110.0);
+    checkDouble("bucket0 low = min across all 5 source bars", b0.low(), 95.0);
+    checkDouble("bucket0 close = last source bar's close", b0.close(), 101.0);
+    check("bucket0 volume summed", b0.volume(), 5L);
+
+    MarketStructureBacktest.Bar b1 = fiveMin.get(1);
+    check("bucket1 timestamp = 300000, not the 6th row's own timestamp", b1.timestampMs(), 300_000L);
+    checkDouble("bucket1 open", b1.open(), 200.0);
+    checkDouble("bucket1 high", b1.high(), 210.0);
+    checkDouble("bucket1 low", b1.low(), 198.0);
+    checkDouble("bucket1 close", b1.close(), 206.0);
+
+    MarketStructureBacktest.Bar b2 = fiveMin.get(2);
+    check("bucket2 (a single trailing 1m bar) still emitted as its own partial 5m bar",
+        b2.timestampMs(), 600_000L);
+    checkDouble("bucket2 open=high=low=close from its one source bar", b2.close(), 302.0);
+  }
+
+  private static MarketStructureBacktest.Bar bar1m(long t, double o, double h, double l, double c) {
+    return new MarketStructureBacktest.Bar(t, o, h, l, c, 1);
   }
 
   private static void testCsvRoundTrip() throws IOException {

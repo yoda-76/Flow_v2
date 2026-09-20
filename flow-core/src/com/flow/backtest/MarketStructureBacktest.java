@@ -65,6 +65,28 @@ public final class MarketStructureBacktest {
       List<Trade> trades, int wins, int losses, double totalR, double avgR,
       double maxDrawdownR, int pullbackValidCount, int tjlFormedCount, int flipCount) {}
 
+  /**
+   * How the stop distance (and therefore risk, and therefore the target
+   * via the reward:risk multiple) is sized. Three conventions requested
+   * across the first several backtest passes (2026-09-20), kept all
+   * three rather than replacing one with another:
+   * FIXED_BUFFER_TICKS — stop sits `stopParam` ticks beyond the touched
+   * zone's far edge (the original pass's convention, matching
+   * `MarketStructureLvnReversalStrategy`'s own `STOP_BUFFER_TICKS`).
+   * ZONE_SIZE_MULTIPLE — stop distance from the ENTRY price is
+   * `stopParam` × the touched zone's own width (high-low), regardless of
+   * exactly where entry sits relative to the zone's edges (entry is the
+   * triggering bar's close, not necessarily flush with either edge).
+   * FIXED_PRICE_DISTANCE — stop distance from entry is a flat
+   * `stopParam` in PRICE units (e.g. $3 on `@GC`), converted to ticks
+   * via the same `tickSize` used everywhere else — completely
+   * independent of the touched zone's own size; the zone still decides
+   * WHETHER and in which direction to enter, just not how far the stop
+   * sits. Entry still only fires on a genuine zone touch either way —
+   * this only changes how far away the stop/target land afterward.
+   */
+  public enum StopRule { FIXED_BUFFER_TICKS, ZONE_SIZE_MULTIPLE, FIXED_PRICE_DISTANCE }
+
   private MarketStructureBacktest() {}
 
   public static List<Bar> readCsv(Path path) throws IOException {
@@ -84,6 +106,40 @@ public final class MarketStructureBacktest {
     return bars;
   }
 
+  /**
+   * Aggregates already-loaded bars (assumed time-sorted, gaps allowed --
+   * e.g. session breaks) up to a coarser interval by bucketing each
+   * bar's OWN start time to the nearest `intervalMs` boundary
+   * (`Math.floorDiv`), not by grouping every N rows -- a gap in the
+   * source data (weekend, maintenance break) would otherwise silently
+   * misalign row-count-based grouping. Used to build a 5-minute series
+   * from the already-exported 1-minute CSV (D-77) rather than re-running
+   * MotiveWave's own export for every timeframe tried.
+   */
+  public static List<Bar> aggregate(List<Bar> bars, long intervalMs) {
+    List<Bar> out = new ArrayList<>();
+    long bucketStart = -1;
+    double open = 0, high = 0, low = 0, close = 0;
+    long volume = 0;
+    for (Bar b : bars) {
+      long bucket = Math.floorDiv(b.timestampMs(), intervalMs) * intervalMs;
+      if (bucket != bucketStart) {
+        if (bucketStart != -1) out.add(new Bar(bucketStart, open, high, low, close, volume));
+        bucketStart = bucket;
+        open = b.open();
+        high = b.high();
+        low = b.low();
+        volume = 0;
+      }
+      high = Math.max(high, b.high());
+      low = Math.min(low, b.low());
+      close = b.close();
+      volume += b.volume();
+    }
+    if (bucketStart != -1) out.add(new Bar(bucketStart, open, high, low, close, volume));
+    return out;
+  }
+
   private static int toTicks(double price, double tickSize) {
     return (int) Math.round(price / tickSize);
   }
@@ -93,10 +149,16 @@ public final class MarketStructureBacktest {
   }
 
   public static Report run(List<Bar> bars, double tickSize) {
-    return run(bars, tickSize, 2.0, 2);
+    return run(bars, tickSize, 2.0, StopRule.FIXED_BUFFER_TICKS, 2);
   }
 
+  /** Back-compat convenience: the original fixed-tick-buffer stop rule. */
   public static Report run(List<Bar> bars, double tickSize, double rewardRiskMultiple, int stopBufferTicks) {
+    return run(bars, tickSize, rewardRiskMultiple, StopRule.FIXED_BUFFER_TICKS, stopBufferTicks);
+  }
+
+  public static Report run(List<Bar> bars, double tickSize, double rewardRiskMultiple,
+                            StopRule stopRule, double stopParam) {
     class Counter implements MarketStructureFeature.Listener {
       int pullbackValid, tjlFormed, flip;
       @Override public void onPullbackValid(MarketStructureView.Trend t, MarketStructureFeature.Bar b) { pullbackValid++; }
@@ -151,7 +213,19 @@ public final class MarketStructureBacktest {
         if (touched != null) {
           boolean bullish = ms.trend() == MarketStructureView.Trend.UP;
           int dir = bullish ? 1 : -1;
-          int stopT = bullish ? touched.lowTicks() - stopBufferTicks : touched.highTicks() + stopBufferTicks;
+          int stopT;
+          if (stopRule == StopRule.FIXED_BUFFER_TICKS) {
+            int stopBufferTicks = (int) Math.round(stopParam);
+            stopT = bullish ? touched.lowTicks() - stopBufferTicks : touched.highTicks() + stopBufferTicks;
+          } else if (stopRule == StopRule.ZONE_SIZE_MULTIPLE) {
+            // risk measured from ENTRY (this bar's close), not the zone edge
+            int zoneWidthTicks = touched.highTicks() - touched.lowTicks();
+            int riskFromEntry = (int) Math.round(stopParam * zoneWidthTicks);
+            stopT = bullish ? closeT - riskFromEntry : closeT + riskFromEntry;
+          } else { // FIXED_PRICE_DISTANCE -- flat $-distance from entry, independent of the zone's own size
+            int riskFromEntry = (int) Math.round(stopParam / tickSize);
+            stopT = bullish ? closeT - riskFromEntry : closeT + riskFromEntry;
+          }
           int riskT = Math.abs(closeT - stopT);
           int targetT = bullish
               ? closeT + (int) Math.round(riskT * rewardRiskMultiple)
@@ -197,18 +271,28 @@ public final class MarketStructureBacktest {
 
   public static void main(String[] args) throws IOException {
     if (args.length < 2) {
-      System.err.println("usage: MarketStructureBacktest <csv path> <tickSize> [rewardRisk] [stopBufferTicks]");
+      System.err.println("usage: MarketStructureBacktest <csv path> <tickSize> "
+          + "[rewardRisk=2.0] [stopRule=FIXED_BUFFER_TICKS|ZONE_SIZE_MULTIPLE] [stopParam=2] "
+          + "[aggregateMinutes=0 (0 = use the CSV's own bars as-is)]");
       System.exit(2);
     }
     Path csv = Path.of(args[0]);
     double tickSize = Double.parseDouble(args[1]);
     double rr = args.length > 2 ? Double.parseDouble(args[2]) : 2.0;
-    int stopBuf = args.length > 3 ? Integer.parseInt(args[3]) : 2;
+    StopRule stopRule = args.length > 3 ? StopRule.valueOf(args[3]) : StopRule.FIXED_BUFFER_TICKS;
+    double stopParam = args.length > 4 ? Double.parseDouble(args[4]) : 2.0;
+    long aggregateMinutes = args.length > 5 ? Long.parseLong(args[5]) : 0;
 
     List<Bar> bars = readCsv(csv);
-    Report report = run(bars, tickSize, rr, stopBuf);
+    String barsLabel = bars.size() + " bars";
+    if (aggregateMinutes > 0) {
+      bars = aggregate(bars, aggregateMinutes * 60_000L);
+      barsLabel = bars.size() + " " + aggregateMinutes + "m bars (aggregated)";
+    }
+    Report report = run(bars, tickSize, rr, stopRule, stopParam);
 
-    System.out.println("=== " + csv.getFileName() + " (" + bars.size() + " bars, tickSize=" + tickSize + ") ===");
+    System.out.println("=== " + csv.getFileName() + " (" + barsLabel + ", tickSize=" + tickSize
+        + ", stopRule=" + stopRule + "(" + stopParam + "), RR=" + rr + ") ===");
     System.out.println("structure: " + report.pullbackValidCount() + " valid pullbacks, "
         + report.tjlFormedCount() + " TJL pairs formed, " + report.flipCount() + " flips");
     System.out.println("trades: " + report.trades().size() + " (" + report.wins() + "W / " + report.losses()
