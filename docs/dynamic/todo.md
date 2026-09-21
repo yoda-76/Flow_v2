@@ -1399,6 +1399,14 @@ requirements, not a plan.
   `intent_changed`/`risk_verdict`/`reconcile_dry_run` records — this
   strategy's own logic has not been live-verified at all yet, only
   that building it didn't break anything already running.
+- [ ] Make the `Strategy Id` setting a dropdown of registered strategies
+  (`StrategyRegistrations.buildDefault()`'s own keys) instead of a free-
+  text `StringDescriptor` — right now a typo'd id just silently fails to
+  match anything registered, and the valid choices are only discoverable
+  by reading `StrategyRegistrations.java` directly. Raised 2026-09-21,
+  **explicitly not to be implemented yet** — the user doesn't want a
+  redeploy/study-reload right now while a live Sim session is running
+  armed.
 - [ ] Sim sessions (arming is a per-session act; confirm account out loud
   at every activation)
 - [ ] Second real strategy — tests whether the layer boundaries hold;

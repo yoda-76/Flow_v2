@@ -53,10 +53,14 @@ boundaries.)
   tracked in README.md and `docs/dynamic/decisions.md` to turn into
   decisions one at a time as they're tested, and expect some of those
   decisions to get reopened later.
-- **`flow-core/`, `flow-runtime/`, `build/`** — stay empty until told
-  otherwise. We're still resolving the open questions in README.md;
-  building starts on explicit instruction, not by inference from how much
-  of the rest of the work is done.
+- **`flow-core/`, `flow-runtime/`, `build/`** — no longer empty (building
+  started 2026-09-18). `flow-core/src/com/flow/{core,flow,journal,
+  strategies,backtest}` holds the SDK-free core and strategy plug-ins;
+  `flow-runtime/src/com/flow/rt` holds the SDK adapters, the deployed
+  `FlowRuntimeStudy`, and `OrderGateway`; `build/build.sh` compiles both,
+  runs every synthetic + safety test, and deploys. README's "Repo layout"
+  section is the authoritative structure description — this bullet isn't
+  duplicating it, just noting these directories are real now.
 
 ## Secrets — `.env`
 
@@ -87,6 +91,32 @@ the architecture in README.md (strategies emit `Intent`, never hold an
   explicit confirmation immediately before submitting. A prior general
   approval (e.g. approving this file, or a plan that mentions trading
   later) does not count.
+- **Second exception — session-scoped automatic Sim trading** (added
+  2026-09-21, resolves Q-11 in `docs/dynamic/decisions.md`): once the
+  strategy's intent-to-order wiring exists and is armed for a session,
+  the strategy may place real orders automatically as its own condition
+  fires, **without a fresh confirmation before each individual order**,
+  provided all of the following hold every time:
+  - The account is the **Simulated account only**. This exception never
+    extends to any other account — trading a real account automatically
+    would need its own separate, later decision, not a reading of this
+    one.
+  - Before arming, the user states out loud, for that specific session,
+    the exact account, instrument, and size/loss bounds in force
+    (currently `config/risk.json`: max 1 contract, daily loss limit 200
+    ticks), and confirms them immediately before flipping `armed` to
+    true. This authorizes that session only — restarting, redeploying,
+    or starting a new session requires saying it again.
+  - The risk chain (armed / session / readiness / daily-loss / size-cap
+    / rate-limit / churn / lag) is active and enforced in code — it is
+    what stands in for per-order human confirmation, so it must actually
+    be wired, not just designed.
+  - Every order placed this way is journaled with the intent that
+    produced it, same as everything else in the risk chain.
+  - The original exception (single order, right now, explicit per-order
+    confirmation) still governs everything else: one-shot tests, any
+    non-Sim order, and anything before the risk chain is actually
+    enforcing these bounds in code.
 - **Every inherited `OrderContext`-taking hook on the runtime class must be
   explicitly overridden**, even ones we don't use — omitting a hook
   inherits whatever MotiveWave's base class does by default, and that

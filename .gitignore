@@ -10,3 +10,7 @@
 
 # Portable JDK, if fetched here rather than reused from ../motivewave/tools
 /tools/
+
+# Real exported market data + backtest run output — not source, resolves
+# the "not yet decided" open item in D-79 (docs/dynamic/decisions.md)
+analysis/data/

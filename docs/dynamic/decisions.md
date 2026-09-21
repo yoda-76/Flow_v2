@@ -3070,6 +3070,78 @@ readable rather than being silently rewritten.
   **Explicitly the last hit-and-trial pass for now** — the user's own
   framing, returning to other work next.
 
+- **D-81** (2026-09-21) — **D-67's fill-callback gap retested live and
+  confirmed fixed; the one-shot test-trade harness stripped out per the
+  plan recorded when it was added.**
+
+  `analysis/data/` also gitignored this session (closes the "not yet
+  decided" note in D-79): `.gitignore` gained `analysis/data/`, and the
+  6 already-committed files under it (the real `@GC` CSV export + 5
+  backtest run outputs, ~1.6MB) were `git rm --cached`, kept on disk,
+  no longer tracked. `analysis/journal_summary.py`, outside that path,
+  stays tracked as before.
+
+  **The retest** (Sim account, `@GC`/GCZ6, user's in-the-moment
+  confirmation immediately before activating, same SELL 1 @ market +
+  10-tick SL/TP as D-67's first attempt): `FIRE_TEST_TRADE_KEY`
+  re-armed against the already-fixed code (`OrderGateway.submitRealEntry`
+  going through `createMarketOrder()`+`submitOrders()`, not
+  `ctx.sell(int)`). Confirmed from `logs/level_zone_observer_.../
+  decisions.jsonl` for the session: entry filled
+  (`ORDER_FILLED bp.aa@6a8e3aab`), bracket submitted
+  (`TEST_BRACKET_SUBMITTED`, stop 4383.30 / target 4381.30 — correct
+  side for a short), target leg filled and stop leg auto-cancelled as
+  the OCO pair (`ORDER_CANCELLED bp.aa@7576dab7`,
+  `ORDER_FILLED bp.aa@69b6a513`), position back to flat
+  (`POSITION_CLOSED pos=0`). D-67's gap — `onOrderFilled` never firing
+  for an order submitted via `ctx.sell(int)` — does not reproduce with
+  the `createMarketOrder()`-based path. Q-02(b) (`OrderContext`
+  write-call thread affinity) is still separately untested, but the
+  basic real-entry → real-fill-callback → real-bracket → real-close loop
+  now has one confirmed live pass end to end.
+
+  One logging gap noted, not fixed: `ORDER_FILLED`/`ORDER_MODIFIED`/
+  `ORDER_CANCELLED` lines in `decisions.jsonl` carry no sequence number
+  or timestamp of their own (plain `logLine()` calls), so the exact
+  wall-clock ordering between the two bracket legs' resolution isn't
+  reconstructable from this log alone — only the unambiguous terminal
+  state (`pos=0`, one leg filled, one cancelled) is. Not acted on;
+  flagging for whenever the decisions-tier journal schema is next
+  touched.
+
+  **Stripped per the plan written into `FIRE_TEST_TRADE_KEY`'s own
+  javadoc when it was added (D-66)**: the checkbox, its settings group,
+  `testTradeFiredEver`/`pendingTestBracket` fields, `maybeFireTestTrade()`
+  and its `onActivate` call site, and the bracket-submission branch in
+  `onOrderFilled` are all gone from `FlowRuntimeStudy`. `onOrderFilled`
+  stays overridden (safety rule, unconditional) as a plain log line.
+  `OrderGateway.submitRealEntry()`/`submitRealBracket()` themselves are
+  **not** removed — they're confirmed-working general order-submission
+  code now, not throwaway plumbing; they still have zero callers in the
+  automatic intent path (closed by D-82 below).
+
+- **D-82** (2026-09-21) — **Q-11 resolved: session-scoped arm now
+  authorizes automatic real order placement on the Simulated account,
+  under `CLAUDE.md`'s new second exception to the never-place-an-order
+  rule.** User's explicit choice between the two options put to them
+  (keep strict per-order confirmation, forever dry-run vs. session-scoped
+  arm as the new exception) was the latter, then approved the exact
+  amendment wording before any order-routing code was touched.
+
+  `CLAUDE.md`'s hard rule gained a second exception, conditioned on all
+  of: Sim account only (never extends to any other account by reading of
+  this decision alone), the user stating account/instrument/size-and-loss
+  bounds out loud and confirming immediately before arming (session-scoped
+  — lapses on restart/redeploy/new session), the risk chain actually
+  enforced in code (not just designed — true as of this decision, see
+  D-61/`RiskChain.java`: armed/session/readiness/daily-loss/size-cap/
+  rate-limit/churn/lag, current `config/risk.json` bounds: max 1
+  contract, daily loss limit 200 ticks), and every such order journaled
+  with its originating intent. The original single-order/explicit-
+  confirmation exception is unchanged and still governs everything else
+  (one-shot tests, any non-Sim order, anything before the risk chain is
+  actually wired).
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
@@ -3103,7 +3175,9 @@ outcome becomes an entry above.
   Determines how much of the sim-stage PnL curve is signal and how much is
   the simulator being generous.
 
-
 *Closed by being routed around*: the old open question on settings-UI
 conditional param visibility — see D-18. The old open question on whether
 bar-close-only decisions suffice — see D-16.
+
+*Closed*: Q-11 (how automatic order placement satisfies CLAUDE.md's
+per-order confirmation rule) — see D-82.

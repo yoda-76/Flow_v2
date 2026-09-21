@@ -687,6 +687,10 @@ authoritative list — this section is kept in sync with it but
   Determines how much of the sim-stage PnL curve is signal and how much is
   the simulator being generous.
 
+Closed since last sync: Q-11 (automatic order placement vs. the per-order
+confirmation rule) — resolved by `decisions.md` D-82, `CLAUDE.md`'s new
+session-scoped-arm exception.
+
 ## Notes
 
 Personal research project, built alongside full-time work as a developer at

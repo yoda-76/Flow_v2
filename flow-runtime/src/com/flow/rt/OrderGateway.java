@@ -9,17 +9,16 @@ import com.motivewave.platform.sdk.order_mgmt.OrderContext;
  * The sole holder of an OrderContext (README hard rule) -- package-private,
  * constructed by FlowRuntimeStudy, never handed anywhere else.
  *
- * reconcileDryRun() (D-14) remains the only method the automatic intent
- * pipeline ever calls -- it only reads the current position and journals
- * what it would do, never places anything. submitRealEntry()/
- * submitRealBracket() (2026-09-19) are real, callable order-submission
- * code, but have zero callers anywhere in this codebase: no automatic
- * path invokes them. Per CLAUDE.md's hard rule, the first call site gets
- * wired in deliberately, in the same turn as an explicit, in-the-moment
- * confirmation of exactly what will be submitted -- not as a standing
- * effect of arming the strategy. Q-02(b) (OrderContext write-call thread
- * affinity) is still genuinely untested; these methods have never been
- * exercised against the live SDK.
+ * reconcileDryRun() (D-14) is called whenever the session isn't armed for
+ * live trading (or Mode != SIM_LIVE) -- reads the current position and
+ * journals what it would do, never places anything. submitRealEntry()/
+ * submitRealBracket() (2026-09-19, confirmed working end-to-end 2026-09-21
+ * -- D-67/D-81) are real order-submission code, now called automatically
+ * from FlowRuntimeStudy.reconcileLive() under CLAUDE.md's second exception
+ * (D-82/Q-11: session-scoped arm, Sim account only, risk-chain-bounded).
+ * The one-shot manual test harness that first exercised these two methods
+ * (FIRE_TEST_TRADE_KEY) has been stripped from FlowRuntimeStudy now that
+ * it's confirmed working, per the plan recorded when it was added.
  */
 final class OrderGateway {
   private final OrderContext ctx;
@@ -45,6 +44,18 @@ final class OrderGateway {
       return "existing position=" + position + " activeOrders=" + orderCount + " -- clear manually before arming";
     }
     return null;
+  }
+
+  /** D-82/Q-11: the account's actual position, for reconcileLive()'s diff -- never the strategy's own belief. */
+  int currentPosition() {
+    return ctx.getPosition();
+  }
+
+  /** D-82/Q-11: same existing-order check refuseToArmReason() uses, reused as a stacking guard before every automatic real entry. */
+  @SuppressWarnings("unchecked")
+  boolean hasRestingOrders() {
+    java.util.List activeOrders = ctx.getActiveOrders();
+    return activeOrders != null && !activeOrders.isEmpty();
   }
 
   /**
@@ -89,15 +100,14 @@ final class OrderGateway {
    * D-67: goes through createMarketOrder()+submitOrders(), NOT
    * ctx.buy(int)/sell(int) -- the live 2026-09-19 test used the buy/sell
    * shortcuts, the entry filled correctly on the account/broker side, but
-   * onOrderFilled was never called back for it (confirmed: session logs
-   * show no ORDER_FILLED line despite 3+ minutes of continued healthy
-   * heartbeats after the fill). buy()/sell() return void, giving the
-   * strategy no Order reference at all -- suspected (not yet confirmed
-   * against SDK source, which isn't available) to mean the platform never
-   * links a later fill callback back to an order submitted this way.
-   * createMarketOrder() returns a real Order, same family as the stop/
-   * target orders below, submitted the same way -- untested as of this
-   * writing, first thing to verify next session.
+   * onOrderFilled was never called back for it. buy()/sell() return void,
+   * giving the strategy no Order reference at all -- suspected (not
+   * confirmable against SDK source, which isn't available) to mean the
+   * platform never links a later fill callback back to an order submitted
+   * that way. createMarketOrder()+submitOrders() is the same tracked-order
+   * family as the stop/target orders below -- confirmed working live
+   * 2026-09-21: entry filled, onOrderFilled fired, and the bracket
+   * submitted from it (below) filled/cancelled correctly as an OCO pair.
    */
   String submitRealEntry(boolean isBuy, int qty, String reason) {
     int positionBefore = ctx.getPosition();

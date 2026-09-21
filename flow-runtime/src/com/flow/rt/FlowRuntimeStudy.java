@@ -86,6 +86,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
     barUpdatesByDefault = true)
 public class FlowRuntimeStudy extends Study implements DOMListener {
   private static final String STRATEGY_ID_KEY = "FLOW_STRATEGY_ID";
+  // D-82/Q-11 (CLAUDE.md's second exception): ARMED_KEY + MODE_KEY=="SIM_LIVE"
+  // together authorize automatic real order placement on the Simulated
+  // account for the rest of this session, no per-order confirmation --
+  // conditioned on the user having stated account/instrument/size-and-loss
+  // bounds out loud and confirmed them immediately before flipping ARMED_KEY
+  // on. See isLiveModeArmed()/reconcileLive() below.
   private static final String ARMED_KEY = "FLOW_ARMED";
   private static final String MODE_KEY = "FLOW_MODE";
   private static final String VP_RANGE_TICKS_KEY = "FLOW_VP_RANGE_TICKS";
@@ -120,18 +126,6 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // signals" framing of the original request, not "everything the
   // strategy considered."
   private static final String DRAW_ENTRY_KEY = "FLOW_DRAW_ENTRY_SIGNALS";
-  // One-shot real-order plumbing test (2026-09-19, explicit user request +
-  // in-the-moment confirmation: SELL 1 @ market on activation, 10-tick
-  // SL/TP). Deliberately its own checkbox, separate from ARMED_KEY -- the
-  // act of checking this box and (re)activating the study IS the human's
-  // "immediately before submitting" confirmation CLAUDE.md requires,
-  // independent of whatever ARMED_KEY is set to. Guarded so it can never
-  // fire more than once per Study instance regardless of how many times
-  // onActivate re-runs (testTradeFiredEver latch). Strip this whole path
-  // out once the test has been run and confirmed -- it is a throwaway
-  // plumbing check, not a feature.
-  private static final String FIRE_TEST_TRADE_KEY = "FLOW_FIRE_TEST_TRADE_ONCE";
-  private static final int TEST_TRADE_SL_TP_TICKS = 10;
   // Big trades (D-53): built directly against our own TickEvent stream,
   // not a wrapper around AggregateFilter (that engine casts its Tick
   // argument to an internal concrete class -- crashed live the moment it
@@ -191,9 +185,17 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   private final java.util.List<EntrySignal> entrySignals =
       java.util.Collections.synchronizedList(new java.util.ArrayList<>());
   private static final int MAX_ENTRY_SIGNALS = 200;
-  // One-shot test trade state -- see FIRE_TEST_TRADE_KEY's javadoc.
-  private volatile boolean testTradeFiredEver = false;
-  private volatile boolean pendingTestBracket = false;
+  // Automatic real order routing (D-82/Q-11), generalizing the proven
+  // one-shot test-trade pattern (D-67) to any ALLOWED intent instead of a
+  // single hardcoded test. liveOrderInFlight blocks a second automatic
+  // submission while the entry's fill hasn't resolved yet -- deliberately
+  // conservative: a flip/resize while an order is still working is skipped
+  // and journaled, not attempted (see reconcileLive()'s javadoc).
+  private volatile boolean liveOrderInFlight = false;
+  private volatile int pendingBracketTargetPosition = 0;
+  private volatile Integer pendingBracketStopTicks = null;
+  private volatile Integer pendingBracketTargetTicks = null;
+  private volatile String pendingBracketReason = null;
   // D-61: refuse-to-arm (D-24) overrides the raw ARMED_KEY setting --
   // set once in onActivate, never cleared for the life of this instance
   // (clearing the position/orders manually and reactivating creates a
@@ -213,8 +215,10 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     var tab = sd.addTab("Runtime");
     var grp = tab.addGroup("Strategy");
     grp.addRow(new StringDescriptor(STRATEGY_ID_KEY, "Strategy Id", "level_zone_observer"));
-    grp.addRow(new BooleanDescriptor(ARMED_KEY, "Armed (no effect yet -- no order code exists)", false));
-    grp.addRow(new StringDescriptor(MODE_KEY, "Mode", "DRY_RUN"));
+    grp.addRow(new BooleanDescriptor(ARMED_KEY,
+        "Armed (with Mode=SIM_LIVE: places real Sim orders automatically -- CLAUDE.md confirmation required before checking this)",
+        false));
+    grp.addRow(new StringDescriptor(MODE_KEY, "Mode (DRY_RUN or SIM_LIVE)", "DRY_RUN"));
     var vpGrp = tab.addGroup("Volume Profile");
     vpGrp.addRow(new IntegerDescriptor(VP_RANGE_TICKS_KEY, "Row Width (ticks)", 1, 1, 9999, 1));
     vpGrp.addRow(new BooleanDescriptor(DRAW_VP_KEY, "Draw on Chart", false));
@@ -234,9 +238,6 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     msGrp.addRow(new BooleanDescriptor(DRAW_MS_KEY, "Draw on Chart", true));
     var entryGrp = tab.addGroup("Entry Signals");
     entryGrp.addRow(new BooleanDescriptor(DRAW_ENTRY_KEY, "Draw Arrows on Chart", true));
-    var testGrp = tab.addGroup("Order Plumbing Test (real Sim order, one-shot)");
-    testGrp.addRow(new BooleanDescriptor(FIRE_TEST_TRADE_KEY,
-        "Fire ONE test SELL 1 @ market + 10-tick SL/TP on next activate", false));
     createRD();
   }
 
@@ -440,7 +441,95 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
           .build());
       return;
     }
-    journal.writeDecision(triggeringEvent.seq(), gw.reconcileDryRun(intent));
+    String line = isLiveModeArmed() ? reconcileLive(intent, gw) : gw.reconcileDryRun(intent);
+    journal.writeDecision(triggeringEvent.seq(), line);
+  }
+
+  /**
+   * CLAUDE.md's second exception (D-82/Q-11): Mode=SIM_LIVE + armed
+   * authorizes automatic real order placement, no per-order confirmation,
+   * for the rest of this session -- Sim account only, bounded by the risk
+   * chain. onIntentChanged is only ever invoked for an intent RiskChain has
+   * already ALLOWED (Pipeline's own contract), so reaching this method at
+   * all already means armed/session/readiness/daily-loss/size-cap/
+   * rate-limit/churn/lag all passed for this intent.
+   */
+  private boolean isLiveModeArmed() {
+    return "SIM_LIVE".equals(getSettings().getString(MODE_KEY))
+        && getSettings().getBoolean(ARMED_KEY) && !armDenied;
+  }
+
+  /**
+   * Real-order counterpart to OrderGateway.reconcileDryRun() -- diffs the
+   * intent against the account's actual position (gw.currentPosition()),
+   * not the strategy's own optimistic belief about it, and submits the
+   * minimal order to close the gap, then stashes the intent's stop/target
+   * so onOrderFilled() can attach the bracket once the entry is confirmed
+   * filled -- same submit-entry-then-bracket-on-fill sequence D-67/D-81
+   * proved out, just driven by the strategy's own intents instead of a
+   * hardcoded one-shot test.
+   *
+   * Deliberately conservative, not the full reconciliation README
+   * eventually wants: only flat->non-flat (open) and non-flat->flat
+   * (close) are handled automatically. A direct flip or a resize while a
+   * bracket is still resting is skipped and journaled rather than risking
+   * a new order stacked on state that hasn't settled -- neither strategy
+   * shipped so far ever asks for that (both go through flat first via
+   * their own SEARCHING/IN_POSITION state machines), so this is a real,
+   * flagged scope limit, not a silent shortcut.
+   *
+   * Known gap, flagged rather than silently ignored: a real fill is never
+   * fed back to the strategy (FlowStrategy.onFill() has no caller anywhere
+   * yet -- see its own placeholder note). If the broker rejects or cancels
+   * the entry, this method disarms (see onOrderRejected/onOrderCancelled)
+   * rather than let the strategy's own optimistic position belief diverge
+   * from the real, still-flat account.
+   */
+  private String reconcileLive(Intent intent, OrderGateway gw) {
+    if (liveOrderInFlight) {
+      return Json.object().field("type", "reconcile_live_skipped")
+          .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
+          .field("reason", "previous real order still in flight (unresolved fill/reject/cancel)")
+          .build();
+    }
+    int currentPosition = gw.currentPosition();
+    int target = intent.targetPosition();
+    if (target == currentPosition) {
+      return Json.object().field("type", "reconcile_live_noop")
+          .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
+          .field("currentPosition", currentPosition).build();
+    }
+    boolean opening = currentPosition == 0 && target != 0;
+    boolean closing = currentPosition != 0 && target == 0;
+    if (!opening && !closing) {
+      return Json.object().field("type", "reconcile_live_skipped")
+          .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
+          .field("reason", "direct flip/resize (from " + currentPosition + " to " + target
+              + ") not auto-handled -- see reconcileLive()'s javadoc")
+          .build();
+    }
+    if (opening && gw.hasRestingOrders()) {
+      return Json.object().field("type", "reconcile_live_skipped")
+          .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
+          .field("reason", "resting orders found on the account -- refusing to stack a new entry on them")
+          .build();
+    }
+    int delta = target - currentPosition;
+    liveOrderInFlight = true;
+    pendingBracketTargetPosition = target;
+    pendingBracketStopTicks = intent.stopPriceTicks();
+    pendingBracketTargetTicks = intent.targetPriceTicks();
+    pendingBracketReason = intent.reason();
+    return gw.submitRealEntry(delta > 0, Math.abs(delta), intent.reason());
+  }
+
+  /** Clears in-flight/pending-bracket state -- shared by onOrderRejected/onOrderCancelled below. */
+  private void clearPendingLiveOrder() {
+    liveOrderInFlight = false;
+    pendingBracketTargetPosition = 0;
+    pendingBracketStopTicks = null;
+    pendingBracketTargetTicks = null;
+    pendingBracketReason = null;
   }
 
   /**
@@ -1155,33 +1244,6 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     } else {
       armDenied = false;
     }
-
-    maybeFireTestTrade(refuseReason);
-  }
-
-  /**
-   * See FIRE_TEST_TRADE_KEY's javadoc -- one real SELL 1 @ market, fired
-   * at most once per Study instance regardless of how many times this
-   * checkbox stays checked or onActivate re-runs. Skipped entirely if
-   * refuseToArmReason() found an existing position/order (same guard the
-   * main arm path uses, for the same reason: never act on state left
-   * over from something else).
-   */
-  private void maybeFireTestTrade(String refuseReason) {
-    boolean checkboxOn = getSettings().getBoolean(FIRE_TEST_TRADE_KEY);
-    logLine("TEST_TRADE_CHECK firedEver=" + testTradeFiredEver + " checkboxOn=" + checkboxOn
-        + " refuseReason=" + refuseReason);
-    if (testTradeFiredEver) return;
-    if (!checkboxOn) return;
-    if (refuseReason != null) {
-      logLine("TEST_TRADE_SKIPPED reason=" + refuseReason);
-      return;
-    }
-    testTradeFiredEver = true;
-    pendingTestBracket = true;
-    String line = gateway.submitRealEntry(false, 1,
-        "manual_one_shot_plumbing_test_2026-09-19_user_confirmed_sell_10tick_sltp");
-    logLine("TEST_TRADE_SUBMITTED " + line);
   }
 
   @Override
@@ -1237,32 +1299,71 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     logLine("POSITION_CLOSED pos=" + ctx.getPosition());
   }
 
+  /**
+   * D-82/Q-11: attaches the bracket for a real entry submitted from
+   * reconcileLive() once it's confirmed filled -- never speculatively
+   * ahead of a fill, same discipline OrderGateway.submitRealBracket()'s
+   * own javadoc requires. Runs on whatever thread MotiveWave calls this
+   * hook on (proven fine for this exact call sequence by D-81's live
+   * retest); deliberately does NOT touch pipeline/feature/strategy state,
+   * only OrderGateway (which itself only wraps ctx) -- see this class's
+   * onFill() gap note in reconcileLive()'s javadoc for why strategy state
+   * is out of scope here.
+   */
   @Override
   public void onOrderFilled(OrderContext ctx, Order order) {
     logLine("ORDER_FILLED " + order);
-    if (pendingTestBracket) {
-      pendingTestBracket = false;
-      OrderGateway gw = gateway;
-      float fillPrice = order.getAvgFillPrice();
-      float tick = (float) instrument.getTickSize();
-      // Entry was SELL, so the closing bracket side is BUY: stop above
-      // the fill (loss if price rises), target below it (profit if it falls).
-      float stopPrice = fillPrice + TEST_TRADE_SL_TP_TICKS * tick;
-      float targetPrice = fillPrice - TEST_TRADE_SL_TP_TICKS * tick;
-      String line = gw.submitRealBracket(true, order.getFilled(), stopPrice, targetPrice,
-          "manual_one_shot_plumbing_test_2026-09-19_bracket");
-      logLine("TEST_BRACKET_SUBMITTED " + line);
+    if (!liveOrderInFlight) return;
+    int targetPosition = pendingBracketTargetPosition;
+    Integer stopTicks = pendingBracketStopTicks;
+    Integer targetTicks = pendingBracketTargetTicks;
+    String reason = pendingBracketReason;
+    clearPendingLiveOrder();
+    if (targetPosition == 0 || stopTicks == null || targetTicks == null) {
+      logLine("LIVE_FILL_NO_BRACKET targetPosition=" + targetPosition
+          + " stopTicks=" + stopTicks + " targetTicks=" + targetTicks);
+      return;
     }
+    PriceCodec codec = priceCodec;
+    OrderGateway gw = gateway;
+    if (codec == null || gw == null) {
+      logLine("LIVE_BRACKET_SKIPPED reason=codec_or_gateway_unavailable");
+      return;
+    }
+    boolean closingIsBuy = targetPosition < 0; // a short position closes with a BUY bracket
+    float stopPrice = (float) codec.fromTicks(stopTicks);
+    float targetPrice = (float) codec.fromTicks(targetTicks);
+    String line = gw.submitRealBracket(closingIsBuy, Math.abs(targetPosition), stopPrice, targetPrice, reason);
+    logLine("LIVE_BRACKET_SUBMITTED " + line);
   }
 
+  /**
+   * D-82/Q-11: a cancellation while our own entry was still in flight means
+   * the entry never became a real position -- disarm rather than let the
+   * strategy's own optimistic phase state (already updated the moment it
+   * DECIDED, per FlowStrategy's contract) diverge from the real, still-flat
+   * account. A cancellation with nothing in flight is the normal OCO
+   * bracket-leg cancellation D-81 already proved out -- just log it.
+   */
   @Override
   public void onOrderCancelled(OrderContext ctx, Order order) {
     logLine("ORDER_CANCELLED " + order);
+    if (liveOrderInFlight) {
+      clearPendingLiveOrder();
+      armDenied = true;
+      logLine("LIVE_ENTRY_CANCELLED_DISARMING -- entry cancelled before filling, disarming");
+    }
   }
 
+  /** D-82/Q-11: same reasoning as onOrderCancelled() above. */
   @Override
   public void onOrderRejected(OrderContext ctx, Order order) {
     logLine("ORDER_REJECTED " + order);
+    if (liveOrderInFlight) {
+      clearPendingLiveOrder();
+      armDenied = true;
+      logLine("LIVE_ENTRY_REJECTED_DISARMING -- entry rejected, disarming");
+    }
   }
 
   @Override
