@@ -79,16 +79,22 @@ public final class RiskChain {
     this.config = config;
   }
 
-  public Result evaluate(Intent intent, Context ctx) {
-    // Checked lazily here rather than per-event: evaluate() is only called
-    // on an actual intent change (Pipeline.handle()), so the reversal
-    // counter and daily PnL are only ever READ at that same cadence --
-    // catching the rollover by the next intent change after 17:00 CT is
-    // exactly as correct as catching it the instant it happens.
-    if (sessionTracker.advance(ctx.nowEventTimeMs())) {
+  /**
+   * Shared by evaluate() (intent-change cadence) and dailyLossBreached()
+   * (every-event cadence, 2026-09-21's kill-switch requirement) -- both
+   * need the same rollover check before reading reversalsThisSession/
+   * realizedPnlTicks, so it lives in one place rather than two copies
+   * drifting apart.
+   */
+  private void maybeRolloverSession(long nowEventTimeMs) {
+    if (sessionTracker.advance(nowEventTimeMs)) {
       reversalsThisSession = 0;
       realizedPnlTicks = 0;
     }
+  }
+
+  public Result evaluate(Intent intent, Context ctx) {
+    maybeRolloverSession(ctx.nowEventTimeMs());
 
     List<Verdict> verdicts = new ArrayList<>();
 
@@ -138,6 +144,24 @@ public final class RiskChain {
       lastPosition = intent.targetPosition();
     }
     recentChangeTimestamps.addLast(ctx.nowEventTimeMs());
+  }
+
+  /**
+   * Independent of evaluate()/an intent change -- meant to be called on
+   * EVERY event (2026-09-21, user's explicit "no matter what, close
+   * everything the instant the daily loss limit is hit" requirement), so
+   * a breach is caught immediately rather than only the next time the
+   * strategy's own intent happens to change (D-69's originally-flagged
+   * gap: a strategy re-asserting the same "holding" intent would never
+   * re-trigger evaluate() at all, letting a breach sit unacted-on
+   * indefinitely). Read-only, same PnL state checkDailyLoss() already
+   * tracks; does the same rollover check evaluate() does so the two
+   * cadences never drift out of sync on which trading day they think
+   * they're in.
+   */
+  public boolean dailyLossBreached(Context ctx) {
+    maybeRolloverSession(ctx.nowEventTimeMs());
+    return !checkDailyLoss(ctx).allowed();
   }
 
   private Verdict checkDailyLoss(Context ctx) {

@@ -1407,6 +1407,18 @@ requirements, not a plan.
   **explicitly not to be implemented yet** — the user doesn't want a
   redeploy/study-reload right now while a live Sim session is running
   armed.
+- [ ] **Revisit: no software fallback if the bracket fails to close a
+  position.** D-86 (2026-09-21) made the real bracket the sole mechanism
+  that ever closes a position — deliberate, fixes two live near-misses
+  from having a redundant software-side close racing it (D-84). But the
+  user flagged the accepted tradeoff itself as worth revisiting, not
+  settled: if both bracket legs somehow get rejected/cancelled by the
+  broker with nothing left resting, the position now stays open with
+  nothing but the daily-loss kill switch (D-85) or a human to end it.
+  Needs a real design pass (e.g. detecting "both legs gone, position
+  still non-flat" as its own explicit condition and re-submitting a
+  fresh bracket, rather than either racing a second closer or doing
+  nothing) — not decided yet, flagged only.
 - [ ] Sim sessions (arming is a per-session act; confirm account out loud
   at every activation)
 - [ ] Second real strategy — tests whether the layer boundaries hold;

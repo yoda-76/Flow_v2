@@ -51,9 +51,11 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   private final RiskChain riskChain; // nullable -- see constructor javadoc
   private final java.util.function.BooleanSupplier armedSupplier; // nullable, only consulted if riskChain != null
   private final java.util.function.IntSupplier queueDepthSupplier; // nullable, only consulted if riskChain != null
+  private final java.util.function.Consumer<String> killSwitch; // nullable, only consulted if riskChain != null
 
   private final AtomicBoolean healthy = new AtomicBoolean(true);
   private final AtomicLong clockEventCount = new AtomicLong(0);
+  private final AtomicBoolean killSwitchTripped = new AtomicBoolean(false);
   private volatile Intent lastIntent;
 
   /**
@@ -72,22 +74,33 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
    * PriceCodec); ReplayHarness passes null since it has no live price
    * context, and trace lines fall back to tick-offset-only in that case.
    *
-   * riskChain/armedSupplier/queueDepthSupplier (D-61) are nullable
-   * together, as one unit -- null means "no risk chain configured,"
-   * preserving the exact prior behavior (every changed intent goes
-   * straight to intentSink) for ReplayHarness, TriggerEvaluatorTest, and
-   * the pure-observer LevelZoneObserverStrategy, none of which need
-   * risk-gating. A live FlowRuntimeStudy always supplies all three.
+   * riskChain/armedSupplier/queueDepthSupplier/killSwitch (D-61, killSwitch
+   * added D-8x for the daily-loss kill switch) are nullable together, as
+   * one unit -- null means "no risk chain configured," preserving the
+   * exact prior behavior (every changed intent goes straight to
+   * intentSink) for ReplayHarness, TriggerEvaluatorTest, and the
+   * pure-observer LevelZoneObserverStrategy, none of which need
+   * risk-gating. A live FlowRuntimeStudy always supplies all four.
+   *
+   * killSwitch is invoked with a reason string on every event where
+   * RiskChain.dailyLossBreached() is true, independent of the strategy's
+   * own triggers/intents (user's explicit "no matter what" requirement) --
+   * at most once per breach (killSwitchTripped latches until the breach
+   * clears, so it doesn't fire on every single subsequent event while
+   * still breached). What it actually does (flatten + cancel everything +
+   * disarm) is flow-runtime's job, same layering reason IntentSink is a
+   * callback rather than Pipeline reaching into OrderGateway directly.
    */
   public Pipeline(FlowStrategy strategy, JournalWriter journal, IntentSink intentSink,
                    Map<String, Feature> features, IntToDoubleFunction priceDecoder) {
-    this(strategy, journal, intentSink, features, priceDecoder, null, null, null);
+    this(strategy, journal, intentSink, features, priceDecoder, null, null, null, null);
   }
 
   public Pipeline(FlowStrategy strategy, JournalWriter journal, IntentSink intentSink,
                    Map<String, Feature> features, IntToDoubleFunction priceDecoder,
                    RiskChain riskChain, java.util.function.BooleanSupplier armedSupplier,
-                   java.util.function.IntSupplier queueDepthSupplier) {
+                   java.util.function.IntSupplier queueDepthSupplier,
+                   java.util.function.Consumer<String> killSwitch) {
     this.strategy = strategy;
     this.journal = journal;
     this.intentSink = intentSink;
@@ -99,6 +112,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     this.riskChain = riskChain;
     this.armedSupplier = armedSupplier;
     this.queueDepthSupplier = queueDepthSupplier;
+    this.killSwitch = killSwitch;
     this.lastIntent = Intent.none(strategy.id(), 0);
   }
 
@@ -138,6 +152,29 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     }
 
     if (!healthy.get()) return; // keep ingesting/journaling raw events; stop invoking the strategy
+
+    // Daily-loss kill switch (2026-09-21, user's explicit "no matter what"
+    // requirement): checked on EVERY event, not gated by strategy triggers
+    // or an intent change -- see RiskChain.dailyLossBreached()'s javadoc
+    // for why the intent-change cadence alone isn't enough for this.
+    if (riskChain != null) {
+      RiskChain.Context killCtx = new RiskChain.Context(
+          armedSupplier.getAsBoolean(), true, marketState.lastPriceTicks(),
+          marketState.exchangeTimeMs(), 0, 0L);
+      boolean breached = riskChain.dailyLossBreached(killCtx);
+      if (breached) {
+        if (killSwitchTripped.compareAndSet(false, true) && killSwitch != null) {
+          journal.writeDecision(e.seq(), Json.object()
+              .field("type", "KILL_SWITCH")
+              .field("reason", "daily loss limit breached")
+              .field("seq", e.seq())
+              .build());
+          killSwitch.accept("daily loss limit breached");
+        }
+      } else {
+        killSwitchTripped.set(false); // breach cleared (e.g. session rollover) -- allow it to fire again if it recurs
+      }
+    }
 
     // Every declared trigger is evaluated every event, never short-circuited
     // on the first one that fires -- a stateful trigger (LevelCross,

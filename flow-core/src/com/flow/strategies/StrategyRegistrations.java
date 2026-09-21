@@ -18,6 +18,7 @@ public final class StrategyRegistrations {
     r.register("null_strategy", NullStrategy::new);
     r.register("level_zone_observer", LevelZoneObserverStrategy::new);
     r.register("market_structure_lvn_reversal", MarketStructureLvnReversalStrategy::new);
+    r.register("lvn_fade_test", LvnFadeTestStrategy::new);
     return r;
   }
 }

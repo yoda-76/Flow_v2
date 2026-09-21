@@ -3142,6 +3142,214 @@ readable rather than being silently rewritten.
   (one-shot tests, any non-Sim order, anything before the risk chain is
   actually wired).
 
+- **D-83** (2026-09-21) — **`lvn_fade_test` built: a deliberately simple,
+  high-frequency throwaway strategy to stress-test real-order plumbing
+  (entry, bracket, fill, SL/TP hit) — not a real edge, not meant to
+  outlive the test.** User's explicit spec: fade every LVN touch —
+  entering an LVN from below (price pushing up into thin volume) shorts,
+  entering from above longs. Fixed $2 price-distance SL and TP (1:1, 20
+  ticks at `@GC`'s 0.1 tick size — hardcoded rather than threaded through
+  `StrategyConfig`, which is still an empty-map placeholder per `todo.md`,
+  since this strategy isn't meant to generalize across instruments). A
+  5-minute no-trade warmup after the strategy's first observed event
+  (user's explicit follow-up request), anchored to event time
+  (`state.exchangeTimeMs()`) not the wall clock, so it survives replay
+  honestly. Registered in `StrategyRegistrations` as `lvn_fade_test`.
+  Full rebuild clean, all 8 gates pass, deployed. Chosen specifically
+  because it fires far more often than `MarketStructureLvnReversalStrategy`'s
+  single-zone, multi-confirmation entry — and it promptly found a real bug
+  in the order-routing plumbing on its first live trade, see D-84.
+
+- **D-84** (2026-09-21) — **Live near-miss on the first real
+  `lvn_fade_test` (D-83) trade: resting bracket legs weren't cancelled
+  when the position closed via a different path, and 2 contracts traded
+  against a 1-contract cap.
+  Fixed: bracket legs are now tracked by `Order` reference and owned by
+  the position that created them, never left to assumed broker-side
+  OCO.**
+
+  **What happened, reconstructed from `decisions.jsonl` (session
+  `lvn_fade_test_1790007162838_inst1154906642`) and confirmed against
+  MotiveWave's own Closed Positions panel.** Entry SELL 1 filled, real
+  bracket submitted (stop + target, both independent orders — no
+  linked-OCO/bracket concept exists in `OrderContext`'s method surface,
+  confirmed by reading its full signature list). ~80 seconds later the
+  strategy's own software-side stop check (`manageOpenPosition()`,
+  independent of and redundant with the real resting stop order)
+  fired and `reconcileLive` submitted a brand-new market order to
+  flatten — without cancelling the still-resting bracket legs first.
+  One of those legs (the id logged as `ORDER_CANCELLED`) got
+  misattributed by `onOrderCancelled`'s old logic as "our new order was
+  cancelled," which **did** correctly disarm the session (the safety net
+  worked) — but for the wrong reason, and too late: the closed-position
+  record shows `Quantity: -2`, P/L −$370, confirming real 2-contract
+  exposure against `config/risk.json`'s 1-contract cap. Account confirmed
+  flat afterward (0 open positions, per user's own MotiveWave screenshot)
+  — the near-miss didn't leave a live unprotected position, but the
+  over-execution was real.
+
+  **Root cause**: `reconcileLive`'s closing branch only ever guarded
+  against resting orders before *opening* a new position
+  (`hasRestingOrders()`), never before *closing* one — so a position's
+  own bracket legs could still be resting, unaccounted for, at the exact
+  moment something else (the strategy's own redundant software check)
+  closed the position through a different order entirely.
+
+  **Fix, per the user's explicit design call** (not a rule this
+  session inferred): *"bracket legs can not exist without their [main
+  position]"* — not "check for resting orders before opening," ownership
+  by the position instead of a blanket resting-order sweep.
+  `OrderGateway.submitRealBracket()` now returns the actual `stop`/
+  `target` `Order` references (`BracketOrders` record), which
+  `FlowRuntimeStudy` holds (`restingStopOrder`/`restingTargetOrder`).
+  Whichever leg is still active gets explicitly cancelled
+  (`OrderGateway.cancelIfActive()`, by reference, never a blanket
+  `ctx.cancelOrders()` sweep) the moment the position they protect goes
+  away, by either path: a leg fills naturally (`onOrderFilled`'s new
+  branch for a fill that isn't the tracked entry — previously dead code,
+  since `liveOrderInFlight` was already false by the time a leg fills,
+  meaning nothing occupied this case at all before), or the strategy
+  independently decides to flatten (`reconcileLive`'s closing branch now
+  calls `cancelTrackedLegs()` before closing). Closing itself now goes
+  through `OrderContext.closeAtMarket()` (a real "close the position"
+  call found while auditing the SDK for this fix) rather than a
+  speculative fresh `submitRealEntry()`, though `closeAtMarket()` itself
+  doesn't touch resting legs either — cancellation is still the caller's
+  job. `onOrderCancelled` now checks a `selfCancelledOrderIds` set
+  (populated the instant *we* call cancel) before disarming, so an
+  expected leg-cleanup cancellation is no longer misattributed as an
+  entry failure — fixing the wrong-reason part of the original disarm,
+  not just the over-execution.
+
+  Full rebuild clean, all 8 gates + safety reflection test pass,
+  redeployed.
+
+  **Live-retested same night, mixed result — one clean success, one
+  second incident, leading to D-86's deeper rework.** Trade 1 after this
+  fix: target hit naturally on the real resting order, sibling stop leg
+  cancelled correctly by the new logic, no wrongful disarm — the specific
+  bug this entry describes is confirmed fixed. Trade 2, immediately
+  after: `LIVE_ENTRY_CANCELLED_DISARMING` fired again, and the account
+  ended up with a stray, unprotected long 1 position (confirmed from the
+  user's own MotiveWave screenshots — entry price matched the bracket's
+  target price exactly) that the user closed manually. Root cause this
+  time: `cancelTrackedLegs()` checked `Order.isActive()` before deciding
+  whether to expect a cancellation callback, and speculatively dropped
+  the `selfCancelledOrderIds` tracking entry when it read false at that
+  instant — but a genuine, real cancellation/fill callback still arrived
+  for that order shortly after (stale point-in-time read, not a reliable
+  signal), and with the tracking entry already gone it was misattributed
+  as an anomaly again. Same root *category* as this entry's original bug
+  (racing state around a position close) via a different specific
+  trigger — which is what prompted D-86's rework instead of another
+  narrow patch.
+
+  **Related, fixed separately as D-85**: the user's fourth point, raised
+  in the same conversation — *"if daily [loss] stop is hit no matter
+  what every open and resting position will be closed."*
+
+- **D-85** (2026-09-21) — **Daily-loss kill switch built: breach is now
+  checked on every single event, independent of the strategy's own
+  triggers or intents, and forcibly flattens + cancels everything the
+  instant it fires.** Closes D-69's originally-flagged gap
+  (`checkDailyLoss` could block an exit exactly like an entry, so a
+  breached position could get stuck open) and D-84's point 4.
+
+  User's explicit choice on cadence, asked directly: check every event
+  (vs. periodic off `ClockEvent`) — every event, since the pipeline
+  already processes every event and the extra cost is negligible.
+
+  `RiskChain.dailyLossBreached(Context)` (public, new) reuses the same
+  `checkDailyLoss()`/session-rollover logic `evaluate()` already had, but
+  callable independent of an intent change — the rollover check itself
+  was extracted into `maybeRolloverSession()` so the two cadences (every
+  event vs. only on intent change) can't drift on which trading day they
+  think they're in. `Pipeline.handle()` calls it right after the
+  healthy-check on every event (not gated by trigger/wake evaluation),
+  and on a breach invokes a new `Consumer<String> killSwitch` callback
+  exactly once (`killSwitchTripped` latches until the breach clears, so
+  it doesn't fire repeatedly every event while still breached, and
+  re-arms itself if a breach recurs later, e.g. after a same-day
+  recovery-then-rebreach). Same layering reason `IntentSink` is a
+  callback rather than `Pipeline` reaching into `OrderGateway` directly —
+  `Pipeline` stays SDK-free.
+
+  `FlowRuntimeStudy`'s kill-switch implementation: disarms first (so no
+  new automatic entry can race the flatten), clears all tracked
+  in-flight/bracket-leg state, then calls
+  `OrderGateway.cancelAllAndClose()` — the **one sanctioned blanket
+  sweep** in the whole codebase. Deliberately different in kind from
+  D-84's fix (which cancels bracket legs by reference, never a blanket
+  sweep): the user's own framing here is "no matter what, close
+  everything," not "close this specific thing," so a blunt instrument is
+  the correct tool for this one caller only.
+
+  Full rebuild clean, all 8 gates + safety reflection test (including the
+  `RiskChain`-touching session-reset wiring test) pass, redeployed.
+  **Not yet live-retested** — no session has actually breached the daily
+  loss limit yet to exercise this path for real.
+
+- **D-86** (2026-09-21) — **SL/TP is bracket-only now, full stop: the
+  strategy's own software-side stop/target close is removed entirely,
+  after D-84's fix turned out to only patch one specific trigger of a
+  deeper architectural race.** User's explicit design call, reached after
+  two live near-misses on the same mechanism in one session (D-84):
+  *"we can keep the strategy logging for sl tp hits for audit purposes
+  but nothing else."*
+
+  **Root cause, named plainly**: two independent things were both trying
+  to close the same position — the real resting bracket (the
+  authoritative one, actually executing on the exchange/simulator) and
+  `manageOpenPosition()`'s own tick-by-tick software re-check
+  (`LvnFadeTestStrategy`/`MarketStructureLvnReversalStrategy`), which
+  independently decided when to flatten and had `reconcileLive` submit a
+  **second**, redundant close order whenever it fired. Both D-84
+  incidents were exactly this race, surfacing through different specific
+  triggers — patching each trigger one at a time (D-84's `isActive()`
+  fix) was treating a symptom, not the cause.
+
+  **Fix**: `FlowRuntimeStudy.reconcileLive()`'s closing branch
+  (`currentPosition != 0, target == 0`) now takes **no real action at
+  all** — no cancel, no close order, nothing — just a
+  `reconcile_live_skipped` journal line. The strategy still computes and
+  emits its own `stop_hit`/`target_hit` intent exactly as before (no
+  strategy code changed — this is purely an execution-layer fix,
+  respecting the existing strategy/exec boundary), and it's still fully
+  visible in the journal via Pipeline's unconditional `intent_changed`
+  record — satisfying "keep the logging for audit" without it ever
+  reaching a real order. The real bracket is now the **only** thing that
+  ever closes a position on a stop/target level. `cancelTrackedLegs()`
+  (D-84's per-position leg-cancellation helper) is deleted outright, not
+  left unused — its only caller was the removed closing branch, and
+  nothing else needed that shape. `OrderGateway.closeAtMarket()` is kept,
+  not deleted, despite losing its only caller here: it's genuine, proven
+  SDK infrastructure for a future universal-flatten case that legitimately
+  wants "close the position" independent of the bracket (e.g. the
+  still-unbuilt session-end auto-flatten, D-29's stated default) —
+  different in kind from `cancelTrackedLegs()`, which was tightly coupled
+  to the specific redundant-close behavior being removed.
+
+  **Explicitly confirmed unaffected, by the user's own framing**:
+  universal events — the daily-loss kill switch (D-85) and any future
+  session-end auto-flatten — are a different case on purpose. They
+  bypass the strategy's intent stream entirely and sweep everything
+  unconditionally (`OrderGateway.cancelAllAndClose()`'s blanket sweep,
+  the one sanctioned exception to "cancel by reference"), which is
+  exactly what "no matter what, close everything" requires and is
+  untouched by this rework.
+
+  A consequence worth stating explicitly, not a silently-accepted risk:
+  if the real bracket somehow fails to close a position (e.g. both legs
+  get rejected by the broker with nothing left resting), there is now
+  **no software fallback** — the position stays open, and only the
+  daily-loss kill switch or a human closing it manually would end it.
+  This is the deliberate tradeoff of "one thing owns closing" over "two
+  things race to do it" — accepted per the user's explicit instruction,
+  not an oversight.
+
+  Full rebuild clean, all 8 gates + safety reflection test pass,
+  redeployed. **Not yet live-retested.**
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

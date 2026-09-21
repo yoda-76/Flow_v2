@@ -196,6 +196,24 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   private volatile Integer pendingBracketStopTicks = null;
   private volatile Integer pendingBracketTargetTicks = null;
   private volatile String pendingBracketReason = null;
+  // 2026-09-21: a bracket leg belongs to the position that created it and
+  // must never outlive it -- tracked by reference here rather than assumed
+  // to self-cancel via broker-side OCO, which OrderContext's own method
+  // list confirms doesn't exist at this SDK level. Cleared (and the
+  // survivor cancelled) when one leg fills naturally (onOrderFilled) --
+  // the ONLY path that closes a position now, since the same-day rework
+  // removed reconcileLive's software-side close entirely (SL/TP is
+  // bracket-only; see reconcileLive()'s closing-branch javadoc).
+  private volatile com.motivewave.platform.sdk.order_mgmt.Order restingStopOrder = null;
+  private volatile com.motivewave.platform.sdk.order_mgmt.Order restingTargetOrder = null;
+  // Populated immediately before WE call cancelOrders() ourselves, so the
+  // resulting onOrderCancelled callback for that same order id is
+  // recognized as expected cleanup, not a broker-side anomaly worth
+  // disarming over (exactly the false-positive the near-miss's disarm
+  // reasoning hit -- it blamed the wrong order for a cancellation that
+  // was actually this sweep).
+  private final java.util.Set<String> selfCancelledOrderIds =
+      java.util.Collections.synchronizedSet(new java.util.HashSet<>());
   // D-61: refuse-to-arm (D-24) overrides the raw ARMED_KEY setting --
   // set once in onActivate, never cleared for the life of this instance
   // (clearing the position/orders manually and reactivating creates a
@@ -399,10 +417,26 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       Sequencer s = sequencer;
       return s == null ? 0 : s.queueDepth();
     };
+    // Daily-loss kill switch (2026-09-21, user's explicit "no matter what"
+    // requirement): a blunt, deliberate exception to every other real-order
+    // path here being surgical (cancel by reference, close only what's
+    // asked). Disarms first so no new automatic entry can race the flatten.
+    java.util.function.Consumer<String> killSwitch = reason -> {
+      armDenied = true;
+      restingStopOrder = null;
+      restingTargetOrder = null;
+      clearPendingLiveOrder();
+      OrderGateway gw = gateway;
+      if (gw == null) {
+        logLine("KILL_SWITCH_TRIGGERED reason=" + reason + " (no gateway -- nothing to flatten)");
+        return;
+      }
+      logLine("KILL_SWITCH_TRIGGERED " + gw.cancelAllAndClose(reason));
+    };
 
     IntentSink sink = this::onIntentChanged;
     pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks,
-        riskChain, armedSupplier, queueDepthSupplier);
+        riskChain, armedSupplier, queueDepthSupplier, killSwitch);
     sequencer = new Sequencer(pipeline::handle, pipeline);
     sequencer.start();
 
@@ -462,21 +496,33 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   /**
    * Real-order counterpart to OrderGateway.reconcileDryRun() -- diffs the
    * intent against the account's actual position (gw.currentPosition()),
-   * not the strategy's own optimistic belief about it, and submits the
-   * minimal order to close the gap, then stashes the intent's stop/target
-   * so onOrderFilled() can attach the bracket once the entry is confirmed
-   * filled -- same submit-entry-then-bracket-on-fill sequence D-67/D-81
-   * proved out, just driven by the strategy's own intents instead of a
-   * hardcoded one-shot test.
+   * not the strategy's own optimistic belief about it. Only handles
+   * OPENING (flat -> non-flat): submits the minimal entry order, then
+   * stashes the intent's stop/target so onOrderFilled() can attach the
+   * bracket once the entry is confirmed filled -- same submit-entry-then-
+   * bracket-on-fill sequence D-67/D-81 proved out, just driven by the
+   * strategy's own intents instead of a hardcoded one-shot test.
    *
-   * Deliberately conservative, not the full reconciliation README
-   * eventually wants: only flat->non-flat (open) and non-flat->flat
-   * (close) are handled automatically. A direct flip or a resize while a
-   * bracket is still resting is skipped and journaled rather than risking
-   * a new order stacked on state that hasn't settled -- neither strategy
-   * shipped so far ever asks for that (both go through flat first via
-   * their own SEARCHING/IN_POSITION state machines), so this is a real,
-   * flagged scope limit, not a silent shortcut.
+   * CLOSING (non-flat -> flat) is deliberately NOT acted on here anymore
+   * (2026-09-21 rework, after two live near-misses in one session): the
+   * real bracket is now the ONLY thing that ever closes a position on a
+   * stop/target level, full stop. Before this rework, this method also
+   * submitted a fresh close order whenever the strategy's own software-
+   * side check independently decided the position should be flat --
+   * which raced the real bracket doing the same job through a different
+   * order entirely, and both incidents were exactly that race. The
+   * strategy's "stop_hit"/"target_hit" intent is still computed and still
+   * journaled (Pipeline's intent_changed record, unconditionally) for
+   * audit, but it no longer causes any real action. See the closing
+   * branch below for the exact reasoning.
+   *
+   * Also deliberately conservative on OPENING, same as before: a direct
+   * flip or a resize while a bracket is still resting is skipped and
+   * journaled rather than risking a new order stacked on state that
+   * hasn't settled -- neither strategy shipped so far ever asks for that
+   * (both go through flat first via their own SEARCHING/IN_POSITION state
+   * machines), so this is a real, flagged scope limit, not a silent
+   * shortcut.
    *
    * Known gap, flagged rather than silently ignored: a real fill is never
    * fed back to the strategy (FlowStrategy.onFill() has no caller anywhere
@@ -514,7 +560,29 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
           .field("reason", "resting orders found on the account -- refusing to stack a new entry on them")
           .build();
     }
-    int delta = target - currentPosition;
+
+    if (closing) {
+      // 2026-09-21 rework, after two live near-misses in one session: SL/TP
+      // is bracket-only now, full stop -- the strategy's own software-side
+      // stop/target re-check and the real resting bracket were two
+      // independent things both trying to close the same position, and
+      // both incidents were exactly that race. The strategy's
+      // "stop_hit"/"target_hit" intent is kept for audit (already
+      // journaled by Pipeline's intent_changed record regardless of what
+      // this method does with it) but reconcileLive takes no real action
+      // on it anymore -- no cancel, no close, nothing. The bracket is the
+      // only thing that ever closes a position on a stop/target level.
+      // Universal events (the daily-loss kill switch, D-85; a future
+      // session-end auto-flatten) are a deliberately different case --
+      // those bypass the strategy's intent stream entirely and sweep
+      // everything unconditionally, which is unaffected by this change.
+      return Json.object().field("type", "reconcile_live_skipped")
+          .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
+          .field("reason", "sl/tp is bracket-only -- strategy's own close intent logged, not re-executed")
+          .build();
+    }
+
+    int delta = target - currentPosition; // opening only, from here on
     liveOrderInFlight = true;
     pendingBracketTargetPosition = target;
     pendingBracketStopTicks = intent.stopPriceTicks();
@@ -1300,54 +1368,105 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   }
 
   /**
-   * D-82/Q-11: attaches the bracket for a real entry submitted from
-   * reconcileLive() once it's confirmed filled -- never speculatively
-   * ahead of a fill, same discipline OrderGateway.submitRealBracket()'s
-   * own javadoc requires. Runs on whatever thread MotiveWave calls this
-   * hook on (proven fine for this exact call sequence by D-81's live
-   * retest); deliberately does NOT touch pipeline/feature/strategy state,
-   * only OrderGateway (which itself only wraps ctx) -- see this class's
-   * onFill() gap note in reconcileLive()'s javadoc for why strategy state
-   * is out of scope here.
+   * D-82/Q-11, reworked 2026-09-21 after a live near-miss. Three distinct
+   * cases, in order:
+   *
+   * 1. This fill is our tracked entry (liveOrderInFlight) -- attach the
+   *    bracket if the intent that opened it wanted one (targetPosition
+   *    != 0), stash both leg Order refs in restingStopOrder/
+   *    restingTargetOrder for later cancellation. A closing fill
+   *    (targetPosition == 0, set by reconcileLive's closing branch) needs
+   *    no bracket -- logged, not an error.
+   * 2. This fill is one of the CURRENT position's own tracked bracket
+   *    legs resolving naturally -- cancel the sibling explicitly rather
+   *    than assume broker-side OCO cleaned it up. This is the fix: the
+   *    near-miss happened because nothing occupied this branch at all
+   *    (liveOrderInFlight was already false by the time a leg fills), so
+   *    a leg could sit resting indefinitely after its position was
+   *    already closed some other way.
+   * 3. Neither -- log only.
+   *
+   * Runs on whatever thread MotiveWave calls this hook on (proven fine
+   * for case 1's call sequence by D-81's live retest); deliberately does
+   * NOT touch pipeline/feature/strategy state, only OrderGateway (which
+   * itself only wraps ctx) -- see reconcileLive()'s onFill() gap note for
+   * why strategy state is out of scope here.
    */
   @Override
   public void onOrderFilled(OrderContext ctx, Order order) {
     logLine("ORDER_FILLED " + order);
-    if (!liveOrderInFlight) return;
-    int targetPosition = pendingBracketTargetPosition;
-    Integer stopTicks = pendingBracketStopTicks;
-    Integer targetTicks = pendingBracketTargetTicks;
-    String reason = pendingBracketReason;
-    clearPendingLiveOrder();
-    if (targetPosition == 0 || stopTicks == null || targetTicks == null) {
-      logLine("LIVE_FILL_NO_BRACKET targetPosition=" + targetPosition
-          + " stopTicks=" + stopTicks + " targetTicks=" + targetTicks);
+
+    if (liveOrderInFlight) {
+      int targetPosition = pendingBracketTargetPosition;
+      Integer stopTicks = pendingBracketStopTicks;
+      Integer targetTicks = pendingBracketTargetTicks;
+      String reason = pendingBracketReason;
+      clearPendingLiveOrder();
+      if (targetPosition == 0 || stopTicks == null || targetTicks == null) {
+        logLine("LIVE_FILL_NO_BRACKET targetPosition=" + targetPosition
+            + " stopTicks=" + stopTicks + " targetTicks=" + targetTicks);
+        return;
+      }
+      PriceCodec codec = priceCodec;
+      OrderGateway gw = gateway;
+      if (codec == null || gw == null) {
+        logLine("LIVE_BRACKET_SKIPPED reason=codec_or_gateway_unavailable");
+        return;
+      }
+      boolean closingIsBuy = targetPosition < 0; // a short position closes with a BUY bracket
+      float stopPrice = (float) codec.fromTicks(stopTicks);
+      float targetPrice = (float) codec.fromTicks(targetTicks);
+      OrderGateway.BracketOrders bracket =
+          gw.submitRealBracket(closingIsBuy, Math.abs(targetPosition), stopPrice, targetPrice, reason);
+      restingStopOrder = bracket.stop();
+      restingTargetOrder = bracket.target();
+      logLine("LIVE_BRACKET_SUBMITTED " + bracket.journalLine());
       return;
     }
-    PriceCodec codec = priceCodec;
+
+    String filledId = order.getOrderId();
+    com.motivewave.platform.sdk.order_mgmt.Order stop = restingStopOrder;
+    com.motivewave.platform.sdk.order_mgmt.Order target = restingTargetOrder;
+    boolean wasStop = stop != null && filledId != null && filledId.equals(stop.getOrderId());
+    boolean wasTarget = !wasStop && target != null && filledId != null && filledId.equals(target.getOrderId());
+    if (!wasStop && !wasTarget) {
+      return; // not one of ours to track -- log line above is enough
+    }
+    com.motivewave.platform.sdk.order_mgmt.Order sibling = wasStop ? target : stop;
+    restingStopOrder = null;
+    restingTargetOrder = null;
     OrderGateway gw = gateway;
-    if (codec == null || gw == null) {
-      logLine("LIVE_BRACKET_SKIPPED reason=codec_or_gateway_unavailable");
-      return;
+    if (gw != null && sibling != null) {
+      selfCancelledOrderIds.add(sibling.getOrderId());
+      String line = gw.cancelIfActive(sibling, wasStop ? "target" : "stop",
+          "sibling leg after " + (wasStop ? "stop" : "target") + " filled");
+      if (line != null) {
+        logLine("LIVE_SIBLING_LEG_CANCELLED " + line);
+      } else {
+        selfCancelledOrderIds.remove(sibling.getOrderId()); // already resolved -- no callback coming
+      }
     }
-    boolean closingIsBuy = targetPosition < 0; // a short position closes with a BUY bracket
-    float stopPrice = (float) codec.fromTicks(stopTicks);
-    float targetPrice = (float) codec.fromTicks(targetTicks);
-    String line = gw.submitRealBracket(closingIsBuy, Math.abs(targetPosition), stopPrice, targetPrice, reason);
-    logLine("LIVE_BRACKET_SUBMITTED " + line);
   }
 
   /**
-   * D-82/Q-11: a cancellation while our own entry was still in flight means
-   * the entry never became a real position -- disarm rather than let the
-   * strategy's own optimistic phase state (already updated the moment it
-   * DECIDED, per FlowStrategy's contract) diverge from the real, still-flat
-   * account. A cancellation with nothing in flight is the normal OCO
-   * bracket-leg cancellation D-81 already proved out -- just log it.
+   * D-82/Q-11, reworked 2026-09-21: a cancellation whose order id is one
+   * WE just cancelled ourselves (onOrderFilled's sibling-leg cleanup, the
+   * only remaining self-initiated cancel path now that reconcileLive's
+   * closing branch takes no action) is expected -- not disarm-worthy. The
+   * near-miss's
+   * original version disarmed on ANY cancellation while an entry was in
+   * flight, which misattributed a bracket-leg cleanup cancellation to the
+   * entry itself. Only an unmarked cancellation while our own entry is
+   * genuinely in flight still means the entry never became a real
+   * position -- that's still disarm-worthy, same reasoning as before.
    */
   @Override
   public void onOrderCancelled(OrderContext ctx, Order order) {
     logLine("ORDER_CANCELLED " + order);
+    String id = order.getOrderId();
+    if (id != null && selfCancelledOrderIds.remove(id)) {
+      return;
+    }
     if (liveOrderInFlight) {
       clearPendingLiveOrder();
       armDenied = true;
