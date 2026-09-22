@@ -906,6 +906,91 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   now three-for-three: real bugs found before any live run, matching
   D-45's original one).
 
+## 3a. Plumbing robustness — wider edge-case search (2026-09-22)
+
+Raised by the user directly ("test plumbing with all the edge cases we
+can find... i want the system to be robust before i start to optimise
+strategy"), separate from and prior to any strategy-tuning work. A first
+read through the actual plumbing code (not just what README/decisions.md
+*say* it does) already surfaced two concrete gaps below — the rest is the
+plan for finding/closing the remainder, following the same
+distill-then-decide shape as the market-structure and order-flow rule
+reviews (`[[review-then-rework-workflow]]`-equivalent for code coverage
+rather than hand-specified rules): survey → distill candidate edge cases
+into their own doc → flag genuinely undecided behavior `⚠️ AMBIGUOUS`
+→ wait for the user → only then write tests.
+
+- [ ] **`ReplayEquivalenceTest` exists but is not wired into
+  `build/build.sh`'s gate list.** README calls it one of the two
+  structural tests that "run from the start," and it's referenced as
+  passing in multiple `todo.md`/`decisions.md` entries above, but
+  `build.sh` only runs `TriggerEvaluatorTest`, `MarketStructureFeatureTest`,
+  `SessionBoundaryTest`, `SessionResetWiringTest`, `LiquidityMapFeatureTest`,
+  `LogRetentionTest`, `MarketStructureBacktestTest`, and
+  `SafetyHookReflectionTest` — eight gates, none of them this one. It's
+  a build-script bug, not a design question, so no review round needed —
+  just add the missing line.
+- [ ] **`RiskChain` has zero dedicated tests.** The single most
+  safety-critical class in the system (armed/session/readiness/
+  daily-loss/size-cap/rate-limit/churn/lag, D-85's kill-switch latch,
+  D-68b's session-rollover) is only touched incidentally, via
+  `SessionResetWiringTest`'s narrow rollover-wiring check. Needs its own
+  suite: one case per filter, filter-*ordering* interactions (what gets
+  journaled when two filters would both block the same intent — may be
+  `⚠️ AMBIGUOUS`, not obviously "just write a test," since the current
+  short-circuit behavior is a real design choice per the class javadoc),
+  rollover-exactly-at-the-boundary, and the kill-switch latch/re-arm
+  cycle (breach → clears → re-breaches same day).
+- [ ] **`Pipeline`'s exception boundary (built, per the §2 entry above:
+  disarm + journal-with-seq + keep ingesting) has no dedicated test**
+  proving a feature or strategy throw actually produces that behavior
+  rather than propagating or silently swallowing.
+- [ ] **Journal backpressure paths are unverified**: README specifies
+  drop-and-gap-marker when the raw queue fills, and fail-loudly when the
+  decisions queue fills (a full decisions queue is defined as a bug) —
+  neither has a test forcing the condition. `LogRetentionTest` covers
+  rotation/deletion, a different concern.
+- [ ] **Everything SDK-bound in `flow-runtime` is untested**: restart-
+  with-resting-orders-or-open-position refuse-to-arm, `OrderGateway`
+  bracket submission/cancellation edge cases (one leg rejected, both legs
+  gone with position still open — see the D-86 revisit item above), and
+  the D-85 kill switch's `cancelAllAndClose()` racing an in-flight fill.
+  No fake/stub `OrderContext` test harness exists to exercise these
+  without MotiveWave running — building one is itself a scope decision
+  to flag, not assume; the alternative is treating these as Sim-live-only
+  checklist items instead of automated tests.
+- [ ] **Turn the two D-84 near-miss raw session logs already sitting in
+  `logs/` into a committed regression fixture** proving D-86's
+  bracket-only-close fix actually holds against the exact event sequence
+  that caused the original double-close race — higher value than any
+  hypothetical case, and the closest thing to a live retest of D-86
+  available without the market open.
+- [~] (2026-09-22) **Distillation done → `docs/dynamic/plumbingEdgeCases.md`,
+  review itself not picked up yet.** Same convention/status as
+  `orderFlowExecutionRules.md` (D-78): prep only, waiting on the user's
+  own review pass, nothing below acted on unprompted. 13 sections tracing
+  `Pipeline`/`RiskChain`/`Sequencer`/`JournalWriter`/`OrderGateway`/
+  `FlowRuntimeStudy` against real event sequences (not just the prose
+  docs), 9 points flagged ⚠️ AMBIGUOUS. Headline finds beyond the two
+  already known (`ReplayEquivalenceTest` not wired; zero `RiskChain`
+  tests): (1) the D-85 daily-loss kill switch goes silent the instant
+  `Pipeline` disarms for *any* reason (a feature exception, a decisions-
+  queue overflow), since the every-event breach check sits behind the
+  same `healthy` early-return as strategy invocation; (2) a genuine
+  double-fill of both bracket legs (a fast market gapping through stop
+  and target before either cancel lands) is currently undetectable and
+  uncorrected — `cancelIfActive()`'s own javadoc treats "already filled"
+  and "already cancelled" as the same normal no-op case; (3) three
+  cross-repo platform questions FLOW_V2's own safety mechanisms rest on
+  without ever confirming (`closeAtMarket()`→`cancelOrders()` atomicity,
+  whether order-hook callbacks can fire concurrently for two legs,
+  whether `onActivate`'s `OrderContext` is guaranteed already-synced after
+  a restart/reconnect) — candidates for throwaway `../motivewave`
+  experiments, not FLOW_V2 decisions. Full list, each tagged by where
+  it's actually testable (`flow-core unit test` / `needs fake
+  OrderContext` / `Sim-live checklist` / `cross-repo platform question`),
+  in the doc itself.
+
 ## 4. Core features and execution `[BUILD]`
 
 - [ ] Delta (already proven in the `../motivewave` skeleton study; also
@@ -1198,20 +1283,17 @@ journal reconstructs what happened and whose replay reproduces it exactly.
   `ExternalConfig`), `RiskChain`'s size cap is a separate safety check
   against `maxContracts`. Brackets: see the `exec/` reconciliation item
   above.
-- [ ] **Fix `RiskChain.checkDailyLoss()` blocking an exit, not just an
-  entry** (found 2026-09-20 while building `SessionResetWiringTest`,
-  D-69 — flagged then, still awaiting a go-ahead, not yet fixed). Today
-  it runs unconditionally on every `evaluate()` call, so an exit whose
-  own mark-to-market loss alone breaches the daily-loss limit gets
-  **blocked exactly like an entry would**, leaving a losing position
-  stuck open instead of letting the kill switch actually flatten it. One
-  proven consequence: a **flat** position's `realizedPnlTicks` can never
-  legitimately exceed the limit through the chain's own gate at all (the
-  exit that would cross the line gets blocked before it can realize it).
-  Likely fix: exempt risk-*reducing* intents (moving toward flat) from
-  `checkDailyLoss` and probably `checkSizeCap` too — not applied
-  unilaterally since it's safety-relevant logic. Full detail in
-  `decisions.md` D-69.
+- [x] (2026-09-21) **Fix `RiskChain.checkDailyLoss()` blocking an exit,
+  not just an entry** (found 2026-09-20 while building
+  `SessionResetWiringTest`, D-69) → **closed, but not via the "likely
+  fix" this item originally guessed at.** D-85 didn't exempt
+  risk-reducing intents from `checkDailyLoss()`/`checkSizeCap()` —
+  `evaluate()`'s per-intent gating is unchanged, so a breached exit
+  *intent* can still be blocked exactly as before. Instead, a new
+  `RiskChain.dailyLossBreached(Context)` is checked on **every event**,
+  independent of intents entirely, and a breach forcibly runs
+  `OrderGateway.cancelAllAndClose()` — bypassing the intent path rather
+  than un-blocking it. Full detail in `decisions.md` D-85.
 - [ ] Intent-seq vs execution-seq gap journaled per trade (D-17) — still
   not done; moot until a real strategy's intents actually reach
   `OrderGateway` with any latency worth measuring.
