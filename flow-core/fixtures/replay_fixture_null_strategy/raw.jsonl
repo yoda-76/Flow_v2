@@ -1,0 +1,13 @@
+{"seq":1,"eventTimeMs":1700000000000,"receiptTimeMs":1700000000000,"type":"tick","priceTicks":41000,"volume":3,"isAskTick":true,"bidPriceTicks":40999,"askPriceTicks":41001,"exchOrderId":0,"aggExchOrderId":0}
+{"seq":2,"eventTimeMs":1700000001000,"receiptTimeMs":1700000001000,"type":"tick","priceTicks":41001,"volume":3,"isAskTick":false,"bidPriceTicks":41000,"askPriceTicks":41002,"exchOrderId":0,"aggExchOrderId":0}
+{"seq":3,"eventTimeMs":1700000002000,"receiptTimeMs":1700000002000,"type":"tick","priceTicks":41002,"volume":3,"isAskTick":true,"bidPriceTicks":41001,"askPriceTicks":41003,"exchOrderId":0,"aggExchOrderId":0}
+{"seq":4,"eventTimeMs":1700000003000,"receiptTimeMs":1700000003000,"type":"tick","priceTicks":41003,"volume":3,"isAskTick":false,"bidPriceTicks":41002,"askPriceTicks":41004,"exchOrderId":0,"aggExchOrderId":0}
+{"seq":5,"eventTimeMs":1700000004000,"receiptTimeMs":1700000004000,"type":"tick","priceTicks":41004,"volume":3,"isAskTick":true,"bidPriceTicks":41003,"askPriceTicks":41005,"exchOrderId":0,"aggExchOrderId":0}
+{"seq":6,"eventTimeMs":1700000005000,"receiptTimeMs":1700000005000,"type":"bar","phase":"CLOSE","openTicks":41000,"highTicks":41010,"lowTicks":40995,"closeTicks":41004,"volume":42}
+{"seq":7,"eventTimeMs":1700000006000,"receiptTimeMs":1700000006000,"type":"tick","priceTicks":41004,"volume":2,"isAskTick":true,"bidPriceTicks":41003,"askPriceTicks":41005,"exchOrderId":0,"aggExchOrderId":0}
+{"seq":8,"eventTimeMs":1700000007000,"receiptTimeMs":1700000007000,"type":"tick","priceTicks":41005,"volume":2,"isAskTick":false,"bidPriceTicks":41004,"askPriceTicks":41006,"exchOrderId":0,"aggExchOrderId":0}
+{"seq":9,"eventTimeMs":1700000008000,"receiptTimeMs":1700000008000,"type":"tick","priceTicks":41006,"volume":2,"isAskTick":true,"bidPriceTicks":41005,"askPriceTicks":41007,"exchOrderId":0,"aggExchOrderId":0}
+{"seq":10,"eventTimeMs":1700000009000,"receiptTimeMs":1700000009000,"type":"tick","priceTicks":41007,"volume":2,"isAskTick":false,"bidPriceTicks":41006,"askPriceTicks":41008,"exchOrderId":0,"aggExchOrderId":0}
+{"seq":11,"eventTimeMs":1700000010000,"receiptTimeMs":1700000010000,"type":"tick","priceTicks":41008,"volume":2,"isAskTick":true,"bidPriceTicks":41007,"askPriceTicks":41009,"exchOrderId":0,"aggExchOrderId":0}
+{"seq":12,"eventTimeMs":1700000011000,"receiptTimeMs":1700000011000,"type":"bar","phase":"CLOSE","openTicks":41004,"highTicks":41012,"lowTicks":41000,"closeTicks":41009,"volume":37}
+{"seq":13,"eventTimeMs":1700000011100,"receiptTimeMs":1700000011100,"type":"clock"}

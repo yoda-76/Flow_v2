@@ -45,6 +45,26 @@ echo "== market structure backtest engine synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.backtest.MarketStructureBacktestTest
 echo "(backtest engine test passed -- see output above)"
 
+echo "== risk chain synthetic test =="
+"$JAVA" -cp build/classes/core com.flow.core.RiskChainTest
+echo "(risk chain test passed -- see output above)"
+
+echo "== journal backpressure synthetic test =="
+"$JAVA" -cp build/classes/core com.flow.journal.JournalBackpressureTest
+echo "(journal backpressure test passed -- see output above)"
+
+echo "== sequencer backpressure synthetic test =="
+"$JAVA" -cp build/classes/core com.flow.core.SequencerTest
+echo "(sequencer test passed -- see output above)"
+
+echo "== pipeline exception boundary / kill switch synthetic test =="
+"$JAVA" -cp build/classes/core com.flow.core.PipelineExceptionBoundaryTest
+echo "(pipeline exception boundary test passed -- see output above)"
+
+echo "== replay-equivalence test (null_strategy fixture -- see flow-core/fixtures/replay_fixture_null_strategy/README.md for its degenerate-0-vs-0 caveat) =="
+"$JAVA" -cp build/classes/core com.flow.core.ReplayEquivalenceTest flow-core/fixtures/replay_fixture_null_strategy
+echo "(replay-equivalence test passed -- see output above)"
+
 echo "== flow-runtime (SDK + flow-core) =="
 rm -rf build/classes/runtime
 mkdir -p build/classes/runtime

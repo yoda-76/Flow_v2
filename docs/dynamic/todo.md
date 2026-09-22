@@ -920,36 +920,63 @@ rather than hand-specified rules): survey → distill candidate edge cases
 into their own doc → flag genuinely undecided behavior `⚠️ AMBIGUOUS`
 → wait for the user → only then write tests.
 
-- [ ] **`ReplayEquivalenceTest` exists but is not wired into
-  `build/build.sh`'s gate list.** README calls it one of the two
-  structural tests that "run from the start," and it's referenced as
-  passing in multiple `todo.md`/`decisions.md` entries above, but
-  `build.sh` only runs `TriggerEvaluatorTest`, `MarketStructureFeatureTest`,
-  `SessionBoundaryTest`, `SessionResetWiringTest`, `LiquidityMapFeatureTest`,
-  `LogRetentionTest`, `MarketStructureBacktestTest`, and
-  `SafetyHookReflectionTest` — eight gates, none of them this one. It's
-  a build-script bug, not a design question, so no review round needed —
-  just add the missing line.
-- [ ] **`RiskChain` has zero dedicated tests.** The single most
-  safety-critical class in the system (armed/session/readiness/
-  daily-loss/size-cap/rate-limit/churn/lag, D-85's kill-switch latch,
-  D-68b's session-rollover) is only touched incidentally, via
-  `SessionResetWiringTest`'s narrow rollover-wiring check. Needs its own
-  suite: one case per filter, filter-*ordering* interactions (what gets
-  journaled when two filters would both block the same intent — may be
-  `⚠️ AMBIGUOUS`, not obviously "just write a test," since the current
-  short-circuit behavior is a real design choice per the class javadoc),
-  rollover-exactly-at-the-boundary, and the kill-switch latch/re-arm
-  cycle (breach → clears → re-breaches same day).
-- [ ] **`Pipeline`'s exception boundary (built, per the §2 entry above:
-  disarm + journal-with-seq + keep ingesting) has no dedicated test**
-  proving a feature or strategy throw actually produces that behavior
-  rather than propagating or silently swallowing.
-- [ ] **Journal backpressure paths are unverified**: README specifies
-  drop-and-gap-marker when the raw queue fills, and fail-loudly when the
-  decisions queue fills (a full decisions queue is defined as a bug) —
-  neither has a test forcing the condition. `LogRetentionTest` covers
-  rotation/deletion, a different concern.
+- [x] (2026-09-22) **`ReplayEquivalenceTest` exists but is not wired into
+  `build/build.sh`'s gate list.** → Fixed, wired in against a new
+  committed fixture, `flow-core/fixtures/replay_fixture_null_strategy/`
+  (13 synthetic events run once through a real `Pipeline`+`JournalWriter`+
+  `NullStrategy`, not hand-written JSON — see that directory's own
+  `README.md`). Turned out less trivial than "one missing line" while
+  building it: `ReplayEquivalenceTest` takes a session directory as an
+  argument, and **every currently-registered strategy is degenerate for
+  this purpose** — `NullStrategy`/`LevelZoneObserverStrategy` never
+  change their intent by design, and `market_structure_lvn_reversal`/
+  `lvn_fade_test` both require `VolumeProfileView`, which only has an
+  SDK-backed implementation and can never be reconstructed under replay's
+  plain-JDK harness (D-43). The fixture is an honest 0-vs-0 comparison —
+  proves the record→replay→compare machinery runs end to end, not real
+  intent-change equivalence, exactly as the test's own printed NOTE
+  already says. Full detail in `docs/dynamic/plumbingEdgeCases.md` §1.
+  **This directly affects the D-84 fixture item below.**
+- [x] (2026-09-22) **`RiskChain` has zero dedicated tests.** → Fixed,
+  `RiskChainTest.java`, 39 checks, wired into `build.sh`: one case per
+  filter, both churn sub-checks, both lag sub-checks, the short-circuit
+  ordering, `dailyLossBreached()` against `checkDailyLoss()`, and the
+  rollover-interleaving trace from `plumbingEdgeCases.md` §4, all passing
+  against current code. These lock in *current* behavior as a regression
+  baseline; whether the short-circuit-ordering and shared-rollover-tracker
+  design is the *right* one long-term is still open (§4's own ⚠️ points,
+  untouched by writing the tests). Side-finding while writing the churn
+  test, noted not fixed: `checkChurn`'s reversal-cap check doesn't
+  special-case "this is the very first entry" — `maxReversalsPerSession:
+  0` blocks even the first-ever entry, not just a later reversal.
+- [x] (2026-09-22) **`Pipeline`'s exception boundary has no dedicated
+  test.** → Fixed, `PipelineExceptionBoundaryTest.java`, wired into
+  `build.sh`, using a real `Sequencer` (not a bare `try/catch` around a
+  direct `handle()` call) so a regression in `Sequencer`'s own wrapping
+  would be caught too. Confirms the drain thread survives, raw ingestion
+  resumes for later events, the strategy is never invoked again, and the
+  `DISARM` record carries the throwable. **New, smaller finding along the
+  way**: the *triggering* event itself is never raw-journaled (`writeRaw`
+  runs after the feature loop, which is where the throw happens) — a
+  post-incident raw-journal review will have a one-event hole exactly at
+  the moment something went wrong. Not fixed, noted in
+  `plumbingEdgeCases.md` §6. The same test file also closes the §2 kill-
+  switch-goes-dark item below (it's really one Pipeline-health question,
+  tested together).
+- [x] (2026-09-22) **The D-85 kill switch going silent once `Pipeline`
+  disarms for any reason (`plumbingEdgeCases.md` §2) has a regression
+  test now**, `PipelineExceptionBoundaryTest.testKillSwitch_GoesSilent
+  AfterPipelineDisarmsForAnUnrelatedException()`, with a positive control
+  proving the exact same breach *does* trip the kill switch when nothing
+  disarmed Pipeline first. Locks in current (silent) behavior as a
+  baseline; whether it should change is still open, untouched by writing
+  the test.
+- [x] (2026-09-22) **Journal backpressure paths are unverified.** →
+  Fixed, `JournalBackpressureTest.java`, wired into `build.sh`: the exact
+  10,000/50,000 capacity boundaries, a single contiguous `GAP_MARKER` for
+  one drop episode, and two separate episodes (with a successful write in
+  between) producing two distinct `GAP_MARKER` records rather than one
+  merged range.
 - [ ] **Everything SDK-bound in `flow-runtime` is untested**: restart-
   with-resting-orders-or-open-position refuse-to-arm, `OrderGateway`
   bracket submission/cancellation edge cases (one leg rejected, both legs
@@ -958,13 +985,32 @@ into their own doc → flag genuinely undecided behavior `⚠️ AMBIGUOUS`
   No fake/stub `OrderContext` test harness exists to exercise these
   without MotiveWave running — building one is itself a scope decision
   to flag, not assume; the alternative is treating these as Sim-live-only
-  checklist items instead of automated tests.
+  checklist items instead of automated tests. **Still fully open** — none
+  of 2026-09-22's work touched this, since it's gated on the same scope
+  decision `plumbingEdgeCases.md` §13 already flags.
 - [ ] **Turn the two D-84 near-miss raw session logs already sitting in
   `logs/` into a committed regression fixture** proving D-86's
   bracket-only-close fix actually holds against the exact event sequence
-  that caused the original double-close race — higher value than any
-  hypothetical case, and the closest thing to a live retest of D-86
-  available without the market open.
+  that caused the original double-close race. **Reassessed 2026-09-22,
+  NOT closable the way originally scoped**: identified the exact two
+  session dirs (`lvn_fade_test_1790007162838_inst1154906642` for the
+  original bug, `lvn_fade_test_1790009860788_inst1194290049`'s second
+  trade for the follow-up incident — both confirmed against `decisions.md`
+  D-84's own account), but D-86's actual fix lives entirely in
+  `FlowRuntimeStudy`/`OrderGateway` (flow-runtime, SDK-bound), which
+  `ReplayHarness` never touches at all (it only drives `Pipeline`+
+  strategy+features under a plain JDK) — so replaying these logs could
+  only ever prove `LvnFadeTestStrategy`'s own intent sequence reproduces,
+  never that `reconcileLive()` correctly no-ops on a stop/target hit. And
+  `LvnFadeTestStrategy` requires `VolumeProfileView` (see the
+  `ReplayEquivalenceTest` item above) — the same D-43 gap, so even that
+  narrower claim can't be made from these particular logs. Closing this
+  properly needs one of: (a) the flow-runtime fake-`OrderContext` harness
+  decision (§13, not yet made), or (b) settling for cutting a slice
+  anyway as a `Pipeline`-layer-only regression fixture with the D-43/§13
+  caveats stated plainly, per D-20's still-undecided fixture location/
+  format. Not done unprompted — this is a real scope question, not
+  extraction work.
 - [~] (2026-09-22) **Distillation done → `docs/dynamic/plumbingEdgeCases.md`,
   review itself not picked up yet.** Same convention/status as
   `orderFlowExecutionRules.md` (D-78): prep only, waiting on the user's

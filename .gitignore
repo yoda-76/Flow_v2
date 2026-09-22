@@ -14,3 +14,8 @@
 # Real exported market data + backtest run output — not source, resolves
 # the "not yet decided" open item in D-79 (docs/dynamic/decisions.md)
 analysis/data/
+
+# ReplayHarness's own output, written fresh every run alongside whatever
+# fixture it replayed (ReplayHarness.replay()'s sessionDir/replay/) — not
+# a deliverable, same reasoning as build output.
+flow-core/fixtures/*/replay/

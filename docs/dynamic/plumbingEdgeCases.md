@@ -26,7 +26,23 @@ noted here only because it directly gates a FLOW_V2 safety mechanism).
 
 ## 1. `ReplayEquivalenceTest` is not wired into `build/build.sh`
 
-Not an ambiguity — a build-script bug. `build.sh` runs eight gates
+**Closed 2026-09-22** — wired into `build.sh` against a new committed
+fixture, `flow-core/fixtures/replay_fixture_null_strategy/` (13 synthetic
+events run once through a real `Pipeline`+`JournalWriter`+`NullStrategy`,
+not hand-written JSON). Turned out to be less trivial than "one missing
+line": `ReplayEquivalenceTest` takes a session directory as an argument,
+and — checked while building the fixture — **every currently-registered
+strategy is degenerate for this purpose**. `NullStrategy`/
+`LevelZoneObserverStrategy` never change their intent by design;
+`market_structure_lvn_reversal` and `lvn_fade_test` both require
+`VolumeProfileView`, which only has an SDK-backed implementation and so
+can never be reconstructed under replay's plain-JDK harness (D-43). The
+committed fixture is therefore an honest 0-vs-0 comparison — it proves
+the record→replay→compare machinery runs end to end (encode/decode
+round-trips, dual-tier `JournalWriter` output, the harness doesn't throw)
+but not real intent-change equivalence, exactly as `ReplayEquivalenceTest`
+already prints at every run. See the fixture's own `README.md` for the
+full explanation. Not an ambiguity — a build-script bug. `build.sh` runs eight gates
 (`TriggerEvaluatorTest`, `MarketStructureFeatureTest`, `SessionBoundaryTest`,
 `SessionResetWiringTest`, `LiquidityMapFeatureTest`, `LogRetentionTest`,
 `MarketStructureBacktestTest`, `SafetyHookReflectionTest`); `Replay
@@ -79,9 +95,26 @@ daily-loss limit, and assert on whether `killSwitch` fires. Whatever the
 answer to the ambiguity above is, this exact sequence should become a
 permanent regression case either way.
 
+**Test written 2026-09-22, locking in current behavior** —
+`PipelineExceptionBoundaryTest.testKillSwitch_GoesSilentAfterPipeline
+DisarmsForAnUnrelatedException()`, wired into `build.sh`, with a positive
+control (`testKillSwitch_FiresNormally_PositiveControl()`) proving the
+exact same breach *does* trip the kill switch when nothing has disarmed
+Pipeline first — so the "silent" result in the disarmed case is a real
+finding, not a broken harness. The ambiguity itself (should this change)
+is untouched by writing the test; nothing here has been fixed.
+
 ---
 
 ## 3. Journal backpressure paths are fully unexercised
+
+**Closed 2026-09-22** — `JournalBackpressureTest.java`, wired into
+`build.sh`. Confirms the exact 10,000/50,000 capacity boundaries, a
+single contiguous `GAP_MARKER` for one drop episode, and — the harder
+case — that two separate drop episodes with a successful write in
+between produce two *distinct* `GAP_MARKER` records rather than one
+merged range (this one needs the real writer thread; see the test's own
+comment for why the margins used are safe, not tuned to a bare minimum).
 
 `JournalWriter`'s two policies (raw: drop + `GAP_MARKER`; decisions: fail
 loud via `decisionsOverflowed()`) are exactly as specified in README, but
@@ -115,6 +148,20 @@ slow/blocked consumer double, or a tiny test-only queue capacity).
 ---
 
 ## 4. `RiskChain` has zero dedicated tests
+
+**Tests written 2026-09-22** — `RiskChainTest.java`, wired into
+`build.sh`: one case per filter, the two churn sub-checks, the two lag
+sub-checks, the short-circuit-ordering behavior, `dailyLossBreached()`
+against `checkDailyLoss()`, and the rollover-interleaving trace below —
+39 checks total, all passing against the current code. These lock in
+*current* behavior as a regression baseline; the two ⚠️ points below are
+about whether that behavior is the *right* one long-term, which the
+tests don't answer and aren't trying to. One real, if minor, side-finding
+while writing the churn test: `checkChurn`'s reversal-cap check
+(`reversalsThisSession >= maxReversals`) doesn't special-case "this is the
+very first entry" the way `recordAccepted()`'s own counting does — a
+`maxReversalsPerSession` of `0` blocks even the first-ever entry, not just
+a later reversal. Noted in the test's own comment, not treated as a bug.
 
 Already flagged directly to the user; restated here as its own numbered
 item since it's the largest single gap. Beyond "write one test per
@@ -154,6 +201,12 @@ this needs the SDK.
 
 ## 5. `Sequencer`'s producer-side backpressure has no test either
 
+**Closed 2026-09-22** — `SequencerTest.java`, wired into `build.sh`.
+Confirms `queueDepth()` genuinely grows under a slow handler (not just in
+theory) and composes that real, growing depth with `RiskChain.checkLag()`
+directly, confirming a realistic threshold trips well under the 100,000
+real ceiling.
+
 `Sequencer.publish()` (`Sequencer.java` line 50) blocks the calling
 (producer) thread on a full queue rather than dropping — deliberate, per
 the class javadoc, because dropping a market event would silently corrupt
@@ -173,6 +226,25 @@ trips `checkLag` well under 100,000).
 ---
 
 ## 6. `Pipeline`'s exception boundary is built but untested
+
+**Closed 2026-09-22** — `PipelineExceptionBoundaryTest.java`, wired into
+`build.sh`, using a real `Sequencer` (not a bare `try/catch` around a
+direct `Pipeline.handle()` call) so a regression in `Sequencer`'s own
+wrapping would be caught too, not just `Pipeline.onPipelineException()`
+in isolation. All four implied guarantees confirmed: the drain thread
+survives, raw ingestion resumes for later events, the strategy is never
+invoked again, and the `DISARM` record carries the throwable's message.
+
+**One new, smaller finding surfaced while writing this test, not
+previously flagged**: raw ingestion resuming afterward does **not**
+include the triggering event itself. `Pipeline.handle()` calls
+`journal.writeRaw()` *after* the feature loop, so the one event whose own
+feature call throws is never raw-journaled at all, even though
+`marketState.bump()` already ran for it moments earlier in the same call.
+Not a correctness bug on its own (nothing acts on that event's absence),
+but worth knowing: a post-incident raw-journal review will have a
+one-event hole exactly at the moment something went wrong, which is
+precisely the event an investigator would most want present.
 
 `Sequencer.drainLoop()` wraps `handler.accept(e)` in try/catch and calls
 `Pipeline.onPipelineException` on any throwable (`Sequencer.java` lines
@@ -443,9 +515,19 @@ Nine points flagged, spanning `Pipeline`'s health/kill-switch interaction,
 finds — two live-order-management gaps (§8's undetectable double-fill,
 §9's fill-quantity trust) plus three cross-repo platform unknowns (§7, §10,
 §11) that FLOW_V2's own safety mechanisms currently rest on without ever
-having confirmed them. Sections 1, 3, 5, 6, 12 have no ⚠️ flag — they're
-concrete, already-answerable test gaps (build-script fix, journal/
-Sequencer/Pipeline behavior already fully specified by existing code and
-comments) that don't need to wait on anything and can be written as tests
-directly. Nothing here has been picked up yet; sequencing is the user's
-call, same as every other distillation document's closing note.
+having confirmed them.
+
+**Status as of 2026-09-22**: §§1, 3, 4, 5, 6 are closed — each had no ⚠️
+flag of its own (concrete, already-answerable test gaps that didn't need
+to wait on anything) and now has a real test wired into `build.sh`
+(`RiskChainTest`, `JournalBackpressureTest`, `SequencerTest`,
+`PipelineExceptionBoundaryTest`, plus the `ReplayEquivalenceTest` fixture).
+§2's own ⚠️ now also has a regression test locking in its *current*
+(silent) behavior as a baseline — writing that test didn't answer the
+ambiguity, which is still open. §§7–11/13 (the `cancelAllAndClose`
+ordering, the double-fill gap, fill-quantity trust, the two cross-repo
+platform questions, and the fake-`OrderContext`-harness scope call) are
+still fully open — closing them needs either a design decision, a
+`../motivewave` experiment, or both, none of which this pass took upon
+itself to start. Sequencing what's left is the user's call, same as every
+other distillation document's closing note.
