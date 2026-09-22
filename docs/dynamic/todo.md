@@ -982,12 +982,15 @@ into their own doc → flag genuinely undecided behavior `⚠️ AMBIGUOUS`
   bracket submission/cancellation edge cases (one leg rejected, both legs
   gone with position still open — see the D-86 revisit item above), and
   the D-85 kill switch's `cancelAllAndClose()` racing an in-flight fill.
-  No fake/stub `OrderContext` test harness exists to exercise these
-  without MotiveWave running — building one is itself a scope decision
-  to flag, not assume; the alternative is treating these as Sim-live-only
-  checklist items instead of automated tests. **Still fully open** — none
-  of 2026-09-22's work touched this, since it's gated on the same scope
-  decision `plumbingEdgeCases.md` §13 already flags.
+  **Scope decided 2026-09-22 (`plumbingEdgeCases.md` §13): build a
+  fake/stub `OrderContext` test harness**, strictly a unit-test double
+  under a plain JVM (never a real account, Sim or otherwise) — the
+  user's own words: "build it but keep it strictly sim only not on real
+  account. dont need consent to do the tests." Since it never holds a
+  real `OrderContext`, CLAUDE.md's per-order-confirmation rule doesn't
+  apply to running these tests at all. **Not yet built** — this closed
+  the scope question, not the work; the harness itself, and the §8/§9/§10
+  regression tests it enables, are next.
 - [ ] **Turn the two D-84 near-miss raw session logs already sitting in
   `logs/` into a committed regression fixture** proving D-86's
   bracket-only-close fix actually holds against the exact event sequence
@@ -1004,38 +1007,26 @@ into their own doc → flag genuinely undecided behavior `⚠️ AMBIGUOUS`
   never that `reconcileLive()` correctly no-ops on a stop/target hit. And
   `LvnFadeTestStrategy` requires `VolumeProfileView` (see the
   `ReplayEquivalenceTest` item above) — the same D-43 gap, so even that
-  narrower claim can't be made from these particular logs. Closing this
-  properly needs one of: (a) the flow-runtime fake-`OrderContext` harness
-  decision (§13, not yet made), or (b) settling for cutting a slice
-  anyway as a `Pipeline`-layer-only regression fixture with the D-43/§13
-  caveats stated plainly, per D-20's still-undecided fixture location/
-  format. Not done unprompted — this is a real scope question, not
-  extraction work.
-- [~] (2026-09-22) **Distillation done → `docs/dynamic/plumbingEdgeCases.md`,
-  review itself not picked up yet.** Same convention/status as
-  `orderFlowExecutionRules.md` (D-78): prep only, waiting on the user's
-  own review pass, nothing below acted on unprompted. 13 sections tracing
-  `Pipeline`/`RiskChain`/`Sequencer`/`JournalWriter`/`OrderGateway`/
-  `FlowRuntimeStudy` against real event sequences (not just the prose
-  docs), 9 points flagged ⚠️ AMBIGUOUS. Headline finds beyond the two
-  already known (`ReplayEquivalenceTest` not wired; zero `RiskChain`
-  tests): (1) the D-85 daily-loss kill switch goes silent the instant
-  `Pipeline` disarms for *any* reason (a feature exception, a decisions-
-  queue overflow), since the every-event breach check sits behind the
-  same `healthy` early-return as strategy invocation; (2) a genuine
-  double-fill of both bracket legs (a fast market gapping through stop
-  and target before either cancel lands) is currently undetectable and
-  uncorrected — `cancelIfActive()`'s own javadoc treats "already filled"
-  and "already cancelled" as the same normal no-op case; (3) three
-  cross-repo platform questions FLOW_V2's own safety mechanisms rest on
-  without ever confirming (`closeAtMarket()`→`cancelOrders()` atomicity,
-  whether order-hook callbacks can fire concurrently for two legs,
-  whether `onActivate`'s `OrderContext` is guaranteed already-synced after
-  a restart/reconnect) — candidates for throwaway `../motivewave`
-  experiments, not FLOW_V2 decisions. Full list, each tagged by where
-  it's actually testable (`flow-core unit test` / `needs fake
-  OrderContext` / `Sim-live checklist` / `cross-repo platform question`),
-  in the doc itself.
+  narrower claim can't be made from these particular logs. **Now that
+  the fake-`OrderContext` harness is queued (above)**, this item's most
+  natural path is folding it into that harness's own test scenarios once
+  it exists, rather than a `ReplayHarness`-based fixture at all — revisit
+  then rather than deciding the format now.
+- [~] (2026-09-22, review started same day) **Distillation done →
+  `docs/dynamic/plumbingEdgeCases.md`, review now in progress.** Same
+  convention/status as `orderFlowExecutionRules.md` (D-78) at first, then
+  the user started the live review pass the same day rather than bringing
+  answers back separately. Three of nine ⚠️ points resolved so far: (1)
+  the kill-switch-goes-dark finding → **fixed**, moved ahead of
+  `Pipeline`'s `healthy` check; (2) `RiskChain`'s short-circuit-ordering
+  question → **kept as-is**, no code change; (3) the fake-`OrderContext`-
+  harness scope question → **build it**, strictly Sim-only, no per-run
+  consent needed since it's a pure test double. Still open: §7
+  (`cancelAllAndClose` atomicity), §8 (the double-fill gap — still the
+  most consequential open point), §9 (fill-quantity trust), §10
+  (concurrent order-hook callbacks), §11 (`onActivate` sync timing) — §7/
+  §10/§11 need `../motivewave` experiments, §8/§9 need their own design
+  pass. Full detail and status per point in the doc itself.
 
 ## 4. Core features and execution `[BUILD]`
 

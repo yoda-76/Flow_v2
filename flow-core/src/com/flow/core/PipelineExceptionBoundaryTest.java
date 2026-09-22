@@ -8,7 +8,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -21,13 +20,14 @@ import java.util.concurrent.atomic.AtomicReference;
  *    the drain thread must survive, raw ingestion must continue, the
  *    strategy must never be invoked again this session, and the DISARM
  *    record must carry the throwable.
- *  - §2: the daily-loss kill switch goes SILENT the instant Pipeline
- *    disarms for any reason (a feature exception here), because the
- *    every-event breach check sits behind the same `healthy` early
- *    return as strategy invocation. testKillSwitch... below locks in
- *    this CURRENT behavior as a regression baseline -- it is not an
- *    endorsement that this is correct. Whether it should change is
- *    exactly what's flagged for review there.
+ *  - §2: the daily-loss kill switch, 2026-09-22 decision -- it must fire
+ *    even after Pipeline has disarmed for an unrelated reason (a feature
+ *    exception here), matching the user's original D-85 "no matter what"
+ *    framing literally. Originally this test locked in the opposite
+ *    (silent) behavior as a found-but-undecided regression baseline; the
+ *    fix (moving the kill-switch check in Pipeline.handle() above the
+ *    `healthy` early-return) landed the same day and this test was
+ *    rewritten to assert the new, decided behavior instead of the old one.
  *
  * Uses a real Sequencer (not a direct Pipeline.handle() call in a
  * try/catch) specifically so a regression in Sequencer's own wrapping,
@@ -48,7 +48,7 @@ public final class PipelineExceptionBoundaryTest {
   public static void main(String[] args) throws Exception {
     testExceptionBoundary_DisarmsKeepsIngestingRaw_StrategyNeverInvokedAgain();
     testKillSwitch_FiresNormally_PositiveControl();
-    testKillSwitch_GoesSilentAfterPipelineDisarmsForAnUnrelatedException();
+    testKillSwitch_StillFiresAfterPipelineDisarmsForAnUnrelatedException();
 
     if (failures > 0) {
       System.err.println(failures + " FAILURE(S)");
@@ -222,16 +222,15 @@ public final class PipelineExceptionBoundaryTest {
   }
 
   /**
-   * The actual §2 finding: an unrelated feature exception disarms
-   * Pipeline BEFORE the breach ever arrives, and the kill switch -- which
-   * its own javadoc frames as checked "on every event, independent of
-   * the strategy's own triggers or intents" -- never fires, because that
-   * check itself sits behind the same `healthy` early return the
-   * exception just tripped. Locking in the CURRENT behavior; see this
-   * file's class javadoc and plumbingEdgeCases.md §2 for the open
-   * question of whether it should change.
+   * The §2 finding, now fixed (2026-09-22 decision): an unrelated feature
+   * exception disarms Pipeline BEFORE the breach ever arrives, but the
+   * kill switch must still fire -- it sits ABOVE the `healthy` early
+   * return in Pipeline.handle() precisely so a disarm for an unrelated
+   * reason can never silence it. This test used to lock in the opposite
+   * (silent) behavior as a found-but-undecided regression baseline; it's
+   * rewritten here to assert the decided fix instead.
    */
-  private static void testKillSwitch_GoesSilentAfterPipelineDisarmsForAnUnrelatedException() throws Exception {
+  private static void testKillSwitch_StillFiresAfterPipelineDisarmsForAnUnrelatedException() throws Exception {
     Path dir = Files.createTempDirectory("flow_v2_test_killswitch_disarmed");
     dir.toFile().deleteOnExit();
     JournalWriter journal = new JournalWriter(dir);
@@ -242,11 +241,7 @@ public final class PipelineExceptionBoundaryTest {
     ThrowingFeature feature = new ThrowingFeature(2); // throws on the 2nd event, right after entry
     IntentSink sink = (intent, event) -> {};
     AtomicReference<String> killSwitchReason = new AtomicReference<>();
-    AtomicBoolean killSwitchCalled = new AtomicBoolean(false);
-    java.util.function.Consumer<String> killSwitch = reason -> {
-      killSwitchCalled.set(true);
-      killSwitchReason.set(reason);
-    };
+    java.util.function.Consumer<String> killSwitch = killSwitchReason::set;
 
     Pipeline pipeline = new Pipeline(strategy, journal, sink, Map.of("throwing", feature), ticks -> ticks,
         riskChain, () -> true, () -> 0, killSwitch);
@@ -263,23 +258,20 @@ public final class PipelineExceptionBoundaryTest {
 
     // Event 3: price crashes to breach the daily-loss limit exactly as in
     // the positive control above -- the only difference is Pipeline is
-    // already disarmed.
+    // already disarmed. The kill switch must fire anyway.
     sequencer.publish((seq, et, rt) -> tick(seq, 949), 3000L);
-    // No positive signal to await for "it did NOT fire" -- give it a
-    // generous window during which the positive control above already
-    // proved a real breach fires well inside.
-    Thread.sleep(500);
+    awaitTrue(() -> killSwitchReason.get() != null, 2000);
 
-    check("CURRENT BEHAVIOR: the kill switch never fires, even though the exact same "
-        + "breach fired it in the positive control -- because dailyLossBreached() sits "
-        + "behind Pipeline's healthy-check early return", killSwitchCalled.get(), false);
+    check("the kill switch STILL fires even though Pipeline is already disarmed for an "
+        + "unrelated reason -- '\"no matter what\"' now means literally that",
+        killSwitchReason.get() != null, true);
 
     sequencer.stop();
     journal.flushAndClose();
 
     List<String> decisionLines = Files.readAllLines(dir.resolve("decisions.jsonl"));
     boolean killSwitchJournaled = decisionLines.stream().anyMatch(l -> l.contains("\"type\":\"KILL_SWITCH\""));
-    check("no KILL_SWITCH decision record either -- the breach is invisible in the journal, "
-        + "not just unactioned", killSwitchJournaled, false);
+    check("a KILL_SWITCH decision record was written despite the earlier disarm",
+        killSwitchJournaled, true);
   }
 }

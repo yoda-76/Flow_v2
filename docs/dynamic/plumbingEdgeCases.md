@@ -59,6 +59,16 @@ this one ever running.
 
 ## 2. The daily-loss kill switch goes silent the instant `Pipeline` disarms for *any* reason
 
+**Resolved 2026-09-22 — fixed.** User's decision: "yes, move it ahead of
+the health check" — the original D-85 "no matter what" framing was meant
+literally. `Pipeline.handle()`'s kill-switch block now runs *before* the
+`if (!healthy.get()) return;` line, so a disarm for an unrelated reason
+(a feature exception, a decisions-queue overflow) can no longer silence
+it. `PipelineExceptionBoundaryTest.testKillSwitch_StillFiresAfterPipeline
+DisarmsForAnUnrelatedException()` rewritten to assert the fix (it
+previously locked in the opposite, now-wrong behavior as a found-but-
+undecided baseline).
+
 `Pipeline.handle()`'s order of operations (`Pipeline.java` lines 132–177):
 
 1. bump state, write the raw record
@@ -168,8 +178,11 @@ item since it's the largest single gap. Beyond "write one test per
 filter," two things worth deciding *before* writing tests so the tests
 assert the right thing rather than just the current behavior verbatim:
 
-⚠️ **AMBIGUOUS — filter-order short-circuiting means only the first
-blocking filter's verdict is ever journaled for a given intent.**
+**Resolved 2026-09-22 — keep as-is.** User's decision: short-circuit
+stays; not changing to evaluate-and-journal-all-blockers. No code change.
+
+⚠️ ~~AMBIGUOUS — filter-order short-circuiting means only the first
+blocking filter's verdict is ever journaled for a given intent.~~
 `evaluate()` (`RiskChain.java` lines 96–133) returns at the first `block`,
 per the class's own documented design ("later filters are moot once one
 blocks, so there's nothing meaningful to journal for them"). This is a
@@ -448,6 +461,18 @@ scope note. Worth folding into whatever design pass §8 eventually gets.
 
 ## 13. `flow-runtime` has zero automated tests of any kind
 
+**Resolved 2026-09-22 — build it.** User's decision: "build it but keep
+it strictly sim only not on real account. dont need consent to do the
+tests." Read as: build a fake/stub `OrderContext` test double for
+`flow-runtime`, purely a unit-test fixture under a plain JVM — it never
+holds a real `OrderContext` or touches any actual account, Sim or real,
+so CLAUDE.md's per-order-confirmation hard rule (which governs a *real*
+`OrderContext` placing a *real* order) doesn't apply to it at all; running
+these tests needs no fresh confirmation each time, same as any other unit
+test. Not yet built — this closes the scope question, not the work
+itself. Once it exists, it's the prerequisite for turning §8/§9/§10's
+gaps into real regression tests rather than only Sim-live checklist items.
+
 Every SDK-bound behavior above — `refuseToArmReason()`, `submitRealEntry`/
 `submitRealBracket`, `cancelIfActive`/`cancelAllAndClose`, the whole
 `onOrderFilled`/`onOrderCancelled`/`onOrderRejected` state machine — is
@@ -474,60 +499,46 @@ above.
 
 ## Open questions, collected
 
-1. **§2 — kill switch goes dark once `Pipeline` disarms for any reason**
-   (feature/strategy exception, or a decisions-queue overflow), because
-   the every-event breach check sits behind the same `healthy` early
-   return as strategy invocation. Confirm whether it should be moved
-   ahead of that check.
-2. **§4 — `RiskChain.evaluate()`'s short-circuit on the first blocking
-   filter** means only one verdict is ever journaled per blocked intent.
-   Confirm this is still wanted.
+1. ~~§2 — kill switch goes dark once `Pipeline` disarms for any reason~~
+   **Resolved 2026-09-22 — fixed.** Moved ahead of the `healthy` check.
+2. ~~§4 — `RiskChain.evaluate()`'s short-circuit on the first blocking
+   filter~~ **Resolved 2026-09-22 — kept as-is.** No code change.
 3. **§4 — the two rollover cadences' shared, order-dependent
-   `SessionBoundary.Tracker`** traces through as correct by hand but has
-   never been tested; confirm the interleaving this document traced is
-   the one to lock in permanently.
+   `SessionBoundary.Tracker`** traces through as correct by hand and is
+   now locked in by `RiskChainTest`'s interleaving test — nothing further
+   to decide here.
 4. **§7 — `cancelAllAndClose()`'s `closeAtMarket()` → `cancelOrders()`
    ordering**, unconfirmed atomicity against the platform. Cross-repo
-   platform question.
+   platform question — still open.
 5. **§8 — a genuine double-fill of both bracket legs is currently
    undetectable and uncorrected** — the most consequential open point in
    this document. Needs its own design pass once picked up; not decided
-   here.
+   here. Still open.
 6. **§9 — bracket sizing trusts the stashed intent's target position, not
    the confirmed fill quantity** — low blast radius today only because
    `maxContracts=1`. Confirm whether `onOrderFilled` should re-read
    `gw.currentPosition()` instead, once §9's underlying SDK question
-   (per-partial-fill callbacks or not) is answered.
+   (per-partial-fill callbacks or not) is answered. Still open.
 7. **§10 — whether order-hook callbacks can be delivered concurrently for
    two legs** is unconfirmed against the platform. Cross-repo platform
-   question, and a prerequisite for trusting any fix to §8.
+   question, and a prerequisite for trusting any fix to §8. Still open.
 8. **§11 — whether `onActivate`'s `OrderContext` is guaranteed
    already-synced** with the true account state, particularly right after
    a platform restart/reconnect. Cross-repo platform question, and the
    one thing the restart-with-live-position safety check depends on.
-9. **§13 — whether a fake/stub `OrderContext` test harness is worth
-   building at all**, versus treating everything SDK-bound as Sim-live-
-   only permanently. A scope decision, not a technical question with an
-   obvious answer.
+   Still open.
+9. ~~§13 — whether a fake/stub `OrderContext` test harness is worth
+   building at all~~ **Resolved 2026-09-22 — yes, build it**, strictly as
+   a Sim-only test double (never a real account), no per-run confirmation
+   needed since it never holds a real `OrderContext`. Not yet built.
 
-Nine points flagged, spanning `Pipeline`'s health/kill-switch interaction,
-`RiskChain`'s untested filter/rollover behavior, and — the highest-value
-finds — two live-order-management gaps (§8's undetectable double-fill,
-§9's fill-quantity trust) plus three cross-repo platform unknowns (§7, §10,
-§11) that FLOW_V2's own safety mechanisms currently rest on without ever
-having confirmed them.
-
-**Status as of 2026-09-22**: §§1, 3, 4, 5, 6 are closed — each had no ⚠️
-flag of its own (concrete, already-answerable test gaps that didn't need
-to wait on anything) and now has a real test wired into `build.sh`
-(`RiskChainTest`, `JournalBackpressureTest`, `SequencerTest`,
-`PipelineExceptionBoundaryTest`, plus the `ReplayEquivalenceTest` fixture).
-§2's own ⚠️ now also has a regression test locking in its *current*
-(silent) behavior as a baseline — writing that test didn't answer the
-ambiguity, which is still open. §§7–11/13 (the `cancelAllAndClose`
-ordering, the double-fill gap, fill-quantity trust, the two cross-repo
-platform questions, and the fake-`OrderContext`-harness scope call) are
-still fully open — closing them needs either a design decision, a
-`../motivewave` experiment, or both, none of which this pass took upon
-itself to start. Sequencing what's left is the user's call, same as every
-other distillation document's closing note.
+**Status as of 2026-09-22 (second pass, live review)**: §§1, 2, 3, 4, 5, 6
+are closed with code/tests. §13's scope question is decided (build it) —
+the harness itself is queued next, and is the prerequisite for turning
+§§8–10 into real regression tests rather than only Sim-live checklist
+items. §§7, 8, 9, 10, 11 remain fully open: §7/§10/§11 need `../motivewave`
+experiments (platform facts, not FLOW_V2 decisions), and §8/§9 need their
+own design pass — §9 specifically waits on the same platform fact §10
+does (does `onOrderFilled` fire per-partial-fill). Sequencing what's left
+is the user's call, same as every other distillation document's closing
+note.

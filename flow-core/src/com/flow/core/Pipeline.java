@@ -151,12 +151,19 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           .build());
     }
 
-    if (!healthy.get()) return; // keep ingesting/journaling raw events; stop invoking the strategy
-
     // Daily-loss kill switch (2026-09-21, user's explicit "no matter what"
     // requirement): checked on EVERY event, not gated by strategy triggers
     // or an intent change -- see RiskChain.dailyLossBreached()'s javadoc
     // for why the intent-change cadence alone isn't enough for this.
+    // Deliberately ABOVE the healthy-check below (2026-09-22 decision,
+    // resolving plumbingEdgeCases.md §2): "no matter what" was found to
+    // mean literally that -- a Pipeline-health disarm for an unrelated
+    // reason (a feature/strategy exception on an earlier event, or a
+    // decisions-queue overflow) must not also silence this. Nothing in
+    // this block touches strategy/feature state, so nothing about the
+    // disarm reasoning required gating it behind `healthy` in the first
+    // place; it only ever was because both checks happened to live next
+    // to each other.
     if (riskChain != null) {
       RiskChain.Context killCtx = new RiskChain.Context(
           armedSupplier.getAsBoolean(), true, marketState.lastPriceTicks(),
@@ -175,6 +182,8 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
         killSwitchTripped.set(false); // breach cleared (e.g. session rollover) -- allow it to fire again if it recurs
       }
     }
+
+    if (!healthy.get()) return; // keep ingesting/journaling raw events; stop invoking the strategy (kill switch above is exempt -- see its own comment)
 
     // Every declared trigger is evaluated every event, never short-circuited
     // on the first one that fires -- a stateful trigger (LevelCross,
