@@ -1012,21 +1012,36 @@ into their own doc → flag genuinely undecided behavior `⚠️ AMBIGUOUS`
   natural path is folding it into that harness's own test scenarios once
   it exists, rather than a `ReplayHarness`-based fixture at all — revisit
   then rather than deciding the format now.
-- [~] (2026-09-22, review started same day) **Distillation done →
+- [~] (2026-09-22/23, review started 2026-09-22) **Distillation done →
   `docs/dynamic/plumbingEdgeCases.md`, review now in progress.** Same
   convention/status as `orderFlowExecutionRules.md` (D-78) at first, then
   the user started the live review pass the same day rather than bringing
-  answers back separately. Three of nine ⚠️ points resolved so far: (1)
-  the kill-switch-goes-dark finding → **fixed**, moved ahead of
+  answers back separately. Three of nine ⚠️ points resolved with code:
+  (1) the kill-switch-goes-dark finding → **fixed**, moved ahead of
   `Pipeline`'s `healthy` check; (2) `RiskChain`'s short-circuit-ordering
   question → **kept as-is**, no code change; (3) the fake-`OrderContext`-
   harness scope question → **build it**, strictly Sim-only, no per-run
-  consent needed since it's a pure test double. Still open: §7
-  (`cancelAllAndClose` atomicity), §8 (the double-fill gap — still the
-  most consequential open point), §9 (fill-quantity trust), §10
-  (concurrent order-hook callbacks), §11 (`onActivate` sync timing) — §7/
-  §10/§11 need `../motivewave` experiments, §8/§9 need their own design
-  pass. Full detail and status per point in the doc itself.
+  consent needed since it's a pure test double, not yet built.
+
+  User then asked to run the §7/§10/§11 `../motivewave` experiments —
+  paused first per CLAUDE.md's hard rule (a general "run the experiments"
+  is not the specific per-order confirmation the rule requires for
+  anything that would place/observe a real order), and did the read-only
+  half instead: checked `../motivewave/docs/static/`'s Javadoc/SDK guide.
+  **§7 resolved at [DOC]-tier**: `OrderContext.closeAtMarket()`'s own
+  Javadoc states it blocks until filled, which rules out the
+  `cancelAllAndClose()` race — not yet live-confirmed, since this project's
+  own discipline is not to fully trust docs over the real thing, but a
+  real, sourced finding either way (`../motivewave/docs/dynamic/
+  findings.md`, 2026-09-22). **§9's fix direction strengthened** (not
+  closed): `Order.getFilled()` is a real, documented way to read the
+  actual filled quantity, correct regardless of whether `onOrderFilled`
+  fires per-partial-fill or not (that cadence question is still open).
+  **§10 and §11 confirmed unanswerable from any available documentation**
+  — genuinely need a live experiment, which needs the user's specific
+  per-order/per-restart authorization before anything gets placed. §8 (the
+  double-fill gap, still the most consequential open point) is untouched
+  by any of this — a pure FLOW_V2 design question, not a platform one.
 
 ## 4. Core features and execution `[BUILD]`
 

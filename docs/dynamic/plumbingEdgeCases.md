@@ -275,6 +275,20 @@ locked in.
 
 ## 7. `cancelAllAndClose()`'s two-step ordering has no confirmed atomicity
 
+**Mostly resolved 2026-09-22, via `../motivewave` Javadoc research (not
+yet live-confirmed).** `OrderContext.closeAtMarket()`'s own Javadoc states
+explicitly: *"This method will wait until the market order(s) have been
+filled."* — a documented, synchronous/blocking guarantee. `cancelOrders()`
+has no such note. So `cancelAllAndClose()`'s `closeAtMarket()` →
+`cancelOrders()` sequence cannot race: the close order is already filled
+and gone by the time `cancelOrders()` (which only touches still-open
+orders) ever runs. Full detail in `../motivewave/docs/dynamic/findings.md`
+(2026-09-22). **[DOC]-tier only** — per this project's own "verify
+against the real thing before trusting docs" discipline, this is a strong
+lead, not a live-verified fact, for a safety-critical mechanism that has
+never actually fired live yet (D-85). Worth a live confirmation whenever
+D-85 gets its first real trigger, not before.
+
 `OrderGateway.cancelAllAndClose()` (`OrderGateway.java` lines 228–238)
 calls `ctx.closeAtMarket()` then, immediately after with no wait or
 confirmation, `ctx.cancelOrders()` (blanket, no-arg). If `closeAtMarket()`
@@ -365,6 +379,21 @@ platform question` first.
 
 ## 9. The bracket is sized off the stashed intent, not the confirmed fill quantity
 
+**Partially informed 2026-09-22, via `../motivewave` Javadoc research —
+underlying question still open.** `Order` explicitly models partial
+fills (`getFilled()`/`getFilledAsFloat()`, distinct from `isFilled()`),
+and there is no separate "onOrderPartiallyFilled" hook among `Study`'s
+full `on*` method inventory — only `onOrderFilled`/`onOrderCancelled`/
+`onOrderRejected`/`onOrderModified`. Whether `onOrderFilled` fires once
+per partial fill or only on full resolution is **not documented anywhere**
+and still needs a live order likely to partially fill to observe
+directly. Regardless of that answer, though: the fix direction is now
+better-grounded than a guess — `order.getFilled()` is a real, SDK-exposed
+way to read the actual filled quantity, so `onOrderFilled`'s bracket-sizing
+branch reading that (or `gw.currentPosition()`) instead of the stashed
+intent value is correct either way. Full detail in
+`../motivewave/docs/dynamic/findings.md` (2026-09-22).
+
 `onOrderFilled()`'s case 1 (lines 1399–1424) sizes the bracket from
 `pendingBracketTargetPosition` — the intent's *originally requested*
 target position, stashed before submission — never re-checked against
@@ -392,6 +421,18 @@ OrderContext` second, once the platform behavior is known.
 
 ## 10. Whether `onOrderFilled`/etc. can be invoked concurrently for two legs is unconfirmed
 
+**Checked 2026-09-22, still fully open.** No documentation anywhere in
+`../motivewave/docs/static/` (Javadoc or the SDK Programming Guide)
+describes callback threading for `Study`'s order hooks at all. The one
+existing thread-identity finding (`onActivate` on `TaskQueue - 16`,
+`onBarClose` on `Quote Consumer 1 ...`, 2026-09-12) shows different hook
+*types* dispatch on different named threads, which is suggestive context
+but says nothing about two *order-fill* callbacks specifically. This
+genuinely needs a live experiment, not more reading — and decompiling the
+client-side SDK jar likely wouldn't help either, since order/account
+event dispatch plausibly originates from the broker connection's own
+network layer, not client code visible in this jar.
+
 `onOrderFilled`'s own comment (`FlowRuntimeStudy.java` line 1389) already
 flags this partially: *"Runs on whatever thread MotiveWave calls this
 hook on."* All the mutable state it touches (`restingStopOrder`,
@@ -414,6 +455,12 @@ anywhere in this codebase or `../motivewave`'s findings so far.
 ---
 
 ## 11. `refuseToArmReason()`'s timing at `onActivate` is trusted, not confirmed
+
+**Checked 2026-09-22, still fully open.** Same search as §10 above, no
+useful documentation found. Genuinely needs a live experiment: hold a
+resting order or open position, restart/reconnect the platform, and
+observe whether `onActivate`'s `ctx.getPosition()`/`ctx.getActiveOrders()`
+reliably already reflect it.
 
 `FlowRuntimeStudy.onActivate()` calls `gateway.refuseToArmReason()`
 synchronously, immediately on receiving the `OrderContext`
@@ -507,38 +554,45 @@ above.
    `SessionBoundary.Tracker`** traces through as correct by hand and is
    now locked in by `RiskChainTest`'s interleaving test — nothing further
    to decide here.
-4. **§7 — `cancelAllAndClose()`'s `closeAtMarket()` → `cancelOrders()`
-   ordering**, unconfirmed atomicity against the platform. Cross-repo
-   platform question — still open.
+4. ~~§7 — `cancelAllAndClose()`'s `closeAtMarket()` → `cancelOrders()`
+   ordering~~ **Mostly resolved 2026-09-22 — [DOC]-tier.** `closeAtMarket()`
+   is documented as blocking until filled; not yet live-confirmed.
 5. **§8 — a genuine double-fill of both bracket legs is currently
    undetectable and uncorrected** — the most consequential open point in
    this document. Needs its own design pass once picked up; not decided
-   here. Still open.
+   here. Still fully open — no `../motivewave` research applies to this
+   one, it's a FLOW_V2 design question.
 6. **§9 — bracket sizing trusts the stashed intent's target position, not
-   the confirmed fill quantity** — low blast radius today only because
-   `maxContracts=1`. Confirm whether `onOrderFilled` should re-read
-   `gw.currentPosition()` instead, once §9's underlying SDK question
-   (per-partial-fill callbacks or not) is answered. Still open.
-7. **§10 — whether order-hook callbacks can be delivered concurrently for
-   two legs** is unconfirmed against the platform. Cross-repo platform
-   question, and a prerequisite for trusting any fix to §8. Still open.
-8. **§11 — whether `onActivate`'s `OrderContext` is guaranteed
-   already-synced** with the true account state, particularly right after
-   a platform restart/reconnect. Cross-repo platform question, and the
-   one thing the restart-with-live-position safety check depends on.
-   Still open.
+   the confirmed fill quantity.** The underlying SDK question (does
+   `onOrderFilled` fire per-partial-fill) is still open, but 2026-09-22
+   research found `Order.getFilled()` — a real, documented way to read
+   the actual filled quantity regardless of that answer. The fix
+   direction is now well-grounded; whether/when to apply it is still open.
+7. ~~§10 — whether order-hook callbacks can be delivered concurrently for
+   two legs~~ **Checked 2026-09-22 — no documentation exists either way.**
+   Still fully open, genuinely needs a live experiment.
+8. ~~§11 — whether `onActivate`'s `OrderContext` is guaranteed
+   already-synced~~ **Checked 2026-09-22 — same as §10, no documentation
+   exists.** Still fully open, genuinely needs a live experiment.
 9. ~~§13 — whether a fake/stub `OrderContext` test harness is worth
    building at all~~ **Resolved 2026-09-22 — yes, build it**, strictly as
    a Sim-only test double (never a real account), no per-run confirmation
    needed since it never holds a real `OrderContext`. Not yet built.
 
 **Status as of 2026-09-22 (second pass, live review)**: §§1, 2, 3, 4, 5, 6
-are closed with code/tests. §13's scope question is decided (build it) —
-the harness itself is queued next, and is the prerequisite for turning
-§§8–10 into real regression tests rather than only Sim-live checklist
-items. §§7, 8, 9, 10, 11 remain fully open: §7/§10/§11 need `../motivewave`
-experiments (platform facts, not FLOW_V2 decisions), and §8/§9 need their
-own design pass — §9 specifically waits on the same platform fact §10
-does (does `onOrderFilled` fire per-partial-fill). Sequencing what's left
-is the user's call, same as every other distillation document's closing
-note.
+are closed with code/tests; §13's scope question is decided (build it,
+not yet built); §7 is resolved at [DOC]-tier via `../motivewave` Javadoc
+research (`closeAtMarket()`'s documented blocking behavior), pending a
+live confirmation whenever D-85 gets its first real trigger; §9 has a
+well-grounded fix direction (`Order.getFilled()`) even though its
+underlying SDK question is still open. **Still fully open, and confirmed
+unanswerable from any available documentation**: §10 (concurrent
+order-hook callbacks) and §11 (`onActivate` sync timing after a
+restart/reconnect) — both genuinely need a live experiment: a resting
+order likely to partially fill (also answers §9's cadence question), and
+a restart/reconnect with a resting position already in place,
+respectively. Neither can be run without first getting the specific
+per-order confirmation CLAUDE.md's hard rule requires — not given yet.
+§8 (the double-fill gap) remains a pure FLOW_V2 design question,
+untouched by any of this. Sequencing what's left is the user's call, same
+as every other distillation document's closing note.
