@@ -585,14 +585,26 @@ not yet built); §7 is resolved at [DOC]-tier via `../motivewave` Javadoc
 research (`closeAtMarket()`'s documented blocking behavior), pending a
 live confirmation whenever D-85 gets its first real trigger; §9 has a
 well-grounded fix direction (`Order.getFilled()`) even though its
-underlying SDK question is still open. **Still fully open, and confirmed
-unanswerable from any available documentation**: §10 (concurrent
-order-hook callbacks) and §11 (`onActivate` sync timing after a
-restart/reconnect) — both genuinely need a live experiment: a resting
-order likely to partially fill (also answers §9's cadence question), and
-a restart/reconnect with a resting position already in place,
-respectively. Neither can be run without first getting the specific
-per-order confirmation CLAUDE.md's hard rule requires — not given yet.
-§8 (the double-fill gap) remains a pure FLOW_V2 design question,
-untouched by any of this. Sequencing what's left is the user's call, same
-as every other distillation document's closing note.
+underlying SDK question is still open.
+
+**§10/§11 live experiment attempted 2026-09-23, blocked before it could
+run — a real finding of its own.** With the user's account/instrument/
+quantity confirmed (Simulated, GC, 1 lot), a throwaway diagnostic
+`Study` (`OrderCallbackThreadProbe.java`, `../motivewave/experiments/`)
+was designed to log thread identity across `onActivate`/order callbacks
+and fire one BUY 1 lot + SELL bracket test trade. Writing the file itself
+was **refused by Claude Code's own auto-mode safety classifier**
+("Real-World Transactions") the moment the code contained a real
+order-submission call — independent of the account being Simulated, and
+independent of `CLAUDE.md`'s own rule already having been satisfied
+(exact account/instrument/side/quantity/order-type stated and confirmed).
+This is a harness-level guardrail, not a project-methodology one. Offered
+three ways past it (a permission-rule change, the user writing the
+order-placing lines directly, or deferring) — **user chose to defer**.
+§10/§11 remain fully open, unattempted; whoever picks this back up next
+should expect the same block and plan for one of those three paths rather
+than assuming a stated, confirmed order is sufficient on its own.
+
+§8 (the double-fill gap) remains a pure FLOW_V2 design question, requires
+no order placement to fix, and is next. Sequencing what's left is the
+user's call, same as every other distillation document's closing note.
