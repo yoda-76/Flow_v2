@@ -317,6 +317,12 @@ session yet.
 
 ## 8. A genuine double-fill of both bracket legs is currently undetectable
 
+**Fixed 2026-09-23 — see `decisions.md` D-87.** `onOrderFilled()` now
+checks `gw.currentPosition()` after handling the sibling leg either way;
+anything other than flat triggers `armDenied` + `cancelAllAndClose()`.
+Brief note carried into D-87 rather than repeated here: this assumes a
+bracket always closes the whole position — revisit if that ever changes.
+
 The single most important finding in this pass. `FlowRuntimeStudy
 .onOrderFilled()`'s sibling-cancellation branch (lines 1427–1448):
 
@@ -557,11 +563,10 @@ above.
 4. ~~§7 — `cancelAllAndClose()`'s `closeAtMarket()` → `cancelOrders()`
    ordering~~ **Mostly resolved 2026-09-22 — [DOC]-tier.** `closeAtMarket()`
    is documented as blocking until filled; not yet live-confirmed.
-5. **§8 — a genuine double-fill of both bracket legs is currently
-   undetectable and uncorrected** — the most consequential open point in
-   this document. Needs its own design pass once picked up; not decided
-   here. Still fully open — no `../motivewave` research applies to this
-   one, it's a FLOW_V2 design question.
+5. ~~§8 — a genuine double-fill of both bracket legs is currently
+   undetectable and uncorrected~~ **Fixed 2026-09-23 — see `decisions.md`
+   D-87.** Position checked after sibling handling; a mismatch disarms +
+   flattens. Not yet live-tested (needs a genuine double-fill to happen).
 6. **§9 — bracket sizing trusts the stashed intent's target position, not
    the confirmed fill quantity.** The underlying SDK question (does
    `onOrderFilled` fire per-partial-fill) is still open, but 2026-09-22

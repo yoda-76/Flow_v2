@@ -3350,6 +3350,22 @@ readable rather than being silently rewritten.
   Full rebuild clean, all 8 gates + safety reflection test pass,
   redeployed. **Not yet live-retested.**
 
+- **D-87** (2026-09-23) — **A genuine double-fill of both bracket legs
+  (`plumbingEdgeCases.md` §8) is now detected and corrected, not just
+  possible.** After `onOrderFilled()` handles a bracket leg's sibling
+  (cancelled or "already resolved" — indistinguishable on its own), it now
+  checks `gw.currentPosition()`. Every bracket today closes the *whole*
+  position, so anything other than flat means the sibling also genuinely
+  filled — `armDenied=true`, loud `POSITION_MISMATCH_DETECTED`/
+  `_CORRECTED` journal lines, then `cancelAllAndClose()` (D-85's same
+  blunt instrument) flattens it back. **Note for later, brief**: this
+  assumes a bracket always covers the entire position — true today (no
+  strategy scales in/out). If that ever stops being true, "flat" stops
+  being the right expected end-state and this check needs to compare
+  against the intended remaining size instead of a hardcoded 0. Not yet
+  live-tested (needs a genuine double-fill to actually happen, same
+  caveat as D-85/D-86).
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

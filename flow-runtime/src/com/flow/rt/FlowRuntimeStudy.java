@@ -1446,6 +1446,24 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         selfCancelledOrderIds.remove(sibling.getOrderId()); // already resolved -- no callback coming
       }
     }
+
+    // 2026-09-23 (plumbingEdgeCases.md §8): confirm we actually ended up
+    // flat after handling the sibling either way. Every bracket today
+    // closes the WHOLE position, so anything other than 0 here means the
+    // sibling also genuinely filled (a real double-fill, not just a clean
+    // cancel) -- cancelIfActive() can't tell "already cancelled" from
+    // "already filled" apart on its own (see §8's own writeup), so this
+    // checks the one thing that actually reveals which one happened.
+    if (gw != null) {
+      int posAfter = gw.currentPosition();
+      if (posAfter != 0) {
+        armDenied = true;
+        logLine("POSITION_MISMATCH_DETECTED expectedFlat=true actualPosition=" + posAfter
+            + " -- both bracket legs likely filled, flattening");
+        logLine("POSITION_MISMATCH_CORRECTED " + gw.cancelAllAndClose(
+            "double-fill correction: expected flat, was " + posAfter));
+      }
+    }
   }
 
   /**
