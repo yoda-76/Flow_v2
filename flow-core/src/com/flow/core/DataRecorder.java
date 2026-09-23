@@ -45,7 +45,6 @@ public final class DataRecorder {
   public static final String BIG_TRADES = "big_trades";
   public static final String LIQUIDITY_MAP = "liquidity_map";
   private static final int LIQUIDITY_WINDOW_TICKS = 100;
-  private static final long BIG_TRADE_MEMORY_MS = 5 * 60_000L;
 
   private final ConstructDataStore store;
   private final Map<String, Feature> features;
@@ -128,9 +127,18 @@ public final class DataRecorder {
     return (ms / interval) * interval;
   }
 
+  // Decimal price for a tick offset, snapped to the tick grid: the decoder's
+  // anchor is a float-precision SDK price (4322.900098 for 4322.9), so a
+  // plain decode leaks that noise into every stored row (and ~35% of the
+  // liquidity map's bytes). Grid = decoder(1) - decoder(0).
+  private double tickGrid = Double.NaN;
+
   private double px(int ticks) {
     if (priceDecoder == null) return ticks;
-    return Math.round(priceDecoder.applyAsDouble(ticks) * 1e6) / 1e6;
+    double v = priceDecoder.applyAsDouble(ticks);
+    if (Double.isNaN(tickGrid)) tickGrid = priceDecoder.applyAsDouble(1) - priceDecoder.applyAsDouble(0);
+    if (tickGrid > 0) v = Math.round(v / tickGrid) * tickGrid;
+    return Math.round(v * 1e6) / 1e6;
   }
 
   private void write(String construct, long sessionId, long boundaryMs, String line) {
@@ -187,8 +195,10 @@ public final class DataRecorder {
     List<BigTradeEvent> recent = bt.recent();
     StringBuilder arr = new StringBuilder("[");
     boolean any = false;
+    java.util.Set<String> current = new java.util.HashSet<>();
     for (BigTradeEvent b : recent) {
       String key = b.eventTimeMs() + "|" + b.priceTicks() + "|" + b.isAskTick();
+      current.add(key);
       Double prev = emittedBigTradeSize.get(key);
       if (prev != null && prev == b.size()) continue;
       emittedBigTradeSize.put(key, b.size());
@@ -199,7 +209,9 @@ public final class DataRecorder {
           .append(",\"size\":").append(b.size())
           .append(",\"ask\":").append(b.isAskTick()).append('}');
     }
-    emittedBigTradeSize.keySet().removeIf(k -> boundaryMs - Long.parseLong(k.substring(0, k.indexOf('|'))) > BIG_TRADE_MEMORY_MS);
+    // Forget only trades that have left recent() -- an age cutoff would
+    // re-emit a still-listed old trade as if it were new (seen live).
+    emittedBigTradeSize.keySet().retainAll(current);
     if (!any) return;
     arr.append(']');
     write(BIG_TRADES, sessionId, boundaryMs, Json.object()

@@ -67,6 +67,8 @@ public final class DataRecorderTest {
     testVwapAndBigTrades();
     testLiquiditySeparateInterval();
     testNullDecoderMarksTicks();
+    testPricesSnapToTickGridDespiteFloatAnchor();
+    testOldBigTradeIsNotReEmittedAfterMinutes();
     testSessionRolloverSplitsFiles();
     testPruneKeepsNewestTradingDays();
     testRecorderFailureDoesNotDisarmPipeline();
@@ -210,6 +212,45 @@ public final class DataRecorderTest {
     List<String> ls = lines(root, "footprint", SessionBoundary.sessionIdFor(base));
     check("no decoder (replay) -> header says unit=ticks", ls.get(0).contains("\"unit\":\"ticks\""), true);
     check("no decoder -> row price is the raw tick offset", ls.get(1).contains("\"p\":100"), true);
+  }
+
+  /** Seen live: anchor 4322.900098 (float) leaked into every stored price. */
+  private static void testPricesSnapToTickGridDespiteFloatAnchor() throws Exception {
+    Path root = tempRoot();
+    ConstructDataStore store = new ConstructDataStore(root);
+    store.start();
+    double noisyAnchor = 4322.900098;
+    DataRecorder rec = recorder(store, Map.of(), t -> noisyAnchor + t * 0.1, 1, 1);
+    long base = ct(2026, 3, 15, 10, 0, 0);
+    rec.onEvent(clock(base));
+    rec.onEvent(tick(base + 100, 0, 1, true));
+    rec.onEvent(tick(base + 200, 3, 2, false));
+    rec.onEvent(clock(base + 1000));
+    store.flushAndClose();
+    List<String> ls = lines(root, "footprint", SessionBoundary.sessionIdFor(base));
+    check("anchor noise is gone: row at tick 0 is exactly 4322.9, not 4322.900098",
+        ls.get(1).contains("{\"p\":4322.9,\"a\":1,\"b\":0}"), true);
+    check("row at tick 3 is exactly 4323.2", ls.get(1).contains("{\"p\":4323.2,\"a\":0,\"b\":2}"), true);
+  }
+
+  /** Seen live: a trade still in recent() was re-emitted once 5 minutes of memory aged out. */
+  private static void testOldBigTradeIsNotReEmittedAfterMinutes() throws Exception {
+    Path root = tempRoot();
+    ConstructDataStore store = new ConstructDataStore(root);
+    store.start();
+    BigTradeFeature bt = new BigTradeFeature("big_trades", 5, 20, null);
+    DataRecorder rec = recorder(store, Map.of("big_trades", bt), t -> t * 0.1, 1, 1);
+    long base = ct(2026, 3, 15, 10, 0, 0);
+    java.util.function.Consumer<Event> feed = e -> {
+      bt.onEvent(e);
+      rec.onEvent(e);
+    };
+    feed.accept(clock(base));
+    feed.accept(tick(base + 100, 100, 6, true)); // one big trade, size 6
+    for (int s = 1; s <= 400; s++) feed.accept(clock(base + s * 1000L)); // 400s > the old 300s age cutoff
+    store.flushAndClose();
+    checkInt("the trade is written exactly once (header + 1 line) across 400 seconds",
+        lines(root, "big_trades", SessionBoundary.sessionIdFor(base)).size(), 2);
   }
 
   private static void testSessionRolloverSplitsFiles() throws Exception {
