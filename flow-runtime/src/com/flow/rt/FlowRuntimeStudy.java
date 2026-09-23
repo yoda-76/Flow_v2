@@ -288,6 +288,13 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       return;
     }
     journal.start();
+    final JournalWriter anchorJournal = journal;
+    final double anchorTickSize = instrument.getTickSize();
+    priceCodec.onAnchor(a -> anchorJournal.writeDecision(0, Json.object()
+        .field("type", "price_anchor")
+        .field("price", a)
+        .field("tickSize", anchorTickSize)
+        .build()));
     journal.writeDecision(0, Json.object()
         .field("type", "session_header")
         .field("strategyId", strategyId)

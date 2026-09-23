@@ -29,13 +29,17 @@ Two decisions only the user can make, both gate the safety work below:
   separate later decision (`CLAUDE.md`); nothing here assumes it.
 
 **Phase 0 — recording and replay (days).**
-- [~] 5-minute live recording (D-88 recorder built, two bugs found and fixed
-  on the first take; second take running 2026-09-24). Then: check it, copy
-  it into `flow-core/fixtures/`, replay it, rebuild VP offline from the
-  footprint candles and compare with the live VP. Delete `data_take1/`
-  (first, noisy take, gitignored) once no longer needed. Note: the second
-  take saw no big trades (quiet night), so it won't exercise big-trade
-  recording — worth one busier-hours take.
+- [x] (2026-09-24) 5-minute live recording made, committed as
+  `flow-core/fixtures/recording_gc_20260924_5min/`, and replayed
+  (`RecordingReplayTest`, D-89): footprint candles byte-identical, VWAP
+  within anchor noise, VP rebuilt from footprint candles (one sample exact).
+  Follow-ups from it: [ ] **deploy** the `price_anchor` journaling (built,
+  not deployed) and confirm it appears on the next recording; [ ] decide
+  how market structure's warm-start bars become replayable (they bypass the
+  journal); [ ] one busier-hours take to exercise big-trade capture and
+  give a real VP-vs-footprint comparison; [ ] compare VAH/VAL/zones (only
+  POC/totals/buckets checked); [ ] delete `data_take1/` (gitignored, first
+  noisy take).
 - [ ] Drop the old 10 s decisions-tier `liquidity_snapshot` (D-58) once
   `data/` is proven. Measured 2026-09-24: liquidity map ≈ 4–5 KB/s at 1 s
   ≈ 2.7–3 GB per 7 trading days; everything else is negligible.

@@ -3412,6 +3412,38 @@ readable rather than being silently rewritten.
     Assumes one active runtime instance appending to a day's file. **Not yet
     live-verified**; storage cost at 1 s is unmeasured.
 
+- **D-89** (2026-09-24) — **First real replay test passed: a 5-minute live
+  recording, replayed, reproduces what the live run recorded — with four
+  gaps found.** Fixture: `flow-core/fixtures/recording_gc_20260924_5min/`
+  (a real dry-run `@GC` session, Armed off, trimmed to its first 5 min,
+  ~2 MB, committed per the user's decision). `RecordingReplayTest` (15th
+  gate) replays its `raw.jsonl` through the same `Pipeline` with a
+  `DataRecorder` attached and compares against the live `data/` files.
+  - **Footprint**: all 51 replayed candles **byte-identical** to the live
+    ones — the drain-order/`ClockEvent` determinism D-88 relies on holds.
+  - **VWAP**: same timestamps and volumes on every line; values within
+    2e-4 of live (the live decoder's float-noisy anchor was never journaled,
+    so the replay's anchor is snapped).
+  - **Volume profile rebuilt from footprint candles alone**: one live VP
+    sample (volume 102, delta −40, 24 buckets, POC 4322.9) reproduced
+    **exactly**; the other (volume 50) falls inside one candle's span with
+    matching bucket count and POC. Within-candle tick order is the only
+    thing 1 s candles lose. VAH/VAL/zones not yet recomputed or compared.
+  - **Gaps found**: (1) the session's **price anchor was not journaled**,
+    so replay could not decode prices exactly — fixed: the runtime now
+    writes a `price_anchor` decisions record and `ReplayHarness.
+    priceDecoderFor()` rebuilds the decoder from it (**built, not yet
+    deployed** — recordings made before the next deploy still lack it);
+    (2) **market structure's 100 warm-start bars bypass the journal**
+    (`warmStartMarketStructure` feeds the feature directly), so market
+    structure is not replay-exact from `raw.jsonl` alone — not fixed,
+    needs a decision (journal them, or replay-time warm-start); (3)
+    **liquidity depth is not in the raw journal** (D-58, known) — the
+    replayed snapshots have empty depth, so `data/liquidity_map/` is the
+    only record of the book; (4) the window had **no big trades**, so that
+    capture path is untested against real data — one busier-hours take
+    needed.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

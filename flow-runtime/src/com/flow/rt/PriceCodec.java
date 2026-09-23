@@ -11,13 +11,35 @@ package com.flow.rt;
 final class PriceCodec {
   private final double tickSize;
   private volatile Double anchor;
+  private java.util.function.DoubleConsumer anchorListener; // guarded by this
 
   PriceCodec(double tickSize) {
     this.tickSize = tickSize;
   }
 
+  /**
+   * Called once, with the exact anchor, when it is first set (or right
+   * away if it already was). The anchor is per-activation and its exact
+   * float-noisy value is what turns recorded tick offsets back into the
+   * decimals live features used -- replay needs it, so the runtime journals
+   * it (`price_anchor`) instead of letting it be lost.
+   */
+  synchronized void onAnchor(java.util.function.DoubleConsumer listener) {
+    if (anchor != null) {
+      listener.accept(anchor);
+    } else {
+      anchorListener = listener;
+    }
+  }
+
   synchronized int toTicks(double price) {
-    if (anchor == null) anchor = price;
+    if (anchor == null) {
+      anchor = price;
+      if (anchorListener != null) {
+        anchorListener.accept(price);
+        anchorListener = null;
+      }
+    }
     return (int) Math.round((price - anchor) / tickSize);
   }
 

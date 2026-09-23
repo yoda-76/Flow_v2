@@ -34,7 +34,45 @@ import java.util.Map;
 public final class ReplayHarness {
   public record Result(List<Intent> intents, int eventsReplayed, int gapsSkipped) {}
 
+  /**
+   * The decoder the live run used to turn tick offsets into decimals, rebuilt
+   * from the session's own decisions.jsonl (`price_anchor` + session_header's
+   * tickSize). Null if the session predates `price_anchor` (recordings made
+   * before 2026-09-24) -- the caller must then derive or go without one.
+   */
+  public static java.util.function.IntToDoubleFunction priceDecoderFor(Path sessionDir) throws IOException {
+    Path decisions = sessionDir.resolve("decisions.jsonl");
+    if (!Files.exists(decisions)) return null;
+    Double anchor = null;
+    Double tickSize = null;
+    for (String line : Files.readAllLines(decisions)) {
+      if (line.isBlank()) continue;
+      com.flow.journal.JsonObject o = com.flow.journal.JsonObject.parse(line);
+      String type = o.getString("type");
+      if ("price_anchor".equals(type)) {
+        anchor = o.getDouble("price");
+        tickSize = o.getDouble("tickSize");
+        break;
+      }
+    }
+    if (anchor == null) return null;
+    final double a = anchor;
+    final double ts = tickSize;
+    return ticks -> a + ticks * ts;
+  }
+
   public static Result replay(Path sessionDir, String strategyId, Map<String, Feature> features) throws IOException {
+    return replay(sessionDir, strategyId, features, p -> {});
+  }
+
+  /**
+   * beforeEvents runs once against the freshly built Pipeline, before the
+   * first replayed event -- how a caller attaches something like a
+   * DataRecorder (D-88) to the same replay without this class having to
+   * know about it.
+   */
+  public static Result replay(Path sessionDir, String strategyId, Map<String, Feature> features,
+                              java.util.function.Consumer<Pipeline> beforeEvents) throws IOException {
     StrategyRegistry registry = StrategyRegistrations.buildDefault();
     FlowStrategy strategy = registry.create(strategyId);
     strategy.onInit(new StrategyConfig(Map.of()));
@@ -47,7 +85,8 @@ public final class ReplayHarness {
     IntentSink sink = (intent, event) -> collected.add(intent);
     // null priceDecoder -- replay has no live price context (D-43); trace
     // lines fall back to tick-offset-only when this runs.
-    Pipeline pipeline = new Pipeline(strategy, journal, sink, features, null);
+    Pipeline pipeline = new Pipeline(strategy, journal, sink, features, priceDecoderFor(sessionDir));
+    beforeEvents.accept(pipeline);
 
     int eventsReplayed = 0;
     int gapsSkipped = 0;

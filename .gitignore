@@ -23,3 +23,4 @@ flow-core/fixtures/*/replay/
 # D-88: live retained per-construct data (rolling 7 trading days). Recordings
 # worth keeping are copied into flow-core/fixtures/ and committed from there.
 /data/
+/data_take1/
