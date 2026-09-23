@@ -7,12 +7,68 @@ date, and link the decision/finding it produced; don't delete it.
 
 ## Roadmap to the target state (added 2026-09-24 — read this first)
 
-> **Sprint started 2026-09-24: preparing for the cloud run.** The user has
-> pre-authorized all Simulated-account activity for the duration (no
-> consent prompts) and forbidden any real-account activity outright —
-> recorded as `CLAUDE.md`'s third exception. Tasks are picked from the
-> phases below. The busier-hours recording re-run is planned for the next
-> trading day.
+### SPRINT HANDOFF — read this first, no re-explanation needed (2026-09-24)
+
+**What the sprint is.** A sprint to prepare FLOW_V2 for an unattended run
+on a rented cloud machine. The user wants to finish everything that can be
+finished *on this machine* first, because their time to watch a running
+system is short and that is what slows progress. **Target state**: leave it
+running the whole day (recording replayable data 24/7, trading on the
+**Simulated account** 5 days a week); at night the user spends 1–2 hours
+analysing every Sim trade and the recorded data. Not trading unattended
+yet. The user picks tasks from the phases below — if they haven't said
+which, ask which one to start with.
+
+**Authorization (recorded in `CLAUDE.md`, third exception — do not ask
+again).** For the sprint, everything on the **Simulated account is
+pre-authorized: no consent prompts, no per-session bounds statement, no
+per-order confirmation**. The **real account is strictly forbidden,
+permanently**. Still in force: "Sim Trade Only" enabled, the risk chain,
+hook overrides, a stop-if-the-account-isn't-Simulated check. The file does
+not override the tooling's own permission checks: on 2026-09-23 the harness
+refused to let me write an order-placing probe (`plumbingEdgeCases.md`
+§10/§11) — if that recurs, say so, don't work around it. The sprint ends
+when the user says so.
+
+**State at the end of the 2026-09-24 session.** All 15 test gates pass;
+everything is pushed.
+- **Deployed** to MotiveWave: the D-88 per-construct recorder including the
+  two fixes found on the first take.
+- **Built but NOT deployed** (deploy before the next recording, checking
+  first that no session is running — newest `logs/*/decisions.jsonl`
+  modified in the last minute means one is): `price_anchor` journaling
+  (D-89), `bars/` OHLCV + `market_structure/` state-change + `warm_start`
+  recording (D-90), and the big-trade minimum size default **1** (was 10 —
+  a test setting, revert to 10 after; an already-added study keeps its
+  saved value, so change it in the study or re-add it).
+- **Plumbing review** (`plumbingEdgeCases.md`): §1–§8 and §13's scope call
+  done (D-85–D-87 and the kill-switch-survives-disarm fix live in code);
+  still open: §9 (bracket sizing should use `order.getFilled()`), §10/§11
+  (need a live order-placing probe — see the harness note above), and the
+  fake-`OrderContext` harness (approved, not built).
+- **Replay**: `RecordingReplayTest` replays the committed 5-minute
+  recording (`flow-core/fixtures/recording_gc_20260924_5min/`, D-89):
+  footprint candles byte-identical, VWAP within anchor noise, VP rebuilt
+  from footprint candles. Gaps found are listed in D-89/D-90.
+
+**Next planned step (2026-09-25).** Re-run the recording in busy hours to
+exercise big-trade capture: deploy first, then on an **@GC 1-minute chart**
+add **FLOW Runtime** (FLOW menu) → Runtime tab: Strategy Id
+`level_zone_observer`, **Armed unchecked**, Mode `DRY_RUN` → Activate →
+the log must show `DATA_RECORDER_ON` and `ACTIVATE pos=0` → run ~5 min →
+remove the study. Then check `data/` (footprint, vwap, big_trades,
+liquidity_map, bars, market_structure), confirm `price_anchor` is in the
+session's `decisions.jsonl`, and re-run the replay comparison on the new
+take. Storage measured so far: liquidity map ≈ 4–5 KB/s at 1 s (≈ 3 GB per
+7 trading days), everything else negligible. Housekeeping: `data_take1/`
+(gitignored first take) can be deleted.
+
+**Open questions for the user** (none block the next step): dense
+1-second candles (a candle every second, zero volume) vs the current sparse
+ones; the alert channel for unattended runs; whether the market-structure
+line schema (a first draft, D-90) is final; what the nightly report must
+show; a standing-authorization rule for *after* the sprint (today's covers
+only the sprint).
 
 **Target state, stated by the user 2026-09-24**: leave the system running
 for the whole day on this machine — recording replayable data and trading

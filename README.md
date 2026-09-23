@@ -536,6 +536,15 @@ record per decision is no longer readable by a human.
 session, short rolling retention (2–3 days, exact figure set from
 measurement — see Q-03). This is replay fuel and regression-fixture source.
 
+**Retained construct data (D-88)** — a third, separate tier under `data/`:
+one JSONL file per construct per trading day (`footprint`, `vwap`,
+`big_trades`, `liquidity_map` every interval (default 1 s), `bars` every
+closed bar, `market_structure` only on state change), kept for a rolling 7
+trading days, oldest day deleted when a new one starts. Volume profile is
+rebuilt offline from footprint candles. Written by its own writer thread
+(`ConstructDataStore`); a recorder failure disables recording, never
+trading. Independent of the two tiers above and of raw's 48 h deletion.
+
 Both are written by a dedicated writer thread off bounded queues; the
 pipeline thread never does I/O. Backpressure is decided rather than
 discovered: if the raw queue fills, **drop and write a gap marker recording
@@ -617,7 +626,11 @@ FLOW_V2/
 │                          MotiveWave's published source), liquidity map (ours,
 │                          built from the live MBO DOM stream)
 ├── build/                 compile + redeploy scripts (portable JDK 26)
-└── logs/
+├── logs/                  per-session journals (decisions.jsonl, raw.jsonl), gitignored
+├── data/                  retained per-construct data, rolling 7 trading days (D-88), gitignored
+├── flow-core/fixtures/    committed recordings + expected outputs used by replay tests
+├── analysis/              offline Python tooling over journals (journal_summary.py)
+└── config/                risk.json (hand-edited, runtime-read-only)
 ```
 
 The two-unit split is the point, not a convention: it is what makes "a
