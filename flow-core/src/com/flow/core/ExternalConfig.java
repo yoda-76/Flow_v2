@@ -60,7 +60,8 @@ public final class ExternalConfig {
 
   private static final String[] KNOWN_KEYS = {
       "fixedContracts", "maxContracts", "dailyLossLimitTicks", "rateLimitPerMinute",
-      "minDwellMs", "maxReversalsPerSession", "lagQueueDepthThreshold", "lagProcessingMsThreshold"
+      "minDwellMs", "maxReversalsPerSession", "lagQueueDepthThreshold", "lagProcessingMsThreshold",
+      "dataIntervalSeconds", "liquidityIntervalSeconds", "dataKeepTradingDays"
   };
 
   private int getInt(String key, int def) {
@@ -96,6 +97,15 @@ public final class ExternalConfig {
 
   /** D-19 lag guard: per-event processing time (ms) threshold that trips a disarm. */
   public long lagProcessingMsThreshold() { return getLong("lagProcessingMsThreshold", 2_000L); }
+
+  /** D-88: footprint candle / VWAP / big-trades write interval. Start at 1s, raise if storage or load demands it. */
+  public int dataIntervalSeconds() { return getInt("dataIntervalSeconds", 1); }
+
+  /** D-88: liquidity map snapshot interval, tunable independently (the heaviest construct). */
+  public int liquidityIntervalSeconds() { return getInt("liquidityIntervalSeconds", 1); }
+
+  /** D-88: rolling window of trading days kept under data/; the oldest is deleted when a new day starts. */
+  public int dataKeepTradingDays() { return getInt("dataKeepTradingDays", 7); }
 
   /** For staleness journaling (README: "traceable after the fact, not silently assumed current"). 0 = no file loaded, using pure defaults. */
   public long fileLastModifiedMs() { return fileLastModifiedMs; }

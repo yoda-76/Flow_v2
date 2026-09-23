@@ -3366,6 +3366,52 @@ readable rather than being silently rewritten.
   live-tested (needs a genuine double-fill to actually happen, same
   caveat as D-85/D-86).
 
+- **D-88** (2026-09-23) — **Replay-recording plan and first retention
+  decisions (`todo.md` §4b), settled with the user.** Goal: record a short
+  live session, then test replay against it.
+  - **Liquidity map**: no full per-update DOM. Store periodic DOM snapshots
+    at a **configurable interval, starting at 1 s** (today: hardcoded 10 s,
+    ±100 ticks, D-58), measure the real storage cost, and raise toward
+    2/3/…/10 s only as far as the system needs.
+  - **Volume profile**: no fixed cadence chosen. User's leaning: store
+    **1 s footprint candles** and rebuild VP from them offline (summing
+    per-price ask+bid volume gives the same histogram; POC/VAH/VAL/zones
+    are recomputed from it) instead of per-second VP snapshots. Pending
+    confirmation — see the open items below.
+  - **Where retained data lives**: separate per-construct file series under
+    a `data/` directory, independent of session dirs and of D-75's 48 h raw
+    deletion.
+  - **The recording**: **5 minutes** (not 10), and the recordings are
+    **committed** as fixtures, which also settles D-20's location
+    (`flow-core/fixtures/`).
+  - **Settled later the same conversation**: every construct starts at
+    **1-second candles/snapshots**, footprint included (VP is then rebuilt
+    offline from the footprint candles rather than snapshotted separately);
+    all retained data is kept for a **rolling 7 trading days**, and at the
+    start of a trading day the oldest recorded day is deleted. Intervals are
+    tunable upward if storage or load demands it, same approach as the
+    liquidity map.
+  - **Built 2026-09-24** (`DataRecorder` + `ConstructDataStore`, flow-core;
+    wired in `FlowRuntimeStudy`; `DataRecorderTest`, 14th gate). Defaults
+    chosen with the user: "trading day" = the 17:00 CT session id, so 7
+    trading days skips weekends; files at
+    `data/<construct>/<sessionId>.jsonl` (footprint, vwap, big_trades,
+    liquidity_map), pruned on the writer thread at session change and at
+    activation; VWAP = one line per interval; raw ticks stay in `raw.jsonl`
+    on the 48 h deletion (footprint candles cover the rebuild). Intervals
+    and window are `config/risk.json` keys (`dataIntervalSeconds`,
+    `liquidityIntervalSeconds`, `dataKeepTradingDays`, all defaulting to
+    1 / 1 / 7). Decisions made while building, worth knowing: prices are
+    written as **decimals**, not tick offsets, because the tick anchor is
+    per-activation; candle `t` is the interval **end**; the interval clock
+    is the recorded `ClockEvent` stream, not the wall clock, so replay
+    reproduces the files; big trades re-emit a trade when its size grows
+    (consumer keeps the max per ts+price+side); a recorder failure disables
+    the recorder and never disarms trading; the old 10 s decisions-tier
+    `liquidity_snapshot` (D-58) is left running until `data/` is proven.
+    Assumes one active runtime instance appending to a day's file. **Not yet
+    live-verified**; storage cost at 1 s is unmeasured.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

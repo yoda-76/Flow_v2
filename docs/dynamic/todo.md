@@ -1453,6 +1453,21 @@ below need their own design pass first (file format, exact storage
 location, rotation mechanics) before any code — this section is the
 requirements, not a plan.
 
+**2026-09-23 update (D-88)**: first decisions settled with the user as
+part of planning a 5-minute replay recording — liquidity map = periodic
+DOM snapshots, configurable interval, start at 1 s and measure; VP =
+leaning toward storing 1 s footprint candles and rebuilding VP offline
+(pending confirmation); retained data goes in separate per-construct files
+under `data/`; the recording is committed as a fixture. Still open:
+file schema per construct, VWAP line format, whether raw ticks get a
+longer-lived file. Later the same day: every construct (footprint
+included) starts at 1 s candles/snapshots, all retained data is a rolling
+7 trading days, oldest day deleted at the start of a trading day, VP
+rebuilt offline from footprint candles. **Built 2026-09-24** (D-88):
+`DataRecorder`/`ConstructDataStore`, tested, not yet live-verified or
+deployed. Next: record 5 minutes live, measure storage, replay it.
+Bullets below are otherwise unchanged.
+
 - [x] (2026-09-20) **Raw log auto-deletion: 48 hours after creation** → D-75:
   `com.flow.journal.LogRetention` (flow-core), wired into
   `FlowRuntimeStudy.startSession()`. **Not yet live-verified** — runs

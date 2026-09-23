@@ -19,3 +19,7 @@ analysis/data/
 # fixture it replayed (ReplayHarness.replay()'s sessionDir/replay/) — not
 # a deliverable, same reasoning as build output.
 flow-core/fixtures/*/replay/
+
+# D-88: live retained per-construct data (rolling 7 trading days). Recordings
+# worth keeping are copied into flow-core/fixtures/ and committed from there.
+/data/

@@ -141,6 +141,10 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // D-61: hand-edited by the user, runtime only ever reads it (README
   // "External inputs and config") -- not a secret like .env, so it's a
   // plain repo path, not gitignored.
+  // D-88: retained per-construct data (1s footprint candles, VWAP, big
+  // trades, liquidity map), rolling window of trading days, own writer thread.
+  private static final Path DATA_ROOT = Path.of("C:/yadvendra/trading/FLOW_V2/data");
+  private volatile com.flow.journal.ConstructDataStore dataStore;
   private static final Path RISK_CONFIG_PATH = Path.of("C:/yadvendra/trading/FLOW_V2/config/risk.json");
 
   private final int instanceId = System.identityHashCode(this);
@@ -437,6 +441,15 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     IntentSink sink = this::onIntentChanged;
     pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks,
         riskChain, armedSupplier, queueDepthSupplier, killSwitch);
+    com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT);
+    ds.start();
+    dataStore = ds;
+    pipeline.attachDataRecorder(new com.flow.core.DataRecorder(ds, features, priceCodec::fromTicks,
+        riskConfig.dataIntervalSeconds(), riskConfig.liquidityIntervalSeconds(), riskConfig.dataKeepTradingDays()));
+    logLine("DATA_RECORDER_ON root=" + DATA_ROOT + " dataIntervalSec=" + riskConfig.dataIntervalSeconds()
+        + " liquidityIntervalSec=" + riskConfig.liquidityIntervalSeconds()
+        + " keepTradingDays=" + riskConfig.dataKeepTradingDays());
+
     sequencer = new Sequencer(pipeline::handle, pipeline);
     sequencer.start();
 
@@ -1241,6 +1254,11 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     if (j != null) {
       j.flushAndClose();
       journal = null;
+    }
+    com.flow.journal.ConstructDataStore ds = dataStore;
+    if (ds != null) {
+      ds.flushAndClose();
+      dataStore = null;
     }
     SdkVolumeProfileFeature vp = volumeProfile;
     if (vp != null) {

@@ -57,6 +57,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   private final AtomicLong clockEventCount = new AtomicLong(0);
   private final AtomicBoolean killSwitchTripped = new AtomicBoolean(false);
   private volatile Intent lastIntent;
+  private volatile DataRecorder dataRecorder; // nullable, D-88; set once before events flow
 
   /**
    * features is required explicitly (an empty Map.of() is fine, but
@@ -116,6 +117,16 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     this.lastIntent = Intent.none(strategy.id(), 0);
   }
 
+  /**
+   * D-88: attach the per-construct data recorder. Call before the first
+   * event is published. It runs on the drain thread but does no I/O, and a
+   * failure disables it (journaled) instead of disarming trading -- data
+   * capture must never be able to take the strategy down.
+   */
+  public void attachDataRecorder(DataRecorder recorder) {
+    this.dataRecorder = recorder;
+  }
+
   public MarketState marketState() {
     return marketState;
   }
@@ -141,6 +152,20 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
       long count = clockEventCount.incrementAndGet();
       if (count % HEARTBEAT_EVERY_CLOCK_EVENTS == 0) heartbeat(e);
       if (count % DOM_SNAPSHOT_EVERY_CLOCK_EVENTS == 0) maybeDomSnapshot(e);
+    }
+
+    DataRecorder rec = dataRecorder;
+    if (rec != null) {
+      try {
+        rec.onEvent(e);
+      } catch (RuntimeException ex) {
+        dataRecorder = null;
+        journal.writeDecision(e.seq(), Json.object()
+            .field("type", "data_recorder_disabled")
+            .field("reason", String.valueOf(ex))
+            .field("seq", e.seq())
+            .build());
+      }
     }
 
     if (journal.decisionsOverflowed() && healthy.compareAndSet(true, false)) {

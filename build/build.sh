@@ -61,6 +61,10 @@ echo "== pipeline exception boundary / kill switch synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.PipelineExceptionBoundaryTest
 echo "(pipeline exception boundary test passed -- see output above)"
 
+echo "== per-construct data recorder synthetic test (D-88) =="
+"$JAVA" -cp build/classes/core com.flow.core.DataRecorderTest
+echo "(data recorder test passed -- see output above)"
+
 echo "== replay-equivalence test (null_strategy fixture -- see flow-core/fixtures/replay_fixture_null_strategy/README.md for its degenerate-0-vs-0 caveat) =="
 "$JAVA" -cp build/classes/core com.flow.core.ReplayEquivalenceTest flow-core/fixtures/replay_fixture_null_strategy
 echo "(replay-equivalence test passed -- see output above)"
