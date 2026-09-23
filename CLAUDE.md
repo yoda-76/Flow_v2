@@ -117,6 +117,37 @@ the architecture in README.md (strategies emit `Intent`, never hold an
     confirmation) still governs everything else: one-shot tests, any
     non-Sim order, and anything before the risk chain is actually
     enforcing these bounds in code.
+- **Third exception — cloud-run sprint authorization** (added 2026-09-24,
+  explicit instruction from the user: "anything related to sim account is
+  allowed and real account is not allowed strictly ... consent given", and
+  no consent warnings until the sprint is done). For the duration of the
+  sprint that prepares the system for an unattended cloud run, and until
+  the user says the sprint is done:
+  - **Simulated account: pre-authorized.** Placing, modifying or cancelling
+    Sim orders — one-shot tests, probes, automatic trading, arming a run —
+    needs **no per-order confirmation, no per-session bounds statement, and
+    no consent prompt**. Do not ask; do the work. The second exception's
+    "state the bounds and confirm before arming" step is suspended for the
+    sprint, not deleted.
+  - **Real account: strictly forbidden, no exception.** Nothing in this
+    exception, and no later general approval, extends to any non-Simulated
+    account. This line does not end with the sprint.
+  - **What stays in force** (these are code and structure, not consent
+    prompts): "Sim Trade Only" stays enabled — it is what makes the
+    real-account line true platform-wide; the risk chain stays enforced in
+    code with `config/risk.json`'s bounds; every `OrderContext` hook stays
+    explicitly overridden; strategies never hold an `OrderContext`.
+  - **The one interruption that remains**: if anything indicates the active
+    account is not the Simulated one (the `ACTIVATE` log's cash/account, the
+    control-box account selector, an unexpected fill on another account),
+    stop immediately and tell the user. That is a safety stop, not a
+    consent request.
+  - **This file does not override the tooling's own permission checks.** If
+    a tool or the harness refuses an action (as it did for the 2026-09-23
+    order-placing probe), report it and let the user decide — do not work
+    around it.
+  - **When the sprint ends** the user says so, and the second exception's
+    per-session statement resumes as written above.
 - **Every inherited `OrderContext`-taking hook on the runtime class must be
   explicitly overridden**, even ones we don't use — omitting a hook
   inherits whatever MotiveWave's base class does by default, and that
@@ -128,7 +159,9 @@ the architecture in README.md (strategies emit `Intent`, never hold an
   work on this project until a decision explicitly says otherwise. Confirm
   the selected account, out loud, at every activation — a past
   confirmation does not carry forward, since the GUI's account selection
-  can change between sessions.
+  can change between sessions. (During the 2026-09-24 sprint the spoken
+  confirmation is suspended — see the third exception — but the
+  stop-if-not-Simulated check is not.)
 
 ## Hard rule — strategies never import the SDK
 

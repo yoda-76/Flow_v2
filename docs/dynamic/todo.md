@@ -7,6 +7,13 @@ date, and link the decision/finding it produced; don't delete it.
 
 ## Roadmap to the target state (added 2026-09-24 — read this first)
 
+> **Sprint started 2026-09-24: preparing for the cloud run.** The user has
+> pre-authorized all Simulated-account activity for the duration (no
+> consent prompts) and forbidden any real-account activity outright —
+> recorded as `CLAUDE.md`'s third exception. Tasks are picked from the
+> phases below. The busier-hours recording re-run is planned for the next
+> trading day.
+
 **Target state, stated by the user 2026-09-24**: leave the system running
 for the whole day on this machine — recording replayable data and trading
 on the **Simulated account** — and at night sit for 1–2 hours to analyse
