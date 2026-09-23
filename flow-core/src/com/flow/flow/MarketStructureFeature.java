@@ -49,6 +49,8 @@ public final class MarketStructureFeature implements MarketStructureView {
   private volatile ZoneRange lastDt;
   private volatile ZoneRange lastDb;
   private volatile Set<TradeableLevel> tradeableLevels = Set.of();
+  private volatile Integer pullbackHigh = null;
+  private volatile Integer pullbackLow = null;
 
   // Bootstrap (§1a, points 1/3/7/8): CHOCH = the first-processed bar's
   // OPEN (corrected -- was CLOSE), warm-start bars count as "first" (point 8).
@@ -111,9 +113,28 @@ public final class MarketStructureFeature implements MarketStructureView {
 
     if (hasRealPair) barsSinceAnchor.add(bar); // accumulate for a possible future flip's DT/DB scan (§6)
 
-    if (checkFlip(bar)) return; // flip consumes this bar; pullback detection resets for next bar
+    if (checkFlip(bar)) { // flip consumes this bar; pullback detection resets for next bar
+      syncPullbackExtremes();
+      return;
+    }
     updatePullback(bar);
+    syncPullbackExtremes();
   }
+
+  /** Republishes the pullback run's extremes for cross-thread readers (volatile, like every other view field). */
+  private void syncPullbackExtremes() {
+    if (pullbackBars.isEmpty()) {
+      pullbackHigh = null;
+      pullbackLow = null;
+      return;
+    }
+    pullbackHigh = argmaxHigh(pullbackBars).highTicks();
+    pullbackLow = argminLow(pullbackBars).lowTicks();
+  }
+
+  @Override public Integer pullbackHighTicks() { return pullbackHigh; }
+
+  @Override public Integer pullbackLowTicks() { return pullbackLow; }
 
   private boolean checkFlip(Bar bar) {
     if (lastTjl2 == null) return false;

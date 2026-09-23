@@ -67,6 +67,8 @@ public final class DataRecorderTest {
     testVwapAndBigTrades();
     testLiquiditySeparateInterval();
     testNullDecoderMarksTicks();
+    testBarsAndMarketStructureStateChanges();
+    testMarketStructureWarmStartIsRecordedAndNotAChange();
     testPricesSnapToTickGridDespiteFloatAnchor();
     testOldBigTradeIsNotReEmittedAfterMinutes();
     testSessionRolloverSplitsFiles();
@@ -251,6 +253,84 @@ public final class DataRecorderTest {
     store.flushAndClose();
     checkInt("the trade is written exactly once (header + 1 line) across 400 seconds",
         lines(root, "big_trades", SessionBoundary.sessionIdFor(base)).size(), 2);
+  }
+
+  private static BarEvent bar(long t, int o, int h, int l, int c, long v) {
+    seq++;
+    return new BarEvent(seq, t, t, BarPhase.CLOSE, o, h, l, c, v);
+  }
+
+  /** D-90: OHLCV every bar; market structure only on state change, with the state at that moment. */
+  private static void testBarsAndMarketStructureStateChanges() throws Exception {
+    Path root = tempRoot();
+    ConstructDataStore store = new ConstructDataStore(root);
+    store.start();
+    com.flow.flow.MarketStructureFeature ms = new com.flow.flow.MarketStructureFeature("market_structure", null);
+    DataRecorder rec = recorder(store, Map.of("market_structure", ms), t -> t * 0.1, 1, 1);
+    long base = ct(2026, 3, 15, 10, 0, 0);
+    long sid = SessionBoundary.sessionIdFor(base);
+    java.util.function.Consumer<Event> feed = e -> {
+      ms.onEvent(e);
+      rec.onEvent(e);
+    };
+    feed.accept(bar(base + 60_000, 100, 105, 99, 104, 10));   // first bar: CHOCH bootstrap
+    feed.accept(bar(base + 120_000, 104, 110, 103, 109, 12)); // green in an uptrend: no state change
+    feed.accept(bar(base + 180_000, 109, 111, 106, 107, 9));  // red: pullback starts
+    feed.accept(bar(base + 240_000, 107, 108, 102, 103, 11)); // red, closes below the previous low: valid
+    feed.accept(bar(base + 300_000, 103, 115, 102, 114, 15)); // green closes above the pullback high: TJL pair
+    store.flushAndClose();
+
+    List<String> bars = lines(root, "bars", sid);
+    checkInt("bars: header + one OHLCV line per closed bar (5)", bars.size(), 6);
+    check("bar line carries decoded OHLCV", bars.get(1).contains("\"o\":10.0") && bars.get(1).contains("\"c\":10.4")
+        && bars.get(1).contains("\"v\":10"), true);
+
+    List<String> m = lines(root, "market_structure", sid);
+    check("market_structure header says trigger=state_change (not an interval)",
+        m.get(0).contains("\"trigger\":\"state_change\"") && !m.get(0).contains("intervalSeconds"), true);
+    checkInt("market_structure: header + 4 change lines (bars 1, 3, 4, 5; the quiet bar 2 wrote nothing)", m.size(), 5);
+    check("bar 3 -> pullback started", m.get(2).contains("pullback started (forming, not yet valid)")
+        && m.get(2).contains("\"pullback\":\"FORMING\"") && m.get(2).contains("\"pullbackHigh\":11.1")
+        && m.get(2).contains("\"pullbackLow\":10.6"), true);
+    check("bar 4 -> pullback became valid, extremes now span both pullback bars",
+        m.get(3).contains("pullback became valid") && m.get(3).contains("\"pullbackLow\":10.2"), true);
+    check("bar 5 -> new tjl1 + tjl2 created, pullback ended, tradeable levels changed, no open pullback",
+        m.get(4).contains("new tjl1 created") && m.get(4).contains("new tjl2 created")
+            && m.get(4).contains("pullback ended") && m.get(4).contains("tradeable levels changed")
+            && m.get(4).contains("\"tradeable\":[\"TJL2\"]") && m.get(4).contains("\"pullbackHigh\":null"), true);
+    check("every change line carries the price at that bar's close", m.get(4).contains("\"price\":11.4"), true);
+  }
+
+  private static void testMarketStructureWarmStartIsRecordedAndNotAChange() throws Exception {
+    Path root = tempRoot();
+    ConstructDataStore store = new ConstructDataStore(root);
+    store.start();
+    com.flow.flow.MarketStructureFeature ms = new com.flow.flow.MarketStructureFeature("market_structure", null);
+    long base = ct(2026, 3, 15, 10, 0, 0);
+    long sid = SessionBoundary.sessionIdFor(base);
+    List<BarEvent> warm = new ArrayList<>();
+    warm.add(bar(base - 240_000, 100, 105, 99, 104, 10));
+    warm.add(bar(base - 180_000, 104, 110, 103, 109, 12));
+    warm.add(bar(base - 120_000, 109, 111, 106, 107, 9)); // leaves a pullback FORMING after warm-start
+    for (BarEvent b : warm) ms.onEvent(b);
+
+    // recorder built AFTER the warm-start, exactly as the runtime does it
+    DataRecorder rec = recorder(store, Map.of("market_structure", ms), t -> t * 0.1, 1, 1);
+    rec.recordMarketStructureWarmStart(warm, base);
+    java.util.function.Consumer<Event> feed = e -> {
+      ms.onEvent(e);
+      rec.onEvent(e);
+    };
+    feed.accept(bar(base + 60_000, 107, 108, 102, 103, 11));   // pullback becomes valid: first real change
+    store.flushAndClose();
+
+    List<String> m = lines(root, "market_structure", sid);
+    check("warm-start bars are recorded as one warm_start line with all 3 bars",
+        m.get(1).contains("\"type\":\"warm_start\"") && m.get(1).contains("\"barCount\":3"), true);
+    checkInt("warm-up produced NO state-change lines: header + warm_start + the one live change", m.size(), 3);
+    check("the only change line is the live bar's", m.get(2).contains("pullback became valid"), true);
+    check("warm-start did not leak in as 'started' -- the baseline already had the forming pullback",
+        !m.get(2).contains("pullback started"), true);
   }
 
   private static void testSessionRolloverSplitsFiles() throws Exception {

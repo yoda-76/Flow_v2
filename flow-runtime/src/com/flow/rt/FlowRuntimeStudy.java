@@ -249,7 +249,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     fpGrp.addRow(new IntegerDescriptor(FP_MERGE_ROWS_KEY, "Draw: Merge N Rows (display only, not stored)", 1, 1, 999, 1));
     fpGrp.addRow(new BooleanDescriptor(DRAW_FP_KEY, "Draw on Chart", true));
     var btGrp = tab.addGroup("Big Trades");
-    btGrp.addRow(new IntegerDescriptor(BT_MIN_SIZE_KEY, "Min Size (contracts, fixed threshold)", 10, 1, 99999, 1));
+    btGrp.addRow(new IntegerDescriptor(BT_MIN_SIZE_KEY, "Min Size (contracts, fixed threshold)", 1, 1, 99999, 1));
     btGrp.addRow(new IntegerDescriptor(BT_AGG_PERIOD_MS_KEY, "Agg Period (ms, same price+side window)", 20, 0, 60000, 1));
     btGrp.addRow(new BooleanDescriptor(DRAW_BT_KEY, "Draw on Chart", true));
     var lmGrp = tab.addGroup("Liquidity Map");
@@ -374,7 +374,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     int warmStartBars = getSettings().getInteger(MS_WARMSTART_BARS_KEY);
     DataSeries seriesForWarmStart = ctx.getDataSeries();
     int availableBars = seriesForWarmStart == null ? 0 : Math.max(0, seriesForWarmStart.size() - 1);
-    int warmStartedCount = warmStartMarketStructure(ctx, warmStartBars, priceCodec, marketStructure);
+    java.util.List<BarEvent> warmBars = new java.util.ArrayList<>();
+    int warmStartedCount = warmStartMarketStructure(ctx, warmStartBars, priceCodec, marketStructure, warmBars);
     journal.writeDecision(0, Json.object()
         .field("type", "market_structure_warm_start")
         .field("requestedBars", warmStartBars)
@@ -451,8 +452,13 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT);
     ds.start();
     dataStore = ds;
-    pipeline.attachDataRecorder(new com.flow.core.DataRecorder(ds, features, priceCodec::fromTicks,
-        riskConfig.dataIntervalSeconds(), riskConfig.liquidityIntervalSeconds(), riskConfig.dataKeepTradingDays()));
+    com.flow.core.DataRecorder dataRecorder = new com.flow.core.DataRecorder(ds, features, priceCodec::fromTicks,
+        riskConfig.dataIntervalSeconds(), riskConfig.liquidityIntervalSeconds(), riskConfig.dataKeepTradingDays());
+    // D-90: the warm-start bars bypass the journal, so record them here or replay can't reproduce the
+    // state the first live bar is judged against. The recorder's market-structure baseline was taken
+    // just now (after warm-start), so warm-up itself is not written as state changes.
+    dataRecorder.recordMarketStructureWarmStart(warmBars, System.currentTimeMillis());
+    pipeline.attachDataRecorder(dataRecorder);
     logLine("DATA_RECORDER_ON root=" + DATA_ROOT + " dataIntervalSec=" + riskConfig.dataIntervalSeconds()
         + " liquidityIntervalSec=" + riskConfig.liquidityIntervalSeconds()
         + " keepTradingDays=" + riskConfig.dataKeepTradingDays());
@@ -1221,7 +1227,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
    * assumed to match the setting.
    */
   private static int warmStartMarketStructure(DataContext ctx, int maxBars, PriceCodec codec,
-                                                com.flow.flow.MarketStructureFeature marketStructure) {
+                                                com.flow.flow.MarketStructureFeature marketStructure,
+                                                java.util.List<BarEvent> consumed) {
     if (maxBars <= 0) return 0;
     DataSeries series = ctx.getDataSeries();
     if (series == null || series.size() < 2) return 0;
@@ -1239,6 +1246,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       BarEvent be = new BarEvent(syntheticSeq--, endTime, endTime, BarPhase.CLOSE,
           openTicks, highTicks, lowTicks, closeTicks, volume);
       marketStructure.onEvent(be);
+      consumed.add(be);
       count++;
     }
     return count;

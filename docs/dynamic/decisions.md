@@ -3419,7 +3419,7 @@ readable rather than being silently rewritten.
   ~2 MB, committed per the user's decision). `RecordingReplayTest` (15th
   gate) replays its `raw.jsonl` through the same `Pipeline` with a
   `DataRecorder` attached and compares against the live `data/` files.
-  - **Footprint**: all 51 replayed candles **byte-identical** to the live
+  - **Footprint**: all 50 replayed candles (51 lines with the header) **byte-identical** to the live
     ones — the drain-order/`ClockEvent` determinism D-88 relies on holds.
   - **VWAP**: same timestamps and volumes on every line; values within
     2e-4 of live (the live decoder's float-noisy anchor was never journaled,
@@ -3434,7 +3434,7 @@ readable rather than being silently rewritten.
     writes a `price_anchor` decisions record and `ReplayHarness.
     priceDecoderFor()` rebuilds the decoder from it (**built, not yet
     deployed** — recordings made before the next deploy still lack it);
-    (2) **market structure's 100 warm-start bars bypass the journal**
+    (2) **market structure's 100 warm-start bars bypass the journal** (fixed by D-90)
     (`warmStartMarketStructure` feeds the feature directly), so market
     structure is not replay-exact from `raw.jsonl` alone — not fixed,
     needs a decision (journal them, or replay-time warm-start); (3)
@@ -3443,6 +3443,42 @@ readable rather than being silently rewritten.
     only record of the book; (4) the window had **no big trades**, so that
     capture path is untested against real data — one busier-hours take
     needed.
+
+- **D-90** (2026-09-24) — **Market structure and OHLCV recording, and why
+  the footprint had "only" 50 candles.** Decided with the user; the
+  schema is explicitly a first draft.
+  - **OHLCV**: every closed chart bar is written to `data/bars/` (raw
+    keeps it only 48 h). **Market structure** is stored only when its
+    state changes, and only from when the strategy was initialised: the
+    100-bar warm-start is done first, the recorder's baseline is taken
+    *after* it, so warm-up never appears as changes. A change line carries
+    `t`, `price` (that bar's close), `changes` (e.g. "pullback started
+    (forming, not yet valid)", "pullback became valid", "new tjl1 created",
+    "tradeable levels changed", "trend UP->DOWN"), then trend, pullback
+    state, tjl1/tjl2/aPlus/sbrRbs/dt/db as `{low,high}`, tradeable levels,
+    and the pullback run's `pullbackHigh`/`pullbackLow` (new
+    `MarketStructureView` accessors). The pullback extremes are payload,
+    not a trigger — a deepening pullback alone doesn't write a line.
+  - **Addition beyond what was asked, easy to drop**: the 100 warm-start
+    bars are written once as a `warm_start` line at session start, because
+    they bypass the journal and D-89 found market structure could not be
+    replayed without them.
+  - **Big-trade threshold default lowered 10 → 1** (`FLOW_BT_MIN_SIZE`) to
+    exercise the capture path. With a 20 ms window nearly every tick
+    becomes a "big trade" — noisy on the chart and in `data/big_trades/`;
+    restore to 10 after the test. An already-added study keeps its saved
+    value: change it in the study's settings or re-add the study.
+  - **Footprint "should be 60 candles a minute"**: these are 1-second
+    candles, and a second with no trade writes no candle. The 5-minute
+    recording held 108 ticks (110 contracts) in 48 distinct seconds → 50
+    candles. Checked against the chart's own 1-minute bars: for the four
+    complete minutes, bar volume equalled our tick volume exactly (10, 25,
+    36, 30) and all 108 ticks are in the candles, so nothing was lost; the
+    feed was just quiet. A missing second = no trades; the per-second VWAP
+    line shows the recorder was alive. If a dense series is wanted (a
+    candle every second, zero volume, price carried forward), that's a
+    small change — not done.
+  - Built + tested (`DataRecorderTest`), not yet deployed or live-verified.
 
 ## Open questions (not yet decisions)
 

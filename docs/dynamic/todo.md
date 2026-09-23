@@ -36,7 +36,8 @@ Two decisions only the user can make, both gate the safety work below:
   Follow-ups from it: [ ] **deploy** the `price_anchor` journaling (built,
   not deployed) and confirm it appears on the next recording; [ ] decide
   how market structure's warm-start bars become replayable (they bypass the
-  journal); [ ] one busier-hours take to exercise big-trade capture and
+  journal) **[done, D-90: recorded as a `warm_start` line, plus `bars/` OHLCV and
+  `market_structure/` state-change lines; not yet deployed or live-verified]**; [ ] one busier-hours take to exercise big-trade capture and
   give a real VP-vs-footprint comparison; [ ] compare VAH/VAL/zones (only
   POC/totals/buckets checked); [ ] delete `data_take1/` (gitignored, first
   noisy take).

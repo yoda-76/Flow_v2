@@ -86,4 +86,14 @@ public interface MarketStructureView extends Feature {
    * point -- immediately, not waiting for the next flip (point 10).
    */
   Set<TradeableLevel> tradeableLevels();
+
+  /**
+   * Highest high / lowest low across the pullback run currently in
+   * progress (FORMING or VALID) -- null when there is no run. Exposed for
+   * recording (D-90): it's the number a pullback's continuation is judged
+   * against, and it otherwise lives only in private state.
+   */
+  Integer pullbackHighTicks();
+
+  Integer pullbackLowTicks();
 }

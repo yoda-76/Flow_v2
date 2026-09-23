@@ -3,6 +3,8 @@ package com.flow.core;
 import com.flow.flow.BigTradeEvent;
 import com.flow.flow.BigTradeView;
 import com.flow.flow.LiquidityMapView;
+import com.flow.flow.MarketStructureView;
+import com.flow.flow.ZoneRange;
 import com.flow.flow.VWAPView;
 import com.flow.journal.ConstructDataStore;
 import com.flow.journal.Json;
@@ -44,6 +46,8 @@ public final class DataRecorder {
   public static final String VWAP = "vwap";
   public static final String BIG_TRADES = "big_trades";
   public static final String LIQUIDITY_MAP = "liquidity_map";
+  public static final String BARS = "bars";
+  public static final String MARKET_STRUCTURE = "market_structure";
   private static final int LIQUIDITY_WINDOW_TICKS = 100;
 
   private final ConstructDataStore store;
@@ -64,6 +68,14 @@ public final class DataRecorder {
   private long candleVolume;
   private int candleTicks;
 
+  // market structure (D-90): last recorded state, so only CHANGES are written. Baseline is
+  // taken at construction -- i.e. AFTER any historical warm-start -- so warm-up itself never
+  // shows up as changes ("store only from when the strategy was initialised").
+  private record MsSnap(MarketStructureView.Trend trend, MarketStructureView.PullbackState pullback,
+                        ZoneRange tjl1, ZoneRange tjl2, ZoneRange aPlus, ZoneRange sbrRbs,
+                        ZoneRange dt, ZoneRange db, java.util.Set<MarketStructureView.TradeableLevel> tradeable) {}
+  private MsSnap msLast;
+
   // big trades: last emitted size per (openTime|price|side)
   private final Map<String, Double> emittedBigTradeSize = new HashMap<>();
 
@@ -75,6 +87,7 @@ public final class DataRecorder {
     this.dataIntervalMs = Math.max(1, dataIntervalSeconds) * 1000L;
     this.liquidityIntervalMs = Math.max(1, liquidityIntervalSeconds) * 1000L;
     this.keepTradingDays = keepTradingDays;
+    this.msLast = msSnapshot();
   }
 
   public void onEvent(Event e) {
@@ -82,7 +95,126 @@ public final class DataRecorder {
       accumulate(te);
     } else if (e instanceof ClockEvent) {
       onClock(e.eventTimeMs());
+    } else if (e instanceof BarEvent be && be.phase() == BarPhase.CLOSE) {
+      onBarClose(be);
     }
+  }
+
+  /**
+   * The chart's own OHLCV, one line per closed bar (raw.jsonl keeps it only
+   * 48 h), then a market-structure line iff its state changed on this bar.
+   */
+  private void onBarClose(BarEvent be) {
+    long sessionId = SessionBoundary.sessionIdFor(be.eventTimeMs());
+    write(BARS, sessionId, be.eventTimeMs(), Json.object()
+        .field("t", be.eventTimeMs())
+        .field("o", px(be.openTicks())).field("h", px(be.highTicks()))
+        .field("l", px(be.lowTicks())).field("c", px(be.closeTicks()))
+        .field("v", be.volume())
+        .build());
+
+    MsSnap now = msSnapshot();
+    if (now == null || now.equals(msLast)) return;
+    List<String> changes = msChanges(msLast, now);
+    msLast = now;
+    if (changes.isEmpty()) return;
+    MarketStructureView ms = (MarketStructureView) features.get(MarketStructureView.FEATURE_ID);
+    StringBuilder ch = new StringBuilder("[");
+    for (int i = 0; i < changes.size(); i++) {
+      if (i > 0) ch.append(',');
+      ch.append('"').append(changes.get(i)).append('"');
+    }
+    ch.append(']');
+    StringBuilder tr = new StringBuilder("[");
+    boolean first = true;
+    for (MarketStructureView.TradeableLevel l : new java.util.TreeSet<>(now.tradeable())) {
+      if (!first) tr.append(',');
+      first = false;
+      tr.append('"').append(l.name()).append('"');
+    }
+    tr.append(']');
+    Integer pbHigh = ms.pullbackHighTicks();
+    Integer pbLow = ms.pullbackLowTicks();
+    write(MARKET_STRUCTURE, sessionId, be.eventTimeMs(), Json.object()
+        .field("t", be.eventTimeMs())
+        .field("price", px(be.closeTicks()))
+        .fieldRaw("changes", ch.toString())
+        .field("trend", now.trend().name())
+        .field("pullback", now.pullback().name())
+        .fieldRaw("tjl1", zoneJson(now.tjl1()))
+        .fieldRaw("tjl2", zoneJson(now.tjl2()))
+        .fieldRaw("aPlus", zoneJson(now.aPlus()))
+        .fieldRaw("sbrRbs", zoneJson(now.sbrRbs()))
+        .fieldRaw("dt", zoneJson(now.dt()))
+        .fieldRaw("db", zoneJson(now.db()))
+        .fieldRaw("tradeable", tr.toString())
+        .fieldOrNull("pullbackHigh", pbHigh == null ? null : px(pbHigh))
+        .fieldOrNull("pullbackLow", pbLow == null ? null : px(pbLow))
+        .build());
+  }
+
+  private MsSnap msSnapshot() {
+    if (!(features.get(MarketStructureView.FEATURE_ID) instanceof MarketStructureView ms)) return null;
+    return new MsSnap(ms.trend(), ms.pullbackState(), ms.lastTjl1(), ms.lastTjl2(), ms.lastAPlus(),
+        ms.lastSbrRbs(), ms.lastDt(), ms.lastDb(), java.util.Set.copyOf(ms.tradeableLevels()));
+  }
+
+  private static List<String> msChanges(MsSnap a, MsSnap b) {
+    List<String> c = new java.util.ArrayList<>();
+    if (a == null) return c;
+    if (a.trend() != b.trend()) c.add("trend " + a.trend() + "->" + b.trend());
+    if (a.pullback() != b.pullback()) {
+      if (a.pullback() == MarketStructureView.PullbackState.NONE) c.add("pullback started (forming, not yet valid)");
+      else if (b.pullback() == MarketStructureView.PullbackState.VALID) c.add("pullback became valid");
+      else if (a.pullback() == MarketStructureView.PullbackState.FORMING) c.add("pullback abandoned before becoming valid");
+      else c.add("pullback ended (" + a.pullback() + "->" + b.pullback() + ")");
+    }
+    zoneChange(c, "tjl1", a.tjl1(), b.tjl1());
+    zoneChange(c, "tjl2", a.tjl2(), b.tjl2());
+    zoneChange(c, "a_plus", a.aPlus(), b.aPlus());
+    zoneChange(c, "sbr_rbs", a.sbrRbs(), b.sbrRbs());
+    zoneChange(c, "dt", a.dt(), b.dt());
+    zoneChange(c, "db", a.db(), b.db());
+    if (!a.tradeable().equals(b.tradeable())) c.add("tradeable levels changed");
+    return c;
+  }
+
+  private static void zoneChange(List<String> c, String name, ZoneRange a, ZoneRange b) {
+    if (java.util.Objects.equals(a, b)) return;
+    c.add(b == null ? name + " cleared" : "new " + name + " created");
+  }
+
+  private String zoneJson(ZoneRange z) {
+    if (z == null) return "null";
+    return "{\"low\":" + px(z.lowTicks()) + ",\"high\":" + px(z.highTicks()) + "}";
+  }
+
+  /**
+   * The historical bars a market-structure warm-start consumed, written
+   * once at session start. They bypass the Sequencer/journal, so without
+   * this a replay could never reproduce the state the first live bar was
+   * judged against. Call before the first event is published (not
+   * thread-safe against the drain thread).
+   */
+  public void recordMarketStructureWarmStart(List<BarEvent> bars, long nowMs) {
+    if (bars.isEmpty()) return;
+    long sessionId = SessionBoundary.sessionIdFor(nowMs);
+    StringBuilder arr = new StringBuilder("[");
+    for (int i = 0; i < bars.size(); i++) {
+      BarEvent b = bars.get(i);
+      if (i > 0) arr.append(',');
+      arr.append("{\"t\":").append(b.eventTimeMs())
+          .append(",\"o\":").append(px(b.openTicks())).append(",\"h\":").append(px(b.highTicks()))
+          .append(",\"l\":").append(px(b.lowTicks())).append(",\"c\":").append(px(b.closeTicks()))
+          .append(",\"v\":").append(b.volume()).append('}');
+    }
+    arr.append(']');
+    write(MARKET_STRUCTURE, sessionId, nowMs, Json.object()
+        .field("type", "warm_start")
+        .field("t", nowMs)
+        .field("barCount", bars.size())
+        .fieldRaw("bars", arr.toString())
+        .build());
   }
 
   private void accumulate(TickEvent te) {
@@ -143,14 +275,19 @@ public final class DataRecorder {
 
   private void write(String construct, long sessionId, long boundaryMs, String line) {
     if (headerWritten.add(construct + "/" + sessionId)) {
-      store.write(construct, sessionId, Json.object()
+      Json h = Json.object()
           .field("type", "header")
           .field("construct", construct)
           .field("sessionId", sessionId)
-          .field("unit", priceDecoder == null ? "ticks" : "price")
-          .field("intervalSeconds", (construct.equals(LIQUIDITY_MAP) ? liquidityIntervalMs : dataIntervalMs) / 1000)
-          .field("t", boundaryMs)
-          .build());
+          .field("unit", priceDecoder == null ? "ticks" : "price");
+      if (construct.equals(BARS)) {
+        h.field("trigger", "bar_close");
+      } else if (construct.equals(MARKET_STRUCTURE)) {
+        h.field("trigger", "state_change");
+      } else {
+        h.field("intervalSeconds", (construct.equals(LIQUIDITY_MAP) ? liquidityIntervalMs : dataIntervalMs) / 1000);
+      }
+      store.write(construct, sessionId, h.field("t", boundaryMs).build());
     }
     store.write(construct, sessionId, line);
   }
