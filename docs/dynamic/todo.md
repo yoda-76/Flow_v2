@@ -5,6 +5,103 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
+## Roadmap to the target state (added 2026-09-24 — read this first)
+
+**Target state, stated by the user 2026-09-24**: leave the system running
+for the whole day on this machine — recording replayable data and trading
+on the **Simulated account** — and at night sit for 1–2 hours to analyse
+every Sim trade it took plus the recorded data. Not starting unattended
+trading now; the point is to build and verify everything that can be done
+**on this machine** before renting a cloud machine. **The bottleneck is the
+user's monitoring time** (only short windows of watching are possible), so
+the design rule for everything below: the system must report on itself, and
+every verification should fit a short monitored window. A later step is
+running it 24/7 on another machine; recording is 24/7, trading is 5 days a
+week.
+
+Two decisions only the user can make, both gate the safety work below:
+- **Standing authorization.** `CLAUDE.md` requires the user to state the
+  bounds out loud and confirm before arming *every* session, and again
+  after any restart or redeploy. Leaving it running all day needs a new
+  rule (e.g. a fixed bounded envelope approved once, Sim-only, valid until
+  revoked). Not changed yet, and not to be assumed.
+- **Sim only for now.** Real-account automatic trading would need its own
+  separate later decision (`CLAUDE.md`); nothing here assumes it.
+
+**Phase 0 — recording and replay (days).**
+- [~] 5-minute live recording (D-88 recorder built, two bugs found and fixed
+  on the first take; second take running 2026-09-24). Then: check it, copy
+  it into `flow-core/fixtures/`, replay it, rebuild VP offline from the
+  footprint candles and compare with the live VP. Delete `data_take1/`
+  (first, noisy take, gitignored) once no longer needed. Note: the second
+  take saw no big trades (quiet night), so it won't exercise big-trade
+  recording — worth one busier-hours take.
+- [ ] Drop the old 10 s decisions-tier `liquidity_snapshot` (D-58) once
+  `data/` is proven. Measured 2026-09-24: liquidity map ≈ 4–5 KB/s at 1 s
+  ≈ 2.7–3 GB per 7 trading days; everything else is negligible.
+
+**Phase 1 — safe to leave running unattended (the bulk of the engineering).**
+- [ ] Session-end / weekend flatten (D-29's stated default, still unbuilt) —
+  today a position can sit open across the daily halt and the weekend.
+- [ ] Feed-silence watchdog: nothing currently notices ticks stopping (the
+  lag guard only covers a slow pipeline). Disarm/flag on N seconds of
+  silence.
+- [ ] Alerts: nothing tells the user when it disarms, trips the kill
+  switch, loses the feed, or the disk fills. Pick a channel first.
+- [ ] Restart / auto-recovery policy: MotiveWave or the PC restarts with a
+  position open (refuse-to-arm is right, but the study must also be
+  re-activated by hand today). Includes §11 (does `onActivate` see a live
+  position immediately after a restart) — still unconfirmed, blocked (the
+  harness refused the order-placing probe, `plumbingEdgeCases.md` §10/§11).
+- [ ] Live retests of D-85 (kill switch), D-86 (bracket-only close), D-87
+  (double-fill correction — only testable if a real double-fill happens),
+  and the 2026-09-22 change letting the kill switch survive a Pipeline
+  disarm.
+- [ ] D-86's "no software fallback if both bracket legs are rejected"
+  revisit, and `plumbingEdgeCases.md` §9 (bracket sizing should read
+  `order.getFilled()`).
+- [ ] Fake `OrderContext` test harness (approved 2026-09-22, strictly a
+  unit-test double, not built).
+
+**Phase 2 — the nightly review (new requirement, 2026-09-24).** The
+1–2 hour evening session needs tooling, not raw logs:
+- [ ] An automatic **daily report** (extends `analysis/journal_summary.py`,
+  D-76): every Sim trade with entry/exit time, side, prices, the intent
+  reason, bracket outcome and PnL; every intent the risk chain blocked and
+  why; disarms / kill switch / position-mismatch events; system health
+  (feed gaps, lag, restarts, `DROPPED` markers, disk use); data-health (which
+  `data/` files exist for the day, gaps).
+- [ ] A way to look at any one trade **against the recorded data** — the
+  footprint candles, liquidity map and VWAP around its entry and exit — so
+  reviewing a trade doesn't mean reading JSONL by hand.
+- [ ] A one-line "is it alive" status the user can check in seconds during
+  a short monitoring window.
+
+**Phase 3 — ops hardening on this machine (needs live calendar time).**
+- [ ] Multi-day soak test (nothing has run longer than a session; memory
+  over days is unmeasured — E-3's VP rotation was sized per session).
+- [ ] Machine settings: no sleep, no forced Windows update restarts; disk
+  retention for `logs/` and `data/`.
+- [ ] Chaos test: kill MotiveWave with a position open, confirm safe
+  recovery.
+- [ ] Batch live checks into the monitored windows: keep a running list of
+  what each short window should exercise, so limited monitoring time isn't
+  spent rediscovering what to test.
+
+**Phase 4 — cloud readiness (do last, but do everything possible before).**
+- [ ] Hardcoded `C:/yadvendra/...` paths in `FlowRuntimeStudy` (`LOG_ROOT`,
+  `DATA_ROOT`, `RISK_CONFIG_PATH`) and the experiments' log paths need to be
+  configuration, not code.
+- [ ] Runbook: install, MotiveWave + Rithmic account setup, Sim account
+  enablement and "Sim Trade Only", `.env` handling (user-only), auto-start,
+  time zone, remote monitoring.
+
+**Phase 5 — strategy (open-ended, not engineering).** Nothing is validated
+(backtests were exploratory; the 15-point order-flow execution rules review
+in `orderFlowExecutionRules.md` is still waiting on the user). Unattended
+Sim trading is only worth much once a strategy has something to learn from,
+but the Phase 1–3 plumbing doesn't depend on it.
+
 ## Where we left off (2026-09-20, updated — read this first, assume no memory of the conversation that produced it)
 
 **Most recent (2026-09-20)**: today's plan (per direct instruction):
