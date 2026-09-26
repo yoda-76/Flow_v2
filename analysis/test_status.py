@@ -282,6 +282,25 @@ class TestData(Base):
         self.touch_data("vwap", 3)
         self.assertIn("data: CHECK: liquidity_map missing", self.line()[0])
 
+    def test_no_trades_yet_means_no_vwap_file_and_that_is_not_a_fault(self):
+        # D-103: closed/silent market -> the recorder writes no VWAP line; the order book still records.
+        self._alive()
+        self.touch_data("liquidity_map", 5)
+        self.assertIn("data: ok", self.line()[0])
+
+    def test_a_vwap_file_that_went_stale_is_still_a_fault(self):
+        # once VWAP has started it writes every second, so a stale file while running means the recorder stopped
+        self._alive()
+        self.touch_data("liquidity_map", 5)
+        self.touch_data("vwap", 120)
+        self.assertIn("data: CHECK: vwap 2m old", self.line()[0])
+
+    def test_a_missing_liquidity_map_is_a_fault_even_with_a_fresh_vwap(self):
+        self._alive()
+        self.touch_data("vwap", 3)
+        self.assertIn("data: CHECK: liquidity_map missing", self.line()[0])
+        self.assertNotIn("vwap", self.line()[0].split("data:")[1])
+
     def test_no_data_directory(self):
         self._alive()
         self.assertIn("data: n/a (no data dir)", self.line()[0])

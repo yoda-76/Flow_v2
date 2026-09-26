@@ -3962,7 +3962,33 @@ readable rather than being silently rewritten.
     system fault) and would fire all weekend once the system runs 24/7. Options:
     drop `vwap` from the must-be-fresh list (keep `liquidity_map`, which records
     from DOM alone); or only require it while the raw journal shows recent ticks.
-    Not changed.
+    **Resolved by D-103.**
+
+- **D-103** (2026-09-26) — **No false "vwap missing" on a market with no
+  trades** (resolves the finding in D-102; the user approved the recommended
+  option, refined slightly). Two changes, both in the analysis tools:
+  - **`status.py`**: `liquidity_map` must exist and be fresh whenever the system
+    runs (it records from the order book alone — it wrote 1 line/s on a closed
+    market). `vwap` is now checked only **if its file exists**: no file just means
+    nothing has traded yet. Refinement over simply dropping it: once VWAP has
+    started it writes every second even in silence, so a `vwap` file that goes
+    **stale while running** still prints `CHECK: vwap 2m old` — that means the
+    recorder stopped, which is exactly what the check is for. (A new trading day's
+    file starts only at its first trade, and yesterday's file is not looked at —
+    files are per 17:00 CT session.) The raw-ticks alternative was rejected as more
+    machinery for the same answer.
+  - **`daily_report.py`**: for `footprint`, `vwap`, `big_trades` and `bars` —
+    written only once trades occur / a bar closes — a day with no file reads
+    `none recorded — written only once trades occur (a fault only if the market
+    traded)` instead of `**missing**`; `liquidity_map` and `market_structure`
+    (always written while running) still say `**missing**`. The report cannot tell
+    a quiet day from a broken recorder by itself, so the wording says what to check.
+  - **Tests**: +3 in `test_status.py` (no vwap file is `ok`; a stale vwap file is a
+    fault; a missing `liquidity_map` is a fault even with a fresh vwap) and +1 in
+    `test_daily_report.py`; 12 mutations, 11 caught first time, the survivor (the
+    "a fault only if the market traded" qualifier could be dropped) fixed by
+    asserting the whole sentence. **Verified on the real journal**: the same
+    closed-market session that printed `CHECK: vwap missing` now prints `data: ok`.
 
 ## Open questions (not yet decisions)
 

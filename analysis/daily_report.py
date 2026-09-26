@@ -433,6 +433,9 @@ def config_in_force(session):
 
 # Constructs written every interval (a gap is meaningful) vs only when something happens.
 DENSE = {"vwap": 1, "liquidity_map": 1}
+# Constructs that get no file at all until something trades / a bar closes (D-103): "no file" there is what a closed
+# or silent market looks like, not necessarily a fault, so the report says so instead of "missing".
+EVENT_DRIVEN = ("footprint", "vwap", "big_trades", "bars")
 
 
 def data_health(data_root: Path, day: date):
@@ -718,7 +721,11 @@ def render(model) -> str:
         L.append("|---|---|--:|--:|---|---|")
         for row in model["data"]:
             if not row["present"]:
-                L.append(f"| {row['construct']} | **missing** | | | | |")
+                if row["construct"] in EVENT_DRIVEN:
+                    L.append(f"| {row['construct']} | none recorded — written only once trades occur "
+                             f"(a fault only if the market traded) | | | | |")
+                else:
+                    L.append(f"| {row['construct']} | **missing** | | | | |")
                 continue
             gap = fmt_dur(row["max_gap_ms"])
             interval_ms = (row.get("interval") or 1) * 1000

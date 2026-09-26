@@ -579,6 +579,19 @@ class TestDataHealth(Base):
         self.assertIn("sparse by design", text)
         self.assertIn("| liquidity_map | **missing**", text)
 
+    def test_event_driven_constructs_with_no_file_are_not_called_missing(self):
+        # D-103: a closed/silent market writes no footprint/vwap/big_trades/bars file; the order-book and
+        # market-structure recorders write regardless, so no file THERE is a real "missing".
+        for name in ("footprint", "vwap", "big_trades", "bars", "liquidity_map", "market_structure"):
+            (self.data / name).mkdir(parents=True)
+        self.journal().heartbeat(ct_ms(DAY, 10)).write()
+        text = dr.render(self.model())
+        for name in ("footprint", "vwap", "big_trades", "bars"):
+            self.assertIn(f"| {name} | none recorded — written only once trades occur (a fault only if the market traded)", text)
+            self.assertNotIn(f"| {name} | **missing**", text)
+        for name in ("liquidity_map", "market_structure"):
+            self.assertIn(f"| {name} | **missing**", text)
+
     def test_no_data_directory(self):
         self.journal().heartbeat(ct_ms(DAY, 10)).write()
         self.assertIn("No data directory found", dr.render(self.model()))

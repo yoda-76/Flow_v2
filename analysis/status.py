@@ -42,7 +42,13 @@ import daily_report as dr  # noqa: E402
 
 ALIVE_MS = 30_000
 STALE_MS = 300_000
-DENSE = ("vwap", "liquidity_map")   # written every interval, so their file must be fresh while running
+# Data-health rules (D-103). liquidity_map is recorded from the order book alone, every interval, so its file must
+# exist and be fresh whenever the system runs. vwap is written every interval too, but only once something has
+# traded (the recorder skips it until VWAP has volume): a missing file just means nothing has traded yet -- a closed
+# market or a silent one, which is not a fault (D-93) -- so it is checked for freshness only if it EXISTS (once
+# started it keeps writing every second, so a stale file while running does mean the recorder stopped).
+MUST_EXIST_FRESH = ("liquidity_map",)
+FRESH_IF_PRESENT = ("vwap",)
 DATA_FRESH_MS = 30_000
 
 
@@ -119,10 +125,11 @@ def data_state(data_root: Path, day, now_ms):
     if not data_root.exists():
         return "n/a (no data dir)"
     problems = []
-    for name in DENSE:
+    for name in MUST_EXIST_FRESH + FRESH_IF_PRESENT:
         f = data_root / name / f"{sid}.jsonl"
         if not f.exists():
-            problems.append(f"{name} missing")
+            if name in MUST_EXIST_FRESH:
+                problems.append(f"{name} missing")
             continue
         age = now_ms - f.stat().st_mtime * 1000
         if age > DATA_FRESH_MS:
