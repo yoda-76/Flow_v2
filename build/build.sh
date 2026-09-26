@@ -98,6 +98,14 @@ echo "== live order tracker test against the fake broker (D-91) =="
 "$JAVA" -cp "$SDKJAR;build/classes/core;build/classes/runtime" com.flow.rt.LiveOrderTrackerTest
 echo "(live order tracker test passed -- see output above)"
 
+echo "== daily report tests (python, D-94) =="
+if command -v python >/dev/null 2>&1; then
+  python analysis/test_daily_report.py
+  echo "(daily report tests passed -- see output above)"
+else
+  echo "(python not found -- daily report tests SKIPPED; the report is an offline tool and does not gate the deploy)"
+fi
+
 echo "== deploy =="
 rm -rf "$DEV_DIR"
 mkdir -p "$DEV_DIR"

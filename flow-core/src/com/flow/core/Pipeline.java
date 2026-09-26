@@ -272,7 +272,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     Intent intent = strategy.onEvent(marketState);
     if (!sameContent(intent, lastIntent)) {
       lastIntent = intent; // updated regardless of what the risk chain decides, so an identical still-blocked intent doesn't re-evaluate every event
-      journal.writeDecision(e.seq(), intentChangeLine(intent, e.seq()));
+      journal.writeDecision(e.seq(), intentChangeLine(intent, e.seq(), e.eventTimeMs()));
 
       if (riskChain == null) {
         intentSink.onIntentChanged(intent, e); // no risk chain configured -- exact prior behavior
@@ -492,10 +492,11 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     return sb.append(']').toString();
   }
 
-  private static String intentChangeLine(Intent intent, long seq) {
+  private static String intentChangeLine(Intent intent, long seq, long eventTimeMs) {
     return Json.object()
         .field("type", "intent_changed")
         .field("seq", seq)
+        .field("eventTimeMs", eventTimeMs) // D-94: the nightly report needs a clock on every decision (the other decision lines follow this one on the same event)
         .field("strategyId", intent.strategyId())
         .field("intentSeq", intent.seq())
         .field("targetPosition", intent.targetPosition())

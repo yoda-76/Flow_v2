@@ -26,6 +26,7 @@ final class LiveOrderTracker {
   private final Supplier<OrderGateway> gateway;
   private final Supplier<PriceCodec> codec;
   private final Consumer<String> log;
+  private final Consumer<String> record; // D-94: structured decision records (order_fill)
   private final Runnable denyArm;
 
   // liveOrderInFlight blocks a second automatic submission while the
@@ -57,10 +58,11 @@ final class LiveOrderTracker {
       java.util.Collections.synchronizedSet(new java.util.HashSet<>());
 
   LiveOrderTracker(Supplier<OrderGateway> gateway, Supplier<PriceCodec> codec,
-      Consumer<String> log, Runnable denyArm) {
+      Consumer<String> log, Consumer<String> record, Runnable denyArm) {
     this.gateway = gateway;
     this.codec = codec;
     this.log = log;
+    this.record = record;
     this.denyArm = denyArm;
   }
 
@@ -234,6 +236,7 @@ final class LiveOrderTracker {
    */
   void onOrderFilled(Order order) {
     log.accept("ORDER_FILLED " + order);
+    recordFill(order);
 
     if (liveOrderInFlight) {
       int targetPosition = pendingBracketTargetPosition;
@@ -302,6 +305,30 @@ final class LiveOrderTracker {
         log.accept("POSITION_MISMATCH_CORRECTED " + gw.cancelAllAndClose(
             "double-fill correction: expected flat, was " + posAfter));
       }
+    }
+  }
+
+  /**
+   * D-94: journal a structured order_fill for this callback. Classifies by identity, before onOrderFilled's own
+   * logic mutates any state: a tracked bracket leg is "stop"/"target"; otherwise, with an entry in flight, the
+   * entry; anything else (e.g. the platform's own close from a flatten) is "untracked". Purely additive and
+   * failure-proof -- nothing here may throw into the order callback.
+   */
+  private void recordFill(Order order) {
+    try {
+      OrderGateway gw = gateway.get();
+      if (gw == null) return;
+      String id = order.getOrderId();
+      Order stop = restingStopOrder;
+      Order target = restingTargetOrder;
+      String role;
+      if (id != null && stop != null && id.equals(stop.getOrderId())) role = "stop";
+      else if (id != null && target != null && id.equals(target.getOrderId())) role = "target";
+      else if (liveOrderInFlight) role = "entry";
+      else role = "untracked";
+      record.accept(gw.describeFill(order, role));
+    } catch (RuntimeException e) {
+      log.accept("ORDER_FILL_RECORD_FAILED " + e);
     }
   }
 

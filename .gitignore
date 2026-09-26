@@ -11,6 +11,9 @@
 # Portable JDK, if fetched here rather than reused from ../motivewave/tools
 /tools/
 
+# Nightly review reports (analysis/daily_report.py) -- generated trading data, not source
+/reports/
+
 # Real exported market data + backtest run output — not source, resolves
 # the "not yet decided" open item in D-79 (docs/dynamic/decisions.md)
 analysis/data/
@@ -24,3 +27,6 @@ flow-core/fixtures/*/replay/
 # worth keeping are copied into flow-core/fixtures/ and committed from there.
 /data/
 /data_take1/
+
+# Python bytecode from analysis/
+__pycache__/

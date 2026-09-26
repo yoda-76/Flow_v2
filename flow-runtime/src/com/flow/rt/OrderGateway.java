@@ -32,6 +32,67 @@ final class OrderGateway {
   }
 
   /**
+   * D-94: a structured journal record for one fill, so the nightly report can show entry/exit price, time and
+   * side without parsing an opaque "ORDER_FILLED bp.aa@4ecca8f8". Every getter is read defensively: a value
+   * that throws or is unavailable becomes a JSON null rather than an exception, because this runs inside an
+   * order callback and must never be able to break order handling. Prices are snapped to the tick grid and
+   * printed as the shortest decimal (a float 4394.8 is otherwise journaled as 4394.7998046875).
+   *
+   * role is the caller's classification (entry / stop / target / untracked). cashBalance and positionAfter are
+   * read at callback time, so they reflect this fill (cash includes fees; the price-based PnL does not).
+   * sdkTotalRealizedPnL is the platform's own figure, journaled raw -- its exact meaning is unverified.
+   */
+  String describeFill(Order order, String role) {
+    com.motivewave.platform.sdk.common.Instrument inst = safe(ctx::getInstrument);
+    Json j = Json.object()
+        .field("type", "order_fill")
+        .field("t", System.currentTimeMillis())
+        .field("role", role)
+        .field("orderId", String.valueOf(safe(order::getOrderId)))
+        .field("instrument", inst == null ? "?" : String.valueOf(safe(inst::getSymbol)))
+        .field("action", Boolean.TRUE.equals(safe(order::isBuy)) ? "BUY" : "SELL");
+    Integer quantity = safe(order::getQuantity);
+    Integer filled = safe(order::getFilled);
+    Long lastFillTimeMs = safe(order::getLastFillTime);
+    Integer positionAfter = safe(ctx::getPosition);
+    Double cashBalance = safe(ctx::getCashBalance);
+    Double sdkRealized = safe(ctx::getTotalRealizedPnL);
+    Double pointValue = inst == null ? null : safe(inst::getPointValue);
+    Double tickSize = inst == null ? null : safe(inst::getTickSize);
+    j.fieldOrNull("quantity", quantity)
+        .fieldOrNull("filled", filled)
+        .fieldOrNull("avgFillPrice", price(inst, safe(order::getAvgFillPrice)))
+        .fieldOrNull("lastFillPrice", price(inst, safe(order::getLastFillPrice)))
+        .fieldOrNull("lastFillTimeMs", lastFillTimeMs)
+        .fieldOrNull("stopPrice", price(inst, safe(order::getStopPrice)))
+        .fieldOrNull("limitPrice", price(inst, safe(order::getLimitPrice)))
+        .fieldOrNull("positionAfter", positionAfter)
+        .fieldOrNull("cashBalance", cashBalance)
+        .fieldOrNull("sdkTotalRealizedPnL", sdkRealized)
+        .fieldOrNull("pointValue", pointValue)
+        .fieldOrNull("tickSize", tickSize);
+    return j.build();
+  }
+
+  private static <T> T safe(java.util.function.Supplier<T> s) {
+    try {
+      return s.get();
+    } catch (RuntimeException e) {
+      return null;
+    }
+  }
+
+  private static Double price(com.motivewave.platform.sdk.common.Instrument inst, Float raw) {
+    if (raw == null || raw.isNaN() || raw == 0f) return null; // 0 = "not filled / no such price" in this SDK
+    Float snapped = raw;
+    if (inst != null) {
+      Float r = safe(() -> inst.round(raw));
+      if (r != null) snapped = r;
+    }
+    return Double.parseDouble(Float.toString(snapped));
+  }
+
+  /**
    * D-24/D-61: refuse to arm if the account already holds a position or
    * has resting orders on activation/reload -- adopting either silently
    * is how a small loss becomes a large one, and flattening them would

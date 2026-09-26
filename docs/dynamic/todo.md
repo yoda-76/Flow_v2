@@ -181,7 +181,13 @@ Two decisions only the user can make, both gate the safety work below:
 
 **Phase 2 — the nightly review (new requirement, 2026-09-24).** The
 1–2 hour evening session needs tooling, not raw logs:
-- [ ] An automatic **daily report** (extends `analysis/journal_summary.py`,
+- [x] (2026-09-26, D-94) **Daily report built** — `python
+  analysis/daily_report.py [--date …]`, 28 tests + mutation-checked, journals
+  got structured `order_fill` records and timestamps to feed it. **Pending
+  live check**: run it on the first real armed Sim session's journal (needs
+  the deploy) — confirm the fill prices/times are real, that `cash Δ` and
+  `sdkTotalRealizedPnL` mean what the report assumes, and adjust. Original
+  spec, kept for reference: an automatic **daily report** (extends `analysis/journal_summary.py`,
   D-76): every Sim trade with entry/exit time, side, prices, the intent
   reason, bracket outcome and PnL; every intent the risk chain blocked and
   why; disarms / kill switch / position-mismatch events; system health

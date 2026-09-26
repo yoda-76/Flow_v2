@@ -3614,6 +3614,64 @@ readable rather than being silently rewritten.
     system disarms or trips the kill switch) is **not** covered by this and
     stays open.
 
+- **D-94** (2026-09-26) — **Nightly review report, and the journal fields it
+  needed.** `analysis/daily_report.py` (todo Phase 2, first item) turns one
+  trading day's journals into a single Markdown page; `python
+  analysis/daily_report.py [--date YYYY-MM-DD]`, also written to
+  `reports/<date>.md` (gitignored). The trading day is `[17:00 CT D-1,
+  17:00 CT D)` — SessionBoundary's session, named by the day it ends in.
+  - **Finding that shaped it**: the journal could not answer "what did each
+    trade do". A fill was journaled only as `ORDER_FILLED bp.aa@4ecca8f8`
+    (the SDK `Order`'s object id): no price, time, role (entry / stop /
+    target), position or PnL — and most decision lines carried no time at
+    all (only heartbeats did). The report can't be built on that, so three
+    **additive** journal changes went in first (no order logic touched):
+    a structured **`order_fill`** record (`OrderGateway.describeFill`, called
+    from `LiveOrderTracker.onOrderFilled` before any state changes; role,
+    tick-snapped fill price, fill time, quantity, position after, cash
+    balance, point value, the SDK's own realized-PnL figure journaled raw;
+    every getter read defensively and the whole thing wrapped so a failure
+    logs `ORDER_FILL_RECORD_FAILED` and can never break order handling),
+    **`t`** (wall clock) on every `log` line, and **`eventTimeMs`** on
+    `intent_changed`.
+  - **Contents**: summary; *needs attention* first (kill switch, disarms,
+    position mismatch, refuse-to-arm, entry rejected/cancelled, fills with no
+    trade to attach to, still-open trades, record failures); trades (side,
+    entry/exit time in CT plus the India-clock time, hold, prices, **what
+    closed it** — stop, target, session-end flatten, kill switch,
+    double-fill correction — points, gross $, platform cash Δ, why entered,
+    bracket levels); what the risk chain blocked, grouped, with 'not armed'
+    separated from real limits; session-end flatten events; sessions with
+    heartbeat gaps; account at activation (the Sim check); config in force,
+    calling out a change between sessions; recorded-data health (file present,
+    lines, size, first/last, longest gap — flagged only for the per-second
+    constructs, the sparse ones being sparse by design).
+  - **Money**: `gross $` = points × point value × qty, before fees. `cash Δ`
+    = the platform's cash at exit minus at submission — includes fees, but
+    the platform may update it after the fill callback, so it is indicative.
+    `sdkTotalRealizedPnL` is journaled raw; its meaning is **unverified**.
+  - **Degrades, doesn't fail**: journals from before this change (all of
+    them today) get their entries listed without prices, records with no
+    time inherit the last one and print `~`. Run against the real
+    2026-09-21 Sim journals it lists all 13 real orders and both
+    disarm-after-cancel alerts.
+  - **No tz database on this Windows Python** (`zoneinfo` can't find
+    `America/Chicago`), so US Central time is computed from the 2007+ DST
+    rule directly rather than installing a package; tested against real
+    recorded timestamps, both DST boundaries, and `data/*/20718.jsonl` ⇔
+    trading day 2026-09-23.
+  - **Tests**: 28 in `analysis/test_daily_report.py` (stdlib unittest, run
+    by `build.sh` when python is present); 17 mutations, 16 caught, the last
+    an equivalent mutant (the kill switch labels a close from two redundant
+    signals). The tests caught a real bug in the first draft (the bracket
+    levels logged *after* the entry fill were read too early).
+  - **Not verified**: a REAL armed session's journal. The tests use
+    synthetic journals shaped like the real lines; the SDK's real
+    `getAvgFillPrice()`/`getLastFillTime()` values are unseen. First thing to
+    check after the next live Sim window.
+  - **Not built yet** (todo Phase 2, still open): the trade-against-data
+    viewer and the "is it alive" one-liner.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

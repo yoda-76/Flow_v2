@@ -49,6 +49,7 @@ public final class LiveOrderTrackerTest {
     final OrderGateway gw = new OrderGateway(broker.ctx());
     final PriceCodec codec = new PriceCodec(0.1);
     final List<String> log = new ArrayList<>();
+    final List<String> records = new ArrayList<>(); // structured decision records (order_fill)
     boolean armDenied = false;
     boolean gatewayAvailable = true;
     final LiveOrderTracker tracker;
@@ -56,7 +57,8 @@ public final class LiveOrderTrackerTest {
 
     Rig() {
       codec.toTicks(4300.0); // first price seen becomes the anchor: tick 0 == 4300.0
-      tracker = new LiveOrderTracker(() -> gatewayAvailable ? gw : null, () -> codec, log::add, () -> armDenied = true);
+      tracker = new LiveOrderTracker(() -> gatewayAvailable ? gw : null, () -> codec, log::add, records::add,
+          () -> armDenied = true);
     }
 
     /** Opening intent with stop/target in ticks from the anchor. */
@@ -99,6 +101,9 @@ public final class LiveOrderTrackerTest {
     testSessionFlattenCancelsStrayOrdersWithoutAClose();
     testSessionFlattenRetriesUntilFlat();
     testSessionFlattenWithNoGateway();
+    testFillRecordsCarryRoleAndPrices();
+    testFillRecordForAFlattenCloseIsUntracked();
+    testFillRecordFailureNeverBreaksOrderHandling();
 
     if (failures > 0) {
       System.err.println(failures + " FAILURE(S)");
@@ -318,6 +323,71 @@ public final class LiveOrderTrackerTest {
     check("no gateway -> bracket skipped and logged, no exception", r.logged("LIVE_BRACKET_SKIPPED"));
     checkEq("no bracket orders", r.broker.allOrders().size(), 1);
     check("in-flight cleared", !r.tracker.orderInFlight());
+  }
+
+  // ---- D-94: structured fill records -----------------------------------
+
+  private static void testFillRecordsCarryRoleAndPrices() {
+    Rig r = new Rig();
+    r.broker.setCash(98_640.0);
+    r.reconcile(1, -10, 20);
+    r.broker.fill(r.entry(), 4300.1f, 1_790_000_000_000L);
+    r.tracker.onOrderFilled(r.entry().order());
+    checkEq("one fill record after the entry", r.records.size(), 1);
+    String e = r.records.get(0);
+    check("entry record: type, role, side, instrument", e.contains("\"type\":\"order_fill\"")
+        && e.contains("\"role\":\"entry\"") && e.contains("\"action\":\"BUY\"") && e.contains("\"instrument\":\"GC\""));
+    check("entry record: clean fill price, not float noise", e.contains("\"avgFillPrice\":4300.1,"));
+    check("entry record: fill time, position after, cash, point value", e.contains("\"lastFillTimeMs\":1790000000000")
+        && e.contains("\"positionAfter\":1") && e.contains("\"cashBalance\":98640.0") && e.contains("\"pointValue\":100.0"));
+    check("entry record: a market order has no stop/limit price", e.contains("\"stopPrice\":null") && e.contains("\"limitPrice\":null"));
+    check("entry record: wall clock present", e.contains("\"t\":"));
+
+    FakeBroker.FakeOrder stop = r.broker.allOrders().get(1);
+    r.broker.fill(stop, 4299.0f, 1_790_000_060_000L);
+    r.tracker.onOrderFilled(stop.order());
+    checkEq("a second fill record after the stop", r.records.size(), 2);
+    String s = r.records.get(1);
+    check("stop record: role stop, SELL, at the stop price", s.contains("\"role\":\"stop\"") && s.contains("\"action\":\"SELL\"")
+        && s.contains("\"avgFillPrice\":4299.0,") && s.contains("\"stopPrice\":4299.0"));
+    check("stop record: position after is flat", s.contains("\"positionAfter\":0"));
+
+    Rig t = new Rig();
+    t.openLong();
+    FakeBroker.FakeOrder target = t.broker.allOrders().get(2);
+    t.broker.fill(target, 4302.0f, 1_790_000_090_000L);
+    t.tracker.onOrderFilled(target.order());
+    String tr = t.records.get(t.records.size() - 1);
+    check("target record: role target at the limit price", tr.contains("\"role\":\"target\"")
+        && tr.contains("\"limitPrice\":4302.0") && tr.contains("\"avgFillPrice\":4302.0,"));
+  }
+
+  private static void testFillRecordForAFlattenCloseIsUntracked() {
+    Rig r = new Rig();
+    r.openLong();
+    int before = r.records.size();
+    r.tracker.flattenForSessionEnd("session-end flatten window"); // resets tracking, then the platform's close fills
+    FakeBroker.FakeOrder platformClose = r.broker.restingOrder("MARKET", "SELL", 1, 4301f);
+    r.broker.fill(platformClose, 4301.0f, 1_790_000_120_000L);
+    r.tracker.onOrderFilled(platformClose.order());
+    checkEq("one more record", r.records.size(), before + 1);
+    check("a fill nothing tracks is recorded as untracked", r.records.get(before).contains("\"role\":\"untracked\""));
+  }
+
+  /** The record is diagnostics only: a failing recorder must not stop the bracket being placed. */
+  private static void testFillRecordFailureNeverBreaksOrderHandling() {
+    FakeBroker broker = new FakeBroker();
+    OrderGateway gw = new OrderGateway(broker.ctx());
+    PriceCodec codec = new PriceCodec(0.1);
+    codec.toTicks(4300.0);
+    List<String> log = new ArrayList<>();
+    LiveOrderTracker tracker = new LiveOrderTracker(() -> gw, () -> codec, log::add,
+        line -> { throw new RuntimeException("journal exploded"); }, () -> {});
+    tracker.reconcileLive(new Intent("s", 1, 1, -10, 20, "test"), gw);
+    broker.fill(broker.allOrders().get(0));
+    tracker.onOrderFilled(broker.allOrders().get(0).order());
+    checkEq("the bracket was still submitted", broker.allOrders().size(), 3);
+    check("and the failure was logged, not thrown", log.stream().anyMatch(l -> l.startsWith("ORDER_FILL_RECORD_FAILED")));
   }
 
   // ---- D-92: session-end flatten ---------------------------------------

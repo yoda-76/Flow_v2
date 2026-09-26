@@ -313,6 +313,10 @@ public final class SessionEndTest {
     journal.flushAndClose();
 
     List<String> lines = Files.readAllLines(dir.resolve("decisions.jsonl"));
+    check("D-94: every intent_changed carries the event time the nightly report needs",
+        lines.stream().filter(l -> l.contains("\"type\":\"intent_changed\"")).allMatch(l -> l.contains("\"eventTimeMs\":"))
+            && lines.stream().anyMatch(l -> l.contains("\"type\":\"intent_changed\"")
+                && l.contains("\"eventTimeMs\":" + ct(23, 15, 50, 0))));
     check("the block is journaled as a session_open verdict",
         lines.stream().anyMatch(l -> l.contains("risk_verdict") && l.contains("session_open") && l.contains("\"allowed\":false")));
   }

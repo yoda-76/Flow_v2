@@ -53,6 +53,8 @@ final class FakeBroker {
     final int qty;
     final Float price;    // null for MARKET
     int filled;
+    float fillPrice;     // 0 until filled
+    long fillTimeMs;     // 0 until filled
     boolean submitted;
     boolean cancelled;
     boolean rejected;
@@ -78,6 +80,7 @@ final class FakeBroker {
   private final String symbol;
   private int position;
   private double cash = 50_000;
+  private float marketPrice = 4300f; // fill price used by fill(o) for a MARKET order
   private int nextId = 1;
   private final List<FakeOrder> all = new ArrayList<>();
   private final List<String> calls = new ArrayList<>();
@@ -134,10 +137,24 @@ final class FakeBroker {
    * order stops being active. Does NOT invoke any callback -- the test does.
    */
   void fill(FakeOrder o) {
+    fill(o, o.price != null ? o.price : marketPrice, 1_000L * (nextId + o.filled));
+  }
+
+  /** Fill at an explicit price and time (a stop/limit fills at its own price by default). */
+  void fill(FakeOrder o, float price, long timeMs) {
     if (o.isFilled()) throw new IllegalStateException("already filled: " + o);
     o.filled = o.qty;
+    o.fillPrice = price;
+    o.fillTimeMs = timeMs;
     position += "BUY".equals(o.action) ? o.qty : -o.qty;
+    // Cash/PnL are not modelled: cash only changes via setCash().
   }
+
+  /** Arrange the account cash balance the fake reports. */
+  void setCash(double c) { cash = c; }
+
+  /** Arrange the price a MARKET order fills at. */
+  void setMarketPrice(float p) { marketPrice = p; }
 
   /** The broker rejects the order: it never becomes active. Does NOT invoke any callback. */
   void reject(FakeOrder o) {
@@ -181,6 +198,7 @@ final class FakeBroker {
           throw unmodelled("OrderContext", m);
         case "getInstrument": return instrument;
         case "getCashBalance": return cash;
+        case "getTotalRealizedPnL": return 0d; // ASSUMED zero; the fake models no PnL
         case "getActiveOrders": return new ArrayList<Object>(activeOrders().stream().map(FakeOrder::order).toList());
         case "createMarketOrder":
           // Only the (OrderAction, int) overload OrderAdapter uses.
@@ -241,6 +259,9 @@ final class FakeBroker {
         case "getOrderId": return o.id;
         case "getQuantity": return o.qty;
         case "getFilled": return o.filled;
+        case "getAvgFillPrice":
+        case "getLastFillPrice": return o.fillPrice;
+        case "getLastFillTime": return o.fillTimeMs;
         case "isFilled": return o.isFilled();
         case "isActive": return o.isActive();
         case "isCancelled": return o.cancelled;
@@ -262,6 +283,11 @@ final class FakeBroker {
     public Object invoke(Object proxy, Method m, Object[] args) {
       switch (m.getName()) {
         case "getSymbol": return symbol;
+        case "getPointValue": return 100.0;   // @GC
+        case "getTickSize": return 0.1;
+        case "round":
+          if (args[0] instanceof Float f) return Math.round(f * 10f) / 10f; // snap to 0.1
+          throw unmodelled("Instrument", m);
         case "toString": return symbol;
         case "hashCode": return System.identityHashCode(proxy);
         case "equals": return proxy == args[0];

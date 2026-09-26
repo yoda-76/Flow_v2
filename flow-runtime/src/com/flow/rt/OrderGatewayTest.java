@@ -51,6 +51,7 @@ public final class OrderGatewayTest {
     testCloseAtMarketLeavesRestingOrders();
     testKillSwitchFlattensPositionAndOrders();
     testCancelAllOrdersNeverSendsAClose();
+    testDescribeFill();
     testFullLifecycleStopFills();
     testFullLifecycleTargetFillsShort();
 
@@ -231,6 +232,29 @@ public final class OrderGatewayTest {
     checkEq("nothing resting any more", b.activeOrders().size(), 0);
     check("a blanket cancel was issued", b.called("cancelOrders(all)"));
     check("NO closeAtMarket was sent to the flat account", !b.called("closeAtMarket"));
+  }
+
+  /** D-94: the structured fill record the nightly report reads. */
+  private static void testDescribeFill() {
+    FakeBroker b = new FakeBroker();
+    OrderGateway gw = new OrderGateway(b.ctx());
+    gw.submitRealEntry(false, 1, "enter short");
+    FakeBroker.FakeOrder e = b.activeOrders().get(0);
+    b.fill(e, 4394.8f, 1_790_000_000_500L);
+    String line = gw.describeFill(e.order(), "entry");
+    check("describeFill: every field the report reads is present",
+        line.contains("\"type\":\"order_fill\"") && line.contains("\"role\":\"entry\"")
+            && line.contains("\"orderId\":\"" + e.id + "\"") && line.contains("\"action\":\"SELL\"")
+            && line.contains("\"quantity\":1") && line.contains("\"filled\":1")
+            && line.contains("\"avgFillPrice\":4394.8,") && line.contains("\"lastFillPrice\":4394.8,")
+            && line.contains("\"lastFillTimeMs\":1790000000500") && line.contains("\"positionAfter\":-1")
+            && line.contains("\"pointValue\":100.0") && line.contains("\"tickSize\":0.1"));
+
+    // An unfilled order has no fill price: JSON null, never 0.
+    FakeBroker.FakeOrder pending = b.restingOrder("LIMIT", "BUY", 1, 4390f);
+    String unfilled = gw.describeFill(pending.order(), "target");
+    check("an unfilled order journals null prices, not 0", unfilled.contains("\"avgFillPrice\":null")
+        && unfilled.contains("\"limitPrice\":4390.0"));
   }
 
   // ---- whole lifecycle, as FlowRuntimeStudy sequences it ---------------

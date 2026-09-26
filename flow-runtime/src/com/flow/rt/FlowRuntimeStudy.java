@@ -200,7 +200,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // self-cancel bookkeeping), extracted so a FakeBroker can drive it. Declared after gateway/
   // priceCodec/armDenied, which its suppliers read.
   private final LiveOrderTracker liveOrders =
-      new LiveOrderTracker(() -> gateway, () -> priceCodec, this::logLine, () -> armDenied = true);
+      new LiveOrderTracker(() -> gateway, () -> priceCodec, this::logLine, this::journalDecision, () -> armDenied = true);
 
   // Redraw throttling -- called from onTick, a MotiveWave-invoked
   // callback thread, never a spawned one (see VolumeProfileSnapshot's
@@ -1303,11 +1303,19 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     logLine("ORDER_MODIFIED " + order);
   }
 
+  /** D-94: a structured decision record (e.g. order_fill) written as-is; the caller supplies its own time fields. */
+  private void journalDecision(String jsonLine) {
+    JournalWriter j = journal;
+    if (j != null) {
+      j.writeDecision(0, jsonLine);
+    }
+  }
+
   private void logLine(String s) {
     info("FLOW_RUNTIME: " + s);
     JournalWriter j = journal;
     if (j != null) {
-      j.writeDecision(0, Json.object().field("type", "log").field("msg", s).build());
+      j.writeDecision(0, Json.object().field("type", "log").field("t", System.currentTimeMillis()).field("msg", s).build());
     }
   }
 }
