@@ -426,8 +426,8 @@ def render(trade, num, day, ctx, opts):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--logs", default="logs")
-    ap.add_argument("--data", default="data")
+    ap.add_argument("--logs", default=dr.default_dir("logs"))
+    ap.add_argument("--data", default=dr.default_dir("data"))
     ap.add_argument("--date", help="trading day YYYY-MM-DD (default: the day of the newest journal record)")
     ap.add_argument("--trade", type=int, help="trade number from the daily report (omit to list the day's trades)")
     ap.add_argument("--before", type=int, default=300, help="seconds of price history before entry (default 300)")
@@ -492,7 +492,7 @@ def main(argv=None):
     text = render(trade, args.trade, day, ctx, opts)
     print(text)
     if not args.no_file:
-        out = Path(args.out) if args.out else Path("reports") / f"trade_{day.isoformat()}_{args.trade}.md"
+        out = Path(args.out) if args.out else Path(dr.default_dir("reports")) / f"trade_{day.isoformat()}_{args.trade}.md"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(text, encoding="utf-8")
         print(f"\n(written to {out})", file=sys.stderr)

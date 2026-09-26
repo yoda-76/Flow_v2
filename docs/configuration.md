@@ -177,9 +177,14 @@ created if missing; `config/risk.json` is **not** (a missing file means every
 default, and the log shows `RISK_CONFIG_MISSING`), so copy `config/` across
 when setting up a new home.
 
-Not covered by `FLOW_HOME` yet: the `analysis/*.py` tools still default to
-`logs`/`data` relative to the directory you run them from (pass `--logs` /
-`--data`) (`docs/dynamic/todo.md`, Phase 4).
+**The `analysis/*.py` tools read the same variable (D-101).** With `FLOW_HOME`
+set, `daily_report.py`, `status.py` and `trade_view.py` default to
+`$FLOW_HOME/logs`, `$FLOW_HOME/data` and write pages to `$FLOW_HOME/reports`, so
+they can be run from any directory. With it **unset** they behave as before —
+relative to the directory you run them from (run them from the repo root) — there
+is deliberately no built-in absolute default on the Python side. `--logs`,
+`--data` and `--out` still override. Unlike the runtime, the tools read the
+variable on every run, so no restart is involved.
 
 ### Where the build finds the JDK, the SDK jar and MotiveWave (D-100)
 

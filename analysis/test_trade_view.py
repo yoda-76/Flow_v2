@@ -7,9 +7,11 @@ Run:  python analysis/test_trade_view.py
 """
 
 import json
+import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -321,6 +323,20 @@ class TestCli(Base):
 
     def test_missing_logs_dir(self):
         self.assertEqual(tv.main(["--logs", str(self.root / "nope"), "--no-file"]), 2)
+
+    def test_flow_home_supplies_logs_data_and_the_reports_folder(self):
+        # D-101: no --logs/--data/--out; the page lands in $FLOW_HOME/reports.
+        self.long_trade()
+        self.write_construct("footprint", [candle(E0 + 1000, 4300, 4300.2, 4299.9, 4300.1, [(4300.0, 1, 0)])])
+        with mock.patch.dict(os.environ, {"FLOW_HOME": str(self.root)}):
+            self.assertEqual(tv.main(["--date", DAY.isoformat(), "--trade", "1"]), 0)
+        page = self.root / "reports" / f"trade_{DAY.isoformat()}_1.md"
+        self.assertTrue(page.exists())
+        text = page.read_text(encoding="utf-8")
+        self.assertIn("# Trade 1", text)
+        self.assertNotIn("No footprint data was recorded", text, "the recorded data was found under $FLOW_HOME/data")
+        with mock.patch.dict(os.environ, {"FLOW_HOME": str(self.root / "elsewhere")}):
+            self.assertEqual(tv.main(["--no-file"]), 2)
 
 
 if __name__ == "__main__":

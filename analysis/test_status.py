@@ -6,10 +6,13 @@ deterministic.
 Run:  python analysis/test_status.py
 """
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -292,6 +295,24 @@ class TestCli(Base):
         args = ["--logs", str(self.logs), "--data", str(self.data), "--now", str(NOW)]
         self.assertEqual(st.main(args), 0)
         self.assertEqual(st.main(["--logs", str(self.root / "nope"), "--data", str(self.data), "--now", str(NOW)]), 2)
+
+    def test_flow_home_supplies_the_defaults_and_flags_override_it(self):
+        # D-101: with FLOW_HOME set, no --logs/--data is needed; an explicit --logs still wins.
+        j = self.journal()
+        j.heartbeat(NOW - 2000)
+        self.write(j)
+        with mock.patch.dict(os.environ, {"FLOW_HOME": str(self.root)}):
+            self.assertEqual(st.main(["--now", str(NOW)]), 0)
+        # ...and the data directory comes from the home too, not just the logs.
+        self.touch_data("vwap", 3)
+        self.touch_data("liquidity_map", 5)
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"FLOW_HOME": str(self.root)}), contextlib.redirect_stdout(buf):
+            st.main(["--now", str(NOW)])
+        self.assertIn("data: ok", buf.getvalue())
+        with mock.patch.dict(os.environ, {"FLOW_HOME": str(self.root / "elsewhere")}):
+            self.assertEqual(st.main(["--now", str(NOW)]), 2, "a home with no logs is DOWN/error, not a crash")
+            self.assertEqual(st.main(["--logs", str(self.logs), "--data", str(self.data), "--now", str(NOW)]), 0)
 
     def test_ago_formatting(self):
         self.assertEqual(st.ago(4000), "4s")

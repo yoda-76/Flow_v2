@@ -128,8 +128,8 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
   from `com.flow.core.FlowHome` (property `flow.home` / env `FLOW_HOME` /
   today's default); tested and mutation-checked, **not deployed** (one more
   thing the next `build.sh` ships; check the `FLOW_HOME root=…` log line at
-  the next activation). Still hard-coded, deliberately left: `analysis/*.py`
-  cwd defaults. (`build/*.sh` paths done as D-100.)
+  the next activation). (`build/*.sh` paths done as D-100, `analysis/*.py`
+  defaults as D-101.)
 - **VAH/VAL/zones replay comparison** on the committed fixture (only POC,
   totals, buckets are checked today).
 - **Runbook draft** (Phase 4): install, MotiveWave + Rithmic setup, Sim account +
@@ -361,8 +361,9 @@ Two decisions only the user can make, both gate the safety work below:
 **Phase 4 — cloud readiness (do last, but do everything possible before).**
 - [~] Hardcoded `C:/yadvendra/...` paths: **runtime done 2026-09-26 (D-98,
   `FLOW_HOME`, not deployed); build scripts done 2026-09-26 (D-100,
-  `FLOW_JDK_BIN` / `MWAVE_SDK_JAR` / `MOTIVEWAVE_EXT_DIR`)**. Remaining:
-  `analysis/*.py` defaults, and the experiments' log paths in `../motivewave`.
+  `FLOW_JDK_BIN` / `MWAVE_SDK_JAR` / `MOTIVEWAVE_EXT_DIR`); analysis tools done
+  2026-09-26 (D-101, they read `FLOW_HOME`)**. Remaining: the experiments' log
+  paths in `../motivewave` (a different repo).
 - [ ] Runbook: install, MotiveWave + Rithmic account setup, Sim account
   enablement and "Sim Trade Only", `.env` handling (user-only), auto-start,
   time zone, remote monitoring.

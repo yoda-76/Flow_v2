@@ -3909,6 +3909,26 @@ readable rather than being silently rewritten.
     on a non-Windows machine (the `:` separator and the PATH fall-back are
     tested only by the resolver test, not by a real Linux build).
 
+- **D-101** (2026-09-26) — **The analysis tools read `FLOW_HOME` too.**
+  `daily_report.py`, `status.py` and `trade_view.py` defaulted `--logs`/`--data`
+  (and the reports folder) to `logs`/`data`/`reports` relative to the current
+  directory, so on another machine they only worked from the repo root. Now a
+  shared `default_dir()` (in `daily_report.py`) returns `$FLOW_HOME/<name>` when
+  `FLOW_HOME` — the variable the runtime reads (D-98) — is set, and the old
+  relative name when it is not; the explicit flags still override. With it unset,
+  behaviour is identical to before.
+  - **Deliberate asymmetry**: the runtime falls back to today's absolute path
+    (`C:/yadvendra/trading/FLOW_V2`); the Python tools do **not** — an unset
+    variable means "the directory you are in", as before. An absolute default
+    baked into a script the user runs from the repo root would only add a way to
+    read the wrong folder.
+  - **Tests**: +8 (`default_dir` unset/blank/padded/set, real environment,
+    reading logs + data and writing the report under the home with no flags, a
+    home with no logs is a clean error, explicit flags beat the home); 12
+    mutations, all caught after two survivors (the `--data` default in the report
+    and the status line was never asserted) got tests. **Verified only against
+    synthetic journals** — nothing was run with `FLOW_HOME` on a second machine.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

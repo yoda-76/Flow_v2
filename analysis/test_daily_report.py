@@ -12,10 +12,14 @@ window (todo.md).
 Run:  python analysis/test_daily_report.py
 """
 
+import contextlib
+import io
 import json
+import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -609,6 +613,71 @@ class TestCli(Base):
 
     def test_empty_logs_is_an_error_not_a_crash(self):
         self.assertEqual(dr.main(["--logs", str(self.logs), "--data", str(self.data), "--no-file"]), 2)
+
+
+class TestFlowHomeDefaults(Base):
+    """D-101: logs/data/reports default under $FLOW_HOME when it is set, and are unchanged (relative) when not."""
+
+    def env(self, **kw):
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("FLOW_HOME", None)
+        os.environ.update(kw)
+
+    def test_default_dir_unset_is_the_old_relative_name(self):
+        self.assertEqual(dr.default_dir("logs", {}), "logs")
+        self.assertEqual(dr.default_dir("reports", {}), "reports")
+
+    def test_blank_counts_as_unset(self):
+        self.assertEqual(dr.default_dir("data", {"FLOW_HOME": ""}), "data")
+        self.assertEqual(dr.default_dir("data", {"FLOW_HOME": "   "}), "data")
+
+    def test_set_puts_each_dir_under_the_home(self):
+        home = {"FLOW_HOME": str(self.root)}
+        self.assertEqual(dr.default_dir("logs", home), str(self.root / "logs"))
+        self.assertEqual(dr.default_dir("data", home), str(self.root / "data"))
+        self.assertEqual(dr.default_dir("reports", home), str(self.root / "reports"))
+        self.assertEqual(dr.default_dir("logs", {"FLOW_HOME": f"  {self.root}  "}), str(self.root / "logs"))
+
+    def test_default_dir_reads_the_real_environment_when_no_mapping_is_given(self):
+        self.env(FLOW_HOME=str(self.root))
+        self.assertEqual(dr.default_dir("logs"), str(self.root / "logs"))
+
+    def test_cli_reads_and_writes_under_the_home_with_no_flags(self):
+        self.journal().heartbeat(ct_ms(DAY, 10)).write()
+        self.env(FLOW_HOME=str(self.root))
+        self.assertEqual(dr.main(["--date", DAY.isoformat()]), 0)
+        self.assertTrue((self.root / "reports" / f"{DAY.isoformat()}.md").exists(),
+                        "the report lands in $FLOW_HOME/reports, not the current directory")
+
+    def test_the_data_directory_comes_from_the_home_too(self):
+        self.journal().heartbeat(ct_ms(DAY, 10)).write()
+        d = self.root / "data" / "vwap"
+        d.mkdir(parents=True)
+        base = ct_ms(DAY, 10)
+        (d / "20718.jsonl").write_text("\n".join(
+            [json.dumps({"type": "header", "construct": "vwap", "sessionId": 20718, "intervalSeconds": 1, "t": base})]
+            + [json.dumps({"t": base + i * 1000, "v": 1}) for i in range(3)]) + "\n", encoding="utf-8")
+        self.env(FLOW_HOME=str(self.root))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(dr.main(["--date", DAY.isoformat(), "--no-file"]), 0)
+        self.assertIn("| vwap | ok |", buf.getvalue())
+        self.assertNotIn("No data directory found", buf.getvalue())
+
+    def test_a_home_with_no_logs_is_an_error(self):
+        self.env(FLOW_HOME=str(self.root / "elsewhere"))
+        self.assertEqual(dr.main(["--no-file"]), 2)
+
+    def test_explicit_flags_beat_the_home(self):
+        self.journal().heartbeat(ct_ms(DAY, 10)).write()
+        self.env(FLOW_HOME=str(self.root / "elsewhere"))
+        out = self.root / "explicit.md"
+        rc = dr.main(["--logs", str(self.logs), "--data", str(self.data), "--date", DAY.isoformat(), "--out", str(out)])
+        self.assertEqual(rc, 0)
+        self.assertTrue(out.exists())
+        self.assertFalse((self.root / "elsewhere").exists())
 
 
 if __name__ == "__main__":

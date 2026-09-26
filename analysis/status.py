@@ -182,8 +182,8 @@ def recent_sessions(logs: Path, since_ms):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--logs", default="logs")
-    ap.add_argument("--data", default="data")
+    ap.add_argument("--logs", default=dr.default_dir("logs"))
+    ap.add_argument("--data", default=dr.default_dir("data"))
     ap.add_argument("--now", type=int, help="epoch ms to treat as now (for testing)")
     args = ap.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):

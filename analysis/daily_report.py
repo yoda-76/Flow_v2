@@ -33,6 +33,7 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 import sys
 from collections import Counter, OrderedDict
@@ -42,6 +43,15 @@ from pathlib import Path
 UTC = timezone.utc
 IST_OFFSET_MS = 5 * 3600 * 1000 + 30 * 60 * 1000  # India: fixed +05:30, no DST
 DAY_MS = 86_400_000
+
+
+def default_dir(name: str, environ=None) -> str:
+    """Default location of logs / data / reports (D-101). With the FLOW_HOME environment variable set -- the same
+    variable the runtime reads (D-98) -- it is $FLOW_HOME/<name>; otherwise just <name>, relative to where the tool
+    is run from, exactly as before. Unlike the runtime there is deliberately no built-in absolute default: these
+    tools are run from the repo root. --logs/--data/--out still override."""
+    home = (os.environ if environ is None else environ).get("FLOW_HOME", "").strip()
+    return str(Path(home) / name) if home else name
 
 # ---------------------------------------------------------------------------
 # Time: US Central without a tz database
@@ -732,8 +742,8 @@ def newest_time(sessions):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--logs", default="logs")
-    ap.add_argument("--data", default="data")
+    ap.add_argument("--logs", default=default_dir("logs"))
+    ap.add_argument("--data", default=default_dir("data"))
     ap.add_argument("--date", help="trading day YYYY-MM-DD (default: the day of the newest journal record)")
     ap.add_argument("--out", help="write here too (default reports/<date>.md)")
     ap.add_argument("--no-file", action="store_true", help="print only, write no file")
@@ -759,7 +769,7 @@ def main(argv=None):
     text = render(model)
     print(text)
     if not args.no_file:
-        out = Path(args.out) if args.out else Path("reports") / f"{day.isoformat()}.md"
+        out = Path(args.out) if args.out else Path(default_dir("reports")) / f"{day.isoformat()}.md"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(text, encoding="utf-8")
         print(f"\n(written to {out})", file=sys.stderr)
