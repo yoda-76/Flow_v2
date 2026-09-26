@@ -89,7 +89,7 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
    big-trade **Min Size back to 10** (it is 1 as a test value, D-90) — an
    already-added study keeps its saved value, so change it in the study or
    re-add it.
-3. **Armed Sim session (covers D-91, D-92, D-94, D-97 in one go).** Mode
+3. **Armed Sim session (covers D-91, D-92, D-94, D-97, D-99 in one go).** Mode
    `SIM_LIVE`, Armed checked, a strategy that trades (`lvn_fade_test` trades
    often). To test the flatten inside a watched window, edit
    `config/risk.json` (the user edits it): `flattenLeadMinutes` ≈ 400 and
@@ -104,6 +104,9 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
    - D-92: `SESSION_FLATTEN_DUE`, a `SESSION_FLATTEN` line, account flat, **no
      disarm**, nothing re-entering until 17:00 CT; and a flat account gets **no**
      order at all in the window.
+   - D-99: the same 1-lot flow shows none of `LIVE_ENTRY_PARTIAL_FILL`,
+     `LIVE_BRACKET_SIZE_FROM_FILL`, `LIVE_ENTRY_PARTIAL_FLATTENED` (the partial-fill
+     rule is provisional — rethink it with what this shows).
    - D-94: an `order_fill` record per fill with real prices/times.
    - D-97: an `arming_state` record when you arm; `DENIED` if something
      disarms it.
@@ -296,9 +299,19 @@ Two decisions only the user can make, both gate the safety work below:
     `f9dd5f2`'s Study changes first, diagnose second. Fold this into the
     same window as the 09-25/26 recording take so one short monitored
     window covers both.
-  - [ ] §9 (`getFilled()` bracket sizing) is still open and untested:
-    `FakeBroker` only fills whole orders. Add partial fills to the fake
-    first, then a characterization test, then the fix.
+  - [x] §9 (`getFilled()` bracket sizing): **fixed 2026-09-26 (D-99)** —
+    `FakeBroker.fillPartial`, three defects found and fixed (over-sized bracket,
+    wrong-way fill on a cancelled remainder, naked partial position); an entry
+    now resolves only when completely filled. **Provisional — the user wants it
+    rethought after the live test.** Built and mutation-checked, **not
+    deployed**.
+    - [ ] **PENDING LIVE TEST (same window as the D-91 one below)**: a normal
+      1-lot Sim entry → bracket → leg fill must look exactly as before (the new
+      log lines `LIVE_ENTRY_PARTIAL_FILL` / `LIVE_BRACKET_SIZE_FROM_FILL` /
+      `LIVE_ENTRY_PARTIAL_FLATTENED` must **not** appear). A real partial fill
+      needs size > 1 (`maxContracts` is 1) — until then the per-slice vs
+      completion-only question and the "partial that never completes" hole
+      (no timeout) stay open; revisit D-99 with whatever that shows.
 
 **Phase 2 — the nightly review (new requirement, 2026-09-24).** The
 1–2 hour evening session needs tooling, not raw logs:

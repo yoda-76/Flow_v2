@@ -3824,6 +3824,60 @@ readable rather than being silently rewritten.
     is deployed yet. First live check: the `FLOW_HOME root=… source=…` line at
     the next activation (expect `built-in default` and today's path).
 
+- **D-99** (2026-09-26) — **Partial fills: an entry is resolved only when it
+  is completely filled — PROVISIONAL, to be rethought after the first live
+  test.** (plumbingEdgeCases.md §9.) Chosen by the user from two options, the
+  same day, on the explicit understanding that the live test may reopen it.
+  - **Why it was needed**: `FakeBroker.fillPartial` (new: running `getFilled()`,
+    position moves by the slice) exposed three defects in a 3-lot entry filling
+    in slices — the bracket was sized from the stashed intent, not the fill (B);
+    a cancelled remainder after a per-slice callback ended **short 2** before
+    the D-87 check flattened it (C); and a partial fill followed by a cancel left
+    a **held position with no bracket** (D, not in the original §9 write-up).
+    All unreachable today only because `maxContracts` is 1.
+  - **The rule** (`LiveOrderTracker`): (1) `onOrderFilled` for an in-flight entry
+    that is not completely filled is **ignored** — logged
+    `LIVE_ENTRY_PARTIAL_FILL filled=x of y`, entry stays in flight, no bracket,
+    and a second intent is still skipped; (2) "completely filled" = the SDK's
+    `isFilled()` **or** `getFilled() >= getQuantity()` (either signal suffices,
+    because whether `isFilled()` is true at callback time is unconfirmed and
+    waiting forever on a filled entry would leave it unbracketed); (3) the
+    bracket is sized from `getFilled()` (`LIVE_BRACKET_SIZE_FROM_FILL` is logged
+    if that differs from the request; falls back to the requested size if the
+    platform reports no fill quantity); (4) an entry that is **cancelled or
+    rejected while in flight** having filled something (its own `getFilled() > 0`,
+    or the account position != 0) is **flattened** — close-then-cancel-all — as
+    well as disarming (`LIVE_ENTRY_PARTIAL_FLATTENED`); a cancelled entry that
+    filled nothing still only disarms and sends no close to a flat account.
+    Works whichever way the platform delivers partial fills, and never resizes a
+    bracket. The rejected alternative — bracket on the first slice and resize as
+    slices arrive — means more orders in flight and more ways to go wrong.
+  - **Reconsider after the live test if**: (a) the platform calls
+    `onOrderFilled` per slice and a real partial shows the waiting is slow or
+    fragile; (b) `isFilled()`/`getFilled()` disagree with each other or with the
+    position at callback time in a way the fake doesn't model; (c) a partial that
+    **neither completes nor cancels** is observed. That last one is the known
+    hole in this design: the entry sits in flight holding an **unbracketed**
+    position, with no timeout. Today only the session-end flatten (D-92) or the
+    kill switch (D-85) would clear it. A timeout that flattens a stalled partial
+    is the obvious next step and was deliberately not built ahead of evidence.
+    Also the case for revisiting if the size cap is ever raised above 1.
+  - **Still unknown, only a live probe can answer**: per-slice vs
+    completion-only callbacks (the tests script both). Needs an order that
+    genuinely part-fills, which a 1-lot Sim order cannot produce — so this stays
+    unverified until size > 1 is tried on Sim, or the platform's behaviour is
+    established some other way.
+  - **Verified**: `LiveOrderTrackerTest` `testPartialFills` (whole fill, per-slice
+    callbacks, cancel/reject after a partial, cancel with nothing filled,
+    lagging and early `isFilled()`, lagging position, the 1-lot case unchanged);
+    12 mutations of the fix, 11 caught. The survivor — "flatten ignores the
+    account position" — is only distinguishable when the platform reports no fill
+    quantity, which the fake always does. The 1-lot path that is live today is
+    covered unchanged. **Not verified live**: this changes order code that was
+    live-verified on Sim (D-67/D-81/D-85–D-87), so like D-91 it needs one short
+    Sim session at the next market open (a normal 1-lot entry → bracket → leg fill
+    must look exactly as before).
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

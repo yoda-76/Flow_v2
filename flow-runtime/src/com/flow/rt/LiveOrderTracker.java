@@ -239,6 +239,15 @@ final class LiveOrderTracker {
     recordFill(order);
 
     if (liveOrderInFlight) {
+      // D-99 (plumbingEdgeCases.md section 9): the entry is resolved only when it is COMPLETELY filled. A
+      // callback for a part-filled entry is ignored -- still in flight, no bracket yet -- so this works whether
+      // the platform calls onOrderFilled per slice or only on completion (unconfirmed, D-99). Waiting rather
+      // than bracketing the slice avoids resizing a bracket as slices arrive.
+      if (!entryFullyFilled(order)) {
+        log.accept("LIVE_ENTRY_PARTIAL_FILL filled=" + filledOf(order) + " of " + quantityOf(order)
+            + " -- waiting for the full fill before bracketing");
+        return;
+      }
       int targetPosition = pendingBracketTargetPosition;
       Integer stopTicks = pendingBracketStopTicks;
       Integer targetTicks = pendingBracketTargetTicks;
@@ -258,8 +267,15 @@ final class LiveOrderTracker {
       boolean closingIsBuy = targetPosition < 0; // a short position closes with a BUY bracket
       float stopPrice = (float) c.fromTicks(stopTicks);
       float targetPrice = (float) c.fromTicks(targetTicks);
+      // D-99: size from what the entry actually filled, not what the intent asked for. Falls back to the
+      // requested size only if the platform reports no fill quantity for a fill it just called us about.
+      Integer filledQty = filledOf(order);
+      int bracketQty = filledQty != null && filledQty > 0 ? filledQty : Math.abs(targetPosition);
+      if (bracketQty != Math.abs(targetPosition)) {
+        log.accept("LIVE_BRACKET_SIZE_FROM_FILL requested=" + Math.abs(targetPosition) + " filled=" + bracketQty);
+      }
       OrderGateway.BracketOrders bracket =
-          gw.submitRealBracket(closingIsBuy, Math.abs(targetPosition), stopPrice, targetPrice, reason);
+          gw.submitRealBracket(closingIsBuy, bracketQty, stopPrice, targetPrice, reason);
       restingStopOrder = bracket.stop();
       restingTargetOrder = bracket.target();
       log.accept("LIVE_BRACKET_SUBMITTED " + bracket.journalLine());
@@ -308,6 +324,47 @@ final class LiveOrderTracker {
     }
   }
 
+  private static Integer filledOf(Order order) {
+    try { return order.getFilled(); } catch (RuntimeException e) { return null; }
+  }
+
+  private static Integer quantityOf(Order order) {
+    try { return order.getQuantity(); } catch (RuntimeException e) { return null; }
+  }
+
+  /**
+   * D-99: complete if the SDK says isFilled(), or the filled quantity has reached the order quantity -- either
+   * signal suffices, because whether isFilled() is already true at callback time is itself unconfirmed and
+   * waiting forever on a filled entry would leave it with no bracket. A getter that throws counts as "not
+   * complete" for that signal.
+   */
+  private static boolean entryFullyFilled(Order order) {
+    try {
+      if (order.isFilled()) return true;
+    } catch (RuntimeException e) {
+      // fall through to the quantity comparison
+    }
+    Integer filled = filledOf(order);
+    Integer qty = quantityOf(order);
+    return filled != null && qty != null && qty > 0 && filled >= qty;
+  }
+
+  /**
+   * D-99: an entry that ends (cancelled/rejected) while still in flight but HAS filled something leaves a
+   * position that no bracket covers. Flatten what is held (close, then cancel everything, the kill switch's
+   * sweep) rather than only disarming. Held = the order's own filled quantity, or the account position if the
+   * platform did not report a fill quantity. Returns the flatten's journal line, or null if nothing is held.
+   */
+  private String flattenIfEntryLeftAPosition(Order order) {
+    OrderGateway gw = gateway.get();
+    if (gw == null) return null;
+    Integer filled = filledOf(order);
+    int position = gw.currentPosition();
+    if ((filled == null || filled <= 0) && position == 0) return null;
+    return gw.cancelAllAndClose("partial entry ended with " + filled + " filled, position " + position
+        + " -- flattening the unbracketed position");
+  }
+
   /**
    * D-94: journal a structured order_fill for this callback. Classifies by identity, before onOrderFilled's own
    * logic mutates any state: a tracked bracket leg is "stop"/"target"; otherwise, with an entry in flight, the
@@ -354,6 +411,8 @@ final class LiveOrderTracker {
       clearPendingLiveOrder();
       denyArm.run();
       log.accept("LIVE_ENTRY_CANCELLED_DISARMING -- entry cancelled before filling, disarming");
+      String flat = flattenIfEntryLeftAPosition(order);
+      if (flat != null) log.accept("LIVE_ENTRY_PARTIAL_FLATTENED " + flat);
     }
   }
 
@@ -364,6 +423,8 @@ final class LiveOrderTracker {
       clearPendingLiveOrder();
       denyArm.run();
       log.accept("LIVE_ENTRY_REJECTED_DISARMING -- entry rejected, disarming");
+      String flat = flattenIfEntryLeftAPosition(order);
+      if (flat != null) log.accept("LIVE_ENTRY_PARTIAL_FLATTENED " + flat);
     }
   }
 }

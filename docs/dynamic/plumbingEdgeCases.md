@@ -423,6 +423,34 @@ intent value, but that's a fix to flag, not apply here.
 **Testable via**: `cross-repo platform question` first; `needs fake
 OrderContext` second, once the platform behavior is known.
 
+**Characterized 2026-09-26 (D-99)** — `FakeBroker` now fills in slices
+(`fillPartial`) and `LiveOrderTrackerTest.testPartialFillsCharacterization`
+pins today's behaviour for a 3-lot entry, under both possible platform
+behaviours (callback per slice / only on completion). Three defects, one of
+them **not in the write-up above**:
+- **(B) Over-sized bracket** — callback per slice, 1 of 3 filled: stop and
+  target are placed for 3 lots while 1 is held. The remaining slice's callback
+  is then ignored (in-flight is already cleared), which only "works" because
+  the over-sized bracket happens to equal the final position.
+- **(C) Wrong-way fill** — same, but the unfilled remainder is cancelled: the
+  cancel is silently ignored (no disarm), then the stop fills for 3 against a
+  1-lot position and the account goes **short 2**. The D-87 double-fill check
+  does notice, disarms and flattens — after the wrong-way fill already happened.
+- **(D) Naked partial position (new)** — callback only on completion, 1 of 3
+  filled, entry then cancelled: the cancel disarms (right) but the 1 lot stays
+  **held with no bracket and nothing resting**; no flatten is attempted.
+Unreachable today only because `maxContracts` is 1.
+
+**Fixed 2026-09-26 (D-99) — provisional, to be rethought after the live test.**
+The entry now resolves only when completely filled (`isFilled()` or `getFilled()
+>= getQuantity()`); a callback for a part-filled entry is ignored, the bracket
+is sized from `getFilled()`, and an entry cancelled/rejected with anything filled
+is flattened as well as disarming. Open hole, on purpose: a partial that neither
+completes nor cancels leaves an unbracketed position with no timeout (only the
+session flatten / kill switch would clear it). Whether the platform calls
+`onOrderFilled` per slice or only on completion is still **unconfirmed** — the
+fix is written to work either way.
+
 ---
 
 ## 10. Whether `onOrderFilled`/etc. can be invoked concurrently for two legs is unconfirmed

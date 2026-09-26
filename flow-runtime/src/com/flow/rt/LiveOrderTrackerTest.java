@@ -104,6 +104,7 @@ public final class LiveOrderTrackerTest {
     testFillRecordsCarryRoleAndPrices();
     testFillRecordForAFlattenCloseIsUntracked();
     testFillRecordFailureNeverBreaksOrderHandling();
+    testPartialFills();
 
     if (failures > 0) {
       System.err.println(failures + " FAILURE(S)");
@@ -475,5 +476,134 @@ public final class LiveOrderTrackerTest {
     bracketed.tracker.onOrderFilled(stop.order());
     checkEq("a late fill after the reset is treated as untracked -- no sibling handling",
         bracketed.broker.calls().size(), callsBefore);
+  }
+
+  // ---- partial fills (plumbingEdgeCases.md section 9, D-99) ---------------
+  //
+  // The entry is resolved only when COMPLETELY filled. Which callback the real platform sends for a partial fill
+  // (per slice, or only on completion) is unconfirmed, so both are scripted. Live today only maxContracts=1 makes
+  // any of this unreachable. History: these checks first pinned the OLD behaviour (over-sized bracket, short 2 on a
+  // cancelled remainder, a naked partial position) before the fix flipped them.
+
+  private static void testPartialFills() {
+    // A. Baseline: callback only on completion, whole 3-lot fill -> bracket for 3.
+    Rig whole = new Rig();
+    whole.reconcile(3, -10, 20);
+    whole.broker.fill(whole.entry());
+    whole.tracker.onOrderFilled(whole.entry().order());
+    checkEq("[A] whole 3-lot fill: bracket stop is 3 lots", whole.broker.allOrders().get(1).qty, 3);
+    checkEq("[A] whole 3-lot fill: bracket target is 3 lots", whole.broker.allOrders().get(2).qty, 3);
+    checkEq("[A] position 3", whole.broker.position(), 3);
+    check("[A] no partial-fill wait was logged", !whole.logged("LIVE_ENTRY_PARTIAL_FILL"));
+
+    // B. Callback PER SLICE: the first slice (1 of 3) places NO bracket and leaves the entry in flight.
+    Rig slice = new Rig();
+    slice.reconcile(3, -10, 20);
+    slice.broker.fillPartial(slice.entry(), 1, 4300f, 1_000L);
+    slice.tracker.onOrderFilled(slice.entry().order());
+    checkEq("[B] one lot held after the first slice", slice.broker.position(), 1);
+    checkEq("[B] no bracket after a partial slice -- only the entry exists", slice.broker.allOrders().size(), 1);
+    check("[B] entry is still in flight", slice.tracker.orderInFlight());
+    check("[B] the wait was logged with the fill state", slice.logged("LIVE_ENTRY_PARTIAL_FILL filled=1 of 3"));
+    check("[B] nothing disarmed", !slice.armDenied);
+    check("[B] the partial slice was still journaled as an entry fill", slice.records.size() == 1
+        && slice.records.get(0).contains("\"role\":\"entry\"") && slice.records.get(0).contains("\"filled\":1"));
+    check("[B] a second intent is still skipped while waiting", slice.reconcile(-1, 10, -20).contains("still in flight"));
+
+    // B2. A middle slice still waits; the completing slice brackets for exactly what was filled.
+    slice.broker.fillPartial(slice.entry(), 1, 4300f, 2_000L);
+    slice.tracker.onOrderFilled(slice.entry().order());
+    checkEq("[B2] two of three: still no bracket", slice.broker.allOrders().size(), 1);
+    slice.broker.fillPartial(slice.entry(), 1, 4300f, 3_000L);
+    slice.tracker.onOrderFilled(slice.entry().order());
+    checkEq("[B2] all three filled: entry + stop + target", slice.broker.allOrders().size(), 3);
+    checkEq("[B2] stop is 3 lots", slice.broker.allOrders().get(1).qty, 3);
+    checkEq("[B2] target is 3 lots", slice.broker.allOrders().get(2).qty, 3);
+    check("[B2] entry no longer in flight", !slice.tracker.orderInFlight());
+    check("[B2] legs tracked", slice.tracker.restingStop() != null && slice.tracker.restingTarget() != null);
+
+    // C. Callback PER SLICE, then the remainder is cancelled: flatten the 1 held lot, disarm, no bracket ever.
+    Rig cut = new Rig();
+    cut.reconcile(3, -10, 20);
+    cut.broker.fillPartial(cut.entry(), 1, 4300f, 1_000L);
+    cut.tracker.onOrderFilled(cut.entry().order());
+    cut.entry().cancelled = true; // the broker cancels the unfilled remainder
+    cut.tracker.onOrderCancelled(cut.entry().order());
+    check("[C] disarmed", cut.armDenied);
+    check("[C] the held lot was flattened", cut.broker.called("closeAtMarket positionBefore=1"));
+    checkEq("[C] account flat", cut.broker.position(), 0);
+    checkEq("[C] no bracket was ever placed", cut.broker.allOrders().size(), 1);
+    check("[C] nothing left resting", cut.broker.activeOrders().isEmpty());
+    check("[C] not in flight", !cut.tracker.orderInFlight());
+    check("[C] the flatten was logged", cut.logged("LIVE_ENTRY_PARTIAL_FLATTENED"));
+
+    // D. Callback ONLY ON COMPLETION: 1 of 3 filled, then cancelled -- no fill callback ever came. Same outcome.
+    Rig naked = new Rig();
+    naked.reconcile(3, -10, 20);
+    naked.broker.fillPartial(naked.entry(), 1, 4300f, 1_000L);
+    naked.entry().cancelled = true;
+    naked.tracker.onOrderCancelled(naked.entry().order());
+    check("[D] disarmed", naked.armDenied);
+    check("[D] the held lot was flattened", naked.broker.called("closeAtMarket positionBefore=1"));
+    checkEq("[D] account flat", naked.broker.position(), 0);
+    checkEq("[D] no bracket placed", naked.broker.allOrders().size(), 1);
+
+    // E. Entry REJECTED after a partial fill: same treatment.
+    Rig rej = new Rig();
+    rej.reconcile(3, -10, 20);
+    rej.broker.fillPartial(rej.entry(), 2, 4300f, 1_000L);
+    rej.broker.reject(rej.entry());
+    rej.tracker.onOrderRejected(rej.entry().order());
+    check("[E] disarmed", rej.armDenied);
+    check("[E] the 2 held lots were flattened", rej.broker.called("closeAtMarket positionBefore=2"));
+    checkEq("[E] account flat", rej.broker.position(), 0);
+
+    // F. A cancelled/rejected entry that filled NOTHING must not send a close to a flat account.
+    Rig none = new Rig();
+    none.reconcile(3, -10, 20);
+    none.entry().cancelled = true;
+    none.tracker.onOrderCancelled(none.entry().order());
+    check("[F] disarmed", none.armDenied);
+    check("[F] no close sent to a flat account", !none.broker.called("closeAtMarket"));
+    check("[F] no flatten logged", !none.logged("LIVE_ENTRY_PARTIAL_FLATTENED"));
+
+    // G. isFilled() lags (still false although getFilled() reached the quantity): the quantity signal must still
+    // complete the entry, or a fully filled entry would sit with no bracket forever.
+    Rig lag = new Rig();
+    lag.reconcile(2, -10, 20);
+    lag.entry().isFilledOverride = false;
+    lag.broker.fill(lag.entry());
+    check("[G] precondition: the SDK's isFilled() says false", !lag.entry().order().isFilled());
+    lag.tracker.onOrderFilled(lag.entry().order());
+    checkEq("[G] bracketed anyway -- entry + stop + target", lag.broker.allOrders().size(), 3);
+    checkEq("[G] bracket sized 2", lag.broker.allOrders().get(1).qty, 2);
+
+    // I. The SDK says isFilled() although only 1 of 3 is reported filled: trust it (a callback with isFilled true
+    // is the platform's word that the entry is done) and bracket what is HELD, not what was requested.
+    Rig ahead = new Rig();
+    ahead.reconcile(3, -10, 20);
+    ahead.broker.fillPartial(ahead.entry(), 1, 4300f, 1_000L);
+    ahead.entry().isFilledOverride = true;
+    ahead.tracker.onOrderFilled(ahead.entry().order());
+    checkEq("[I] bracketed on the platform's isFilled()", ahead.broker.allOrders().size(), 3);
+    checkEq("[I] stop sized from the 1 lot held, not the 3 requested", ahead.broker.allOrders().get(1).qty, 1);
+    checkEq("[I] target sized from the 1 lot held", ahead.broker.allOrders().get(2).qty, 1);
+    check("[I] the resize was logged", ahead.logged("LIVE_BRACKET_SIZE_FROM_FILL requested=3 filled=1"));
+
+    // J. The account position lags the order (platform updates position after the callback): a cancelled entry
+    // that reports a fill is still flattened, judged by the order's own filled quantity.
+    Rig posLag = new Rig();
+    posLag.reconcile(3, -10, 20);
+    posLag.broker.fillPartial(posLag.entry(), 1, 4300f, 1_000L);
+    posLag.broker.setPosition(0);
+    posLag.entry().cancelled = true;
+    posLag.tracker.onOrderCancelled(posLag.entry().order());
+    check("[J] flatten attempted although the position still reads flat", posLag.broker.called("closeAtMarket"));
+
+    // H. The 1-lot case that is live today is unchanged: fills whole, brackets 1.
+    Rig one = new Rig();
+    one.openLong();
+    checkEq("[H] 1-lot stop", one.broker.allOrders().get(1).qty, 1);
+    checkEq("[H] 1-lot target", one.broker.allOrders().get(2).qty, 1);
   }
 }

@@ -58,6 +58,12 @@ final class FakeBroker {
     boolean submitted;
     boolean cancelled;
     boolean rejected;
+    /**
+     * Test switch (D-99): force what the SDK's isFilled() reports, independent of getFilled() -- false to script
+     * a lagging flag (getFilled() has reached the quantity but isFilled() still says no), true for one that runs
+     * ahead. null (default) derives it from the quantities.
+     */
+    Boolean isFilledOverride;
     private Order proxy;
 
     FakeOrder(String id, String type, String action, int qty, Float price) {
@@ -143,10 +149,25 @@ final class FakeBroker {
   /** Fill at an explicit price and time (a stop/limit fills at its own price by default). */
   void fill(FakeOrder o, float price, long timeMs) {
     if (o.isFilled()) throw new IllegalStateException("already filled: " + o);
-    o.filled = o.qty;
+    fillPartial(o, o.qty - o.filled, price, timeMs); // the remainder, so a part-filled order can still finish
+  }
+
+  /**
+   * Part of the order fills (plumbingEdgeCases.md section 9): the order stays active with
+   * getFilled() == the running total, and the position moves by just this slice. Repeatable until the order is
+   * fully filled; cancelling it afterwards leaves the partial position behind. Does NOT invoke any callback --
+   * whether the real platform calls onOrderFilled per slice, only on completion, or both is exactly the
+   * UNCONFIRMED question, so the test decides which it is simulating.
+   * [ASSUMED] the price/time reported by getAvgFillPrice/getLastFillTime are those of the latest slice.
+   */
+  void fillPartial(FakeOrder o, int qty, float price, long timeMs) {
+    if (qty <= 0 || o.filled + qty > o.qty) {
+      throw new IllegalArgumentException("bad slice " + qty + " for " + o + " already filled " + o.filled);
+    }
+    o.filled += qty;
     o.fillPrice = price;
     o.fillTimeMs = timeMs;
-    position += "BUY".equals(o.action) ? o.qty : -o.qty;
+    position += "BUY".equals(o.action) ? qty : -qty;
     // Cash/PnL are not modelled: cash only changes via setCash().
   }
 
@@ -262,7 +283,7 @@ final class FakeBroker {
         case "getAvgFillPrice":
         case "getLastFillPrice": return o.fillPrice;
         case "getLastFillTime": return o.fillTimeMs;
-        case "isFilled": return o.isFilled();
+        case "isFilled": return o.isFilledOverride != null ? o.isFilledOverride : o.isFilled();
         case "isActive": return o.isActive();
         case "isCancelled": return o.cancelled;
         case "isBuy": return "BUY".equals(o.action);
