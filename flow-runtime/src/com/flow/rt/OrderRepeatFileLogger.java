@@ -24,7 +24,7 @@ final class OrderRepeatFileLogger implements OrderRepeatFeature.Listener {
     PrintWriter w;
     try {
       w = new PrintWriter(new FileWriter(
-          "C:/yadvendra/trading/FLOW_V2/logs/order_repeat_feature.log", true));
+          com.flow.core.FlowHome.logFile("order_repeat_feature.log"), true));
       w.println("# feature start " + System.currentTimeMillis() + " id=order_repeats");
       w.flush();
     } catch (IOException e) {

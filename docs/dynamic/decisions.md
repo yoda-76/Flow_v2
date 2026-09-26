@@ -3796,6 +3796,34 @@ readable rather than being silently rewritten.
     session, confirm `arming_state` appears on arming and on a denial, and the
     report's arming timeline matches what you did.
 
+- **D-98** (2026-09-26) — **`FLOW_HOME`: the project root is configuration,
+  not nine string literals** (todo Phase 4, cloud readiness). The runtime's
+  three roots (`LOG_ROOT`, `DATA_ROOT`, `RISK_CONFIG_PATH`) and six per-feature
+  diagnostic log paths were hard-coded `C:/yadvendra/trading/FLOW_V2/...`
+  across `FlowRuntimeStudy` and five logger/feature classes. They now all come
+  from `com.flow.core.FlowHome` (flow-core, SDK-free): JVM property
+  `flow.home`, else environment variable `FLOW_HOME`, else the **same default
+  as before** — so behaviour on this machine is unchanged unless one is set.
+  - **Why a process-wide property, not a study setting**: the feature loggers
+    and the data store are built where the study's settings aren't reachable,
+    and the location is a property of the machine, not of one chart. The cost:
+    it is read once, so changing it needs a MotiveWave restart (documented in
+    `docs/configuration.md`); the activation log line `FLOW_HOME root=…
+    source=…` makes a wrong value visible.
+  - `FlowHome.logFile(name)` creates `logs/` first — the feature loggers treat
+    a failed open as "no log", so on a fresh home they would otherwise have
+    silently lost every feature log.
+  - **Deliberately not done** (kept out of scope, listed in todo Phase 4): the
+    `analysis/*.py` defaults (still `logs`/`data` relative to the cwd), the
+    JDK / `mwave_sdk.jar` / extensions-folder paths in `build/build.sh`, and the
+    experiments' paths in `../motivewave`.
+  - **Tests**: `FlowHomeTest` (18 checks, wired into `build.sh` as a gate; pins
+    that the default reproduces the three old literals); 8 mutations, all
+    caught. Full suite (21 Java gates + 3 Python) passes from a scratch build.
+  - **Not verified**: a real MotiveWave session with `FLOW_HOME` set — nothing
+    is deployed yet. First live check: the `FLOW_HOME root=… source=…` line at
+    the next activation (expect `built-in default` and today's path).
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

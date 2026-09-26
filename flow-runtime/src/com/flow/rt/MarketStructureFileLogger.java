@@ -29,7 +29,7 @@ final class MarketStructureFileLogger implements MarketStructureFeature.Listener
     PrintWriter w;
     try {
       w = new PrintWriter(new FileWriter(
-          "C:/yadvendra/trading/FLOW_V2/logs/market_structure_feature.log", true));
+          com.flow.core.FlowHome.logFile("market_structure_feature.log"), true));
       w.println("# feature start " + System.currentTimeMillis() + " id=market_structure"
           + " -- reviewed rules, see docs/dynamic/marketStructureRules.md (all 10 points resolved)");
       w.flush();

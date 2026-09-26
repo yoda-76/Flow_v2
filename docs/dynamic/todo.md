@@ -121,9 +121,12 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
 
 #### 3. Offline work still available (no market needed)
 
-- **Move the three hard-coded `C:/yadvendra/...` paths** (`LOG_ROOT`,
-  `DATA_ROOT`, `RISK_CONFIG_PATH` in `FlowRuntimeStudy`) into configuration —
-  proposed: one `FLOW_HOME` setting defaulting to today's paths (Phase 4).
+- [x] (2026-09-26, D-98) **`FLOW_HOME` built** — the runtime's paths now come
+  from `com.flow.core.FlowHome` (property `flow.home` / env `FLOW_HOME` /
+  today's default); tested and mutation-checked, **not deployed** (one more
+  thing the next `build.sh` ships; check the `FLOW_HOME root=…` log line at
+  the next activation). Still hard-coded, deliberately left: `analysis/*.py`
+  cwd defaults, `build/build.sh`'s JDK/SDK/extensions paths.
 - **VAH/VAL/zones replay comparison** on the committed fixture (only POC,
   totals, buckets are checked today).
 - **Runbook draft** (Phase 4): install, MotiveWave + Rithmic setup, Sim account +
@@ -338,9 +341,10 @@ Two decisions only the user can make, both gate the safety work below:
   spent rediscovering what to test.
 
 **Phase 4 — cloud readiness (do last, but do everything possible before).**
-- [ ] Hardcoded `C:/yadvendra/...` paths in `FlowRuntimeStudy` (`LOG_ROOT`,
-  `DATA_ROOT`, `RISK_CONFIG_PATH`) and the experiments' log paths need to be
-  configuration, not code.
+- [~] Hardcoded `C:/yadvendra/...` paths: **runtime done 2026-09-26 (D-98,
+  `FLOW_HOME`, not deployed)**. Remaining: `analysis/*.py` defaults,
+  `build/build.sh`'s JDK/SDK/extensions paths, and the experiments' log paths
+  in `../motivewave`.
 - [ ] Runbook: install, MotiveWave + Rithmic account setup, Sim account
   enablement and "Sim Trade Only", `.env` handling (user-only), auto-start,
   time zone, remote monitoring.

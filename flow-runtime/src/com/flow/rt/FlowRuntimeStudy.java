@@ -137,15 +137,17 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // javadoc for why (matches AggregateFilter's own aggPeriod semantics,
   // the mode the built-in "Big Trades" study evidently uses).
   private static final String BT_AGG_PERIOD_MS_KEY = "FLOW_BT_AGG_PERIOD_MS";
-  private static final Path LOG_ROOT = Path.of("C:/yadvendra/trading/FLOW_V2/logs");
+  // All three roots hang off com.flow.core.FlowHome (system property flow.home,
+  // env FLOW_HOME, else the historic C:/yadvendra/trading/FLOW_V2).
+  private static final Path LOG_ROOT = com.flow.core.FlowHome.logs();
   // D-61: hand-edited by the user, runtime only ever reads it (README
   // "External inputs and config") -- not a secret like .env, so it's a
   // plain repo path, not gitignored.
   // D-88: retained per-construct data (1s footprint candles, VWAP, big
   // trades, liquidity map), rolling window of trading days, own writer thread.
-  private static final Path DATA_ROOT = Path.of("C:/yadvendra/trading/FLOW_V2/data");
+  private static final Path DATA_ROOT = com.flow.core.FlowHome.data();
   private volatile com.flow.journal.ConstructDataStore dataStore;
-  private static final Path RISK_CONFIG_PATH = Path.of("C:/yadvendra/trading/FLOW_V2/config/risk.json");
+  private static final Path RISK_CONFIG_PATH = com.flow.core.FlowHome.riskConfig();
 
   private final int instanceId = System.identityHashCode(this);
   private final AtomicBoolean subscribed = new AtomicBoolean(false);
@@ -265,6 +267,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       return;
     }
     journal.start();
+    logLine("FLOW_HOME root=" + com.flow.core.FlowHome.root() + " source=" + com.flow.core.FlowHome.source());
     final JournalWriter anchorJournal = journal;
     final double anchorTickSize = instrument.getTickSize();
     priceCodec.onAnchor(a -> anchorJournal.writeDecision(0, Json.object()
@@ -321,7 +324,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     vwap = new com.flow.flow.VWAPFeature(com.flow.flow.VWAPView.FEATURE_ID, priceCodec::fromTicks);
     try {
       vwapLog = new java.io.PrintWriter(new java.io.FileWriter(
-          "C:/yadvendra/trading/FLOW_V2/logs/vwap_feature.log", true));
+          com.flow.core.FlowHome.logFile("vwap_feature.log"), true));
       vwapLog.println("# feature start " + System.currentTimeMillis() + " id=vwap");
       vwapLog.flush();
     } catch (IOException e) {
@@ -332,7 +335,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     liquidityMap = new com.flow.flow.LiquidityMapFeature(com.flow.flow.LiquidityMapView.FEATURE_ID);
     try {
       domLog = new java.io.PrintWriter(new java.io.FileWriter(
-          "C:/yadvendra/trading/FLOW_V2/logs/liquidity_map_feature.log", true));
+          com.flow.core.FlowHome.logFile("liquidity_map_feature.log"), true));
       domLog.println("# feature start " + System.currentTimeMillis() + " id=liquidity_map");
       domLog.flush();
     } catch (IOException e) {

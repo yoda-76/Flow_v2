@@ -146,9 +146,10 @@ newest `logs/*/decisions.jsonl` was not modified in the last minute).
 
 | Setting | Value | Where |
 |---|---|---|
-| Log directory | `C:/yadvendra/trading/FLOW_V2/logs` | `FlowRuntimeStudy.LOG_ROOT` |
-| Recorded-data directory | `C:/yadvendra/trading/FLOW_V2/data` | `FlowRuntimeStudy.DATA_ROOT` |
-| Risk config path | `C:/yadvendra/trading/FLOW_V2/config/risk.json` | `FlowRuntimeStudy.RISK_CONFIG_PATH` |
+| Project root (`FLOW_HOME`) | `C:/yadvendra/trading/FLOW_V2` unless overridden — see below | `com.flow.core.FlowHome` |
+| Log directory | `<FLOW_HOME>/logs` | `FlowHome.logs()` |
+| Recorded-data directory | `<FLOW_HOME>/data` | `FlowHome.data()` |
+| Risk config path | `<FLOW_HOME>/config/risk.json` | `FlowHome.riskConfig()` |
 | Raw-log retention | 48 h (`decisions.jsonl` is kept) | `LogRetention.DEFAULT_RETENTION_MS` |
 | Session rollover / reopen | 17:00 America/Chicago | `SessionBoundary.BOUNDARY` |
 | Daily halt (trading-window close) | 16:00 America/Chicago | `TradingWindow.CLOSE` |
@@ -157,9 +158,29 @@ newest `logs/*/decisions.jsonl` was not modified in the last minute).
 | DOM snapshot in the journal | every ~10 s, ±100 ticks | `Pipeline.DOM_SNAPSHOT_*` |
 | Raw journal flush | every 50 records | `JournalWriter.RAW_FLUSH_EVERY` |
 
-The three hard-coded absolute paths are a known cloud-readiness item
-(`docs/dynamic/todo.md`, Phase 4): they will become configuration before the
-system moves to another machine.
+### Where FLOW_V2 lives on the machine (`FLOW_HOME`, D-98)
+
+Every runtime path — `logs/`, `data/`, `config/risk.json`, and the per-feature
+`logs/*_feature.log` files — hangs off one root. First non-blank wins:
+
+1. JVM system property `flow.home` (`-Dflow.home=D:/flow` on MotiveWave's JVM)
+2. environment variable `FLOW_HOME`
+3. the built-in default `C:/yadvendra/trading/FLOW_V2` — so **nothing changes
+   unless you set one of the first two**.
+
+The value is made absolute and is read **once, when MotiveWave loads the
+class**: changing it needs a **MotiveWave restart** (re-activating the study is
+not enough), and an environment variable must be set before MotiveWave is
+launched. Every activation logs `FLOW_HOME root=<path> source=<where it came
+from>` to the MotiveWave log — check it after changing anything. `logs/` is
+created if missing; `config/risk.json` is **not** (a missing file means every
+default, and the log shows `RISK_CONFIG_MISSING`), so copy `config/` across
+when setting up a new home.
+
+Not covered by `FLOW_HOME` yet: the `analysis/*.py` tools still default to
+`logs`/`data` relative to the directory you run them from (pass `--logs` /
+`--data`), and `build/build.sh` still has the JDK, `mwave_sdk.jar` and
+MotiveWave-extensions paths written in (`docs/dynamic/todo.md`, Phase 4).
 
 **Per-strategy parameters are constants inside each strategy** — there is no
 external per-strategy config yet (`StrategyConfig` only carries

@@ -21,6 +21,10 @@ echo "== trigger evaluator synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.TriggerEvaluatorTest
 echo "(trigger test passed -- see output above)"
 
+echo "== FLOW_HOME path resolution test =="
+"$JAVA" -cp build/classes/core com.flow.core.FlowHomeTest
+echo "(FLOW_HOME test passed -- see output above)"
+
 echo "== market structure feature synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.flow.MarketStructureFeatureTest
 echo "(market structure test passed -- see output above)"

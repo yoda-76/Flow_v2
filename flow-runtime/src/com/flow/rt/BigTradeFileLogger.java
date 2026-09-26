@@ -24,7 +24,7 @@ final class BigTradeFileLogger implements BigTradeFeature.Listener {
     PrintWriter w;
     try {
       w = new PrintWriter(new FileWriter(
-          "C:/yadvendra/trading/FLOW_V2/logs/big_trade_feature.log", true));
+          com.flow.core.FlowHome.logFile("big_trade_feature.log"), true));
       w.println("# feature start " + System.currentTimeMillis()
           + " id=big_trades minSize=" + minSize + " aggPeriodMs=" + aggPeriodMs);
       w.flush();
