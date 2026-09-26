@@ -52,7 +52,18 @@ Also added: `docs/configuration.md` (every setting, default, when it takes
 effect, how to change), explicit keys in `config/risk.json`, the README
 "Commands you run" table.
 
-**Live in MotiveWave right now: only the D-88 per-construct recorder** (with
+**UPDATE 2026-09-26 21:19 IST — everything below IS NOW DEPLOYED** (D-89 … D-101,
+one `build.sh`, all gates green) **and its startup was verified live with the
+market closed (D-102):** paths, arming/heartbeat/`price_anchor`/`session_header`
+fields, liquidity-map and market-structure recording, and both analysis tools on
+the real journal all work. **Still unverified — needs ticks or orders:** footprint,
+VWAP, big-trade and `bars/` recording, and every order-related item (D-91, D-92
+flatten, D-94 `order_fill`, D-99). One open finding from that check: `status.py`
+reports `data: CHECK: vwap missing` on a market with no trades (a false alarm;
+decision needed, see D-102). The paragraph below is the pre-deploy state, kept for
+history.
+
+**(Pre-deploy state) Live in MotiveWave right now: only the D-88 per-construct recorder** (with
 its two first-take fixes), deployed 2026-09-24. **Everything in the table above
 plus D-89 (`price_anchor` journaling) and D-90 (`bars/`, `market_structure/`,
 `warm_start` recording, big-trade default 1) is built but NOT deployed** — one

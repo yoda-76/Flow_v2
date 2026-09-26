@@ -3929,6 +3929,41 @@ readable rather than being silently rewritten.
     and the status line was never asserted) got tests. **Verified only against
     synthetic journals** — nothing was run with `FLOW_HOME` on a second machine.
 
+- **D-102** (2026-09-26, Saturday 21:19 IST, market closed) — **First deploy of
+  D-89…D-101 into MotiveWave, and a startup check that needs no ticks.** The real
+  `build.sh` (all gates, exit 0) deployed; the user added and activated FLOW
+  Runtime (`level_zone_observer`, Mode `DRY_RUN`, Armed off) on the @GC chart. The
+  DOM and the clock still flow with the market shut, so startup is testable.
+  - **Confirmed live, for the first time:** `FLOW_HOME root=… source=built-in
+    default` (D-98); `DATA_RECORDER_ON`; `SUBSCRIBED_DOM`; `ACTIVATE pos=0
+    cash=98910.0`; `session_header` carries the **real** `mode` and `armedSetting`
+    (D-97); `price_anchor` journaled (D-89); an `arming_state` record
+    (`armed:false`, `runtime` detail); every heartbeat carries `armed` and
+    `runtime`, and `localTimeMs` advances 10 000 ms per beat while `exchangeTimeMs`
+    stays frozen — exactly why D-97 switched to `localTimeMs`;
+    `risk_config_loaded` now shows `flattenLeadMinutes`/`noEntryLeadMinutes`
+    (D-92); the feature logs opened under `FLOW_HOME/logs`; `data/liquidity_map/`
+    wrote 1 line/s and `data/market_structure/` got its `warm_start` line (100
+    bars, D-90); no exception in MotiveWave's output. `status.py` reads the exact
+    flag (`armed: no DRY_RUN (as of 3s ago)`) and `daily_report.py` shows the
+    Arming timeline, the Session-end flatten and the Simulated-account line.
+  - **`SESSION_FLATTEN_DUE` at startup is correct**, not a fault: Saturday is
+    inside the weekend flatten window (D-92); DRY_RUN sends no order.
+  - **Not testable without ticks (still unverified):** the footprint, VWAP,
+    big-trade and OHLCV (`bars/`) recorders — no file appears until something
+    trades / a bar closes — and everything about orders (D-91, D-92's flatten,
+    D-94's `order_fill`, D-99).
+  - **Finding — a false alarm, awaiting a decision:** `DataRecorder` writes a
+    VWAP line only once traded volume exists (`v.isReady()`), so on a closed or
+    silent market there is no `data/vwap/` file. `status.py` lists `vwap` among
+    the files that must be fresh while the system runs, so it prints `data: CHECK:
+    vwap missing` (and the report shows `vwap`/`footprint` **missing**) although
+    nothing is wrong. That contradicts D-93's stance (a quiet market is not a
+    system fault) and would fire all weekend once the system runs 24/7. Options:
+    drop `vwap` from the must-be-fresh list (keep `liquidity_map`, which records
+    from DOM alone); or only require it while the raw journal shows recent ticks.
+    Not changed.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
