@@ -161,7 +161,7 @@ MotiveWave; the evidence is synthetic tests, mutation checks and replays.
 `TradingWindowTest`, `SessionEndTest`, `ArmingStateTest`, `FlowHomeTest`, `ExternalConfigTest`, `RollingLogsTest`,
 `VolumeProfileMathTest`, the two replay tests — plus `SafetyHookReflectionTest`, `OrderGatewayTest`,
 `LiveOrderTrackerTest` in `flow-runtime`), the **build-environment shell test** (`build/env_test.sh`, first gate), and
-the **3 Python suites** (`test_daily_report.py` 49, `test_trade_view.py` 25, `test_status.py` 28). **All pass**,
+the **3 Python suites** (`test_daily_report.py` 49, `test_trade_view.py` 25, `test_status.py` 33). **All pass**,
 including one full `build.sh` run against a scratch deploy folder (`MOTIVEWAVE_EXT_DIR=$(mktemp -d) bash
 build/build.sh`, D-100 — how to run everything without touching MotiveWave; §5 has the by-hand alternative).
 
@@ -264,11 +264,11 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
   (previously a fixed 48 h) — intended (dev keeps logs) but `logs/` will grow.
 - [x] (2026-09-26, D-106) **MotiveWave update: decided to leave it as is** until
   the user installs the new version in a live market to test it immediately.
-- [ ] **`status.py` prints `DOWN` (exit 2) after a CLEAN stop — found 2026-09-26, NOT fixed (asked, not silently
-  changed).** MotiveWave logs `DEACTIVATE` and then `DESTROY`; `status.py`'s `stopped_cleanly()` requires the *last*
-  log record to start with `DEACTIVATE`, so the `STOPPED` state (D-96) never fires in practice and a normal removal
-  looks like a crash. Proposed fix: treat a trailing `DEACTIVATE`/`DESTROY` pair (either as last) as a clean stop;
-  add a regression test. Worth doing before unattended use, because "DOWN" is what a future alert would key on.
+- [x] (2026-09-27, D-109) **`status.py` printed `DOWN` (exit 2) after a CLEAN stop — fixed.** MotiveWave logs
+  `DEACTIVATE` then `DESTROY`, so the last log line of a normal removal is `DESTROY`; the check wanted `DEACTIVATE`
+  and the `STOPPED` state never fired. Now either as the last log line = `STOPPED` (exit 1); an `ACTIVATE` after it
+  = running again. 5 regression tests, 7/7 mutations caught, verified on the real 2026-09-26 removal
+  (`DOWN` → `STOPPED`). Not a deploy matter — it is an offline script.
 - [ ] **Second-machine (spare laptop) trial** — the user's own next step, after
   all off-market work is done (it is now); script = `docs/runbook.md` §13.
   **Push first** (commits are local only). Pre-checked from here with a fresh

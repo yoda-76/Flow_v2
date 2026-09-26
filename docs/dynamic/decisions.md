@@ -4181,7 +4181,23 @@ readable rather than being silently rewritten.
   - **Finding (not fixed, awaiting the user's go)**: `analysis/status.py` reports `DOWN`/exit 2 after a **clean** stop.
     MotiveWave logs `DEACTIVATE` and then `DESTROY`; `stopped_cleanly()` requires the last log record to be
     `DEACTIVATE`, so D-96's `STOPPED` state never fires in practice (seen for real at 22:30 that night). Proposed fix and
-    test are in `todo.md`.
+    test are in `todo.md`. **Fixed by D-109.**
+
+- **D-109** (2026-09-27) — **`status.py` reports a clean stop as `STOPPED` (fix for the D-108 finding).** Approved by
+  the user ("fix the status.py clean-stop bug"). Reproduced first on the real journal of the 2026-09-26 removal: its
+  last records were `log DEACTIVATE pos=0`, a heartbeat and a liquidity snapshot, then `log DESTROY instance=…` — the
+  *last log* line is `DESTROY`, so `stopped_cleanly()` (which required `DEACTIVATE`) said no and the line printed
+  `DOWN`/exit 2. Now `CLEAN_STOP_PREFIXES = ("DEACTIVATE", "DESTROY")`: if the last log record starts with either, the
+  session is `STOPPED` (exit 1, `data: n/a (not running)`); any later log line (an `ACTIVATE`) means it is running
+  again. Only the *last* log record counts, only as a *prefix* (a line merely containing the word is not a stop), and
+  a recent stop is `STOPPED`, not `ALIVE`.
+  - **Effect**: `DOWN` (exit 2) again means what D-96 intended — the journal went silent with **no** stop logged (a
+    crash, a hung MotiveWave, a sleeping machine) — which matters for the alert channel still to be chosen.
+  - **Tests**: 5 new in `test_status.py` (33 total; the real removal sequence incl. the in-between heartbeat, `DESTROY`
+    alone, a stop 1 s ago, `ACTIVATE` after `DESTROY`, non-stop last lines incl. words merely *contained*); 7 mutations
+    of `stopped_cleanly`, all caught. **Verified on the real journal**: `DOWN` → `STOPPED | … stopped 2h23m ago`.
+  - **Limit**: a *crash* is still `DOWN` only after 5 minutes of silence (D-96's thresholds, unchanged); a
+    `DEACTIVATE` without a following `DESTROY` (e.g. MotiveWave killed mid-removal) also reads `STOPPED`.
 
 ## Open questions (not yet decisions)
 

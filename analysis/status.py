@@ -11,7 +11,7 @@ State (first word):
   ALIVE    the newest journal was written to within the last 30 s
   STALE    30 s - 5 min since it was written: probably stalled or just stopped
   DOWN     more than 5 min, or no journal at all
-  STOPPED  the study logged DEACTIVATE as its last act (a clean stop, not a crash)
+  STOPPED  the study logged DEACTIVATE and/or DESTROY as its last act (a clean stop, not a crash)
 Exit code: 0 ALIVE, 1 STALE/STOPPED, 2 DOWN -- so a script can act on it.
 "ALERTS n" is added after the state when today's journals contain alerts
 (kill switch, disarm, position mismatch, ...): see the daily report.
@@ -113,10 +113,18 @@ def position_state(session):
     return "unknown"
 
 
+# When a study is removed MotiveWave calls onDeactivate and then destroys the instance, and the runtime logs both:
+# "DEACTIVATE pos=0" and, a few seconds later, "DESTROY instance=<id>" -- with a last heartbeat/snapshot possibly in
+# between. So the LAST log line of a cleanly stopped session is DESTROY, not DEACTIVATE (D-109: the check used to
+# require DEACTIVATE and reported every normal removal as DOWN, so STOPPED never fired). Either one as the last log
+# line means the study was shut down on purpose; anything after it (an ACTIVATE) means it is running again.
+CLEAN_STOP_PREFIXES = ("DEACTIVATE", "DESTROY")
+
+
 def stopped_cleanly(session):
     for r in reversed(session.records):
         if r.get("type") == "log":
-            return r.get("msg", "").startswith("DEACTIVATE")
+            return r.get("msg", "").startswith(CLEAN_STOP_PREFIXES)
     return False
 
 

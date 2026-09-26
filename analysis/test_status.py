@@ -120,6 +120,51 @@ class TestLiveness(Base):
         self.write(j)
         self.assertTrue(self.line()[0].startswith("ALIVE"))
 
+    def test_the_real_removal_sequence_is_a_clean_stop(self):
+        # D-109: what MotiveWave actually logs on removal, seen in the real 2026-09-26 journal: DEACTIVATE, then one
+        # more heartbeat and snapshot, then DESTROY as the LAST log line. This used to print DOWN / exit 2.
+        j = self.journal()
+        j.heartbeat(NOW - 600_000)
+        j.log(NOW - 590_000, "DEACTIVATE pos=0")
+        j.heartbeat(NOW - 586_000)
+        j.log(NOW - 584_000, "DESTROY instance=703324004")
+        self.write(j, ago_s=584)
+        line, code = self.line()
+        self.assertTrue(line.startswith("STOPPED |"), line)
+        self.assertEqual(code, 1)
+        self.assertIn("data: n/a (not running)", line)
+
+    def test_destroy_alone_is_a_clean_stop(self):
+        j = self.journal()
+        j.heartbeat(NOW - 100_000)
+        j.log(NOW - 90_000, "DESTROY instance=1")
+        self.write(j, ago_s=90)
+        self.assertTrue(self.line()[0].startswith("STOPPED |"))
+
+    def test_a_clean_stop_is_stopped_however_recent(self):
+        j = self.journal()
+        j.log(NOW - 3_000, "DEACTIVATE pos=0")
+        j.log(NOW - 1_000, "DESTROY instance=1")
+        self.write(j, ago_s=1)
+        self.assertTrue(self.line()[0].startswith("STOPPED |"), "a stop 1 s ago is STOPPED, not ALIVE")
+
+    def test_activate_after_destroy_means_running_again(self):
+        j = self.journal()
+        j.log(NOW - 30_000, "DESTROY instance=1")
+        j.log(NOW - 4_000, "ACTIVATE pos=0 cash=1")
+        self.write(j)
+        self.assertTrue(self.line()[0].startswith("ALIVE"))
+
+    def test_other_last_log_lines_are_not_a_stop(self):
+        for msg in ("SESSION_FLATTEN {}", "ORDER_FILLED x", "XDESTROY instance=1", "XDEACTIVATE pos=0"):   # the last two merely CONTAIN the words
+            j = self.journal(name="s_%d_inst1" % (abs(hash(msg)) % 100000))
+            j.heartbeat(NOW - 3_000)
+            j.log(NOW - 2_000, msg)
+            self.write(j, ago_s=2)
+            self.assertTrue(self.line()[0].startswith("ALIVE"), msg)
+            self.tearDown()
+            self.setUp()
+
     def test_no_journal_is_down(self):
         line, code = self.line()
         self.assertEqual(code, 2)
