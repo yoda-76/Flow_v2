@@ -4160,6 +4160,29 @@ readable rather than being silently rewritten.
   - **Stale numbers fixed** (recounted, not remembered): 24 Java gates + the shell env test + 3 Python suites
     (49 / 25 / 28 tests).
 
+- **D-108** (2026-09-26, 23:41 IST) — **Dev machine redeployed from HEAD so both machines run the same code; the
+  laptop test sheet written; two more distributability facts checked.**
+  - **Redeploy**: with no study active (it had been deactivated/destroyed at 22:30) the real `build.sh` ran every gate
+    (exit 0) and deployed commit `c3ef87f` to `MotiveWave Extensions/dev` (all new classes confirmed present). The
+    study was **not** re-added afterwards, so D-104's VP math, D-106's `LOG_RETENTION`/`RISK_LOCAL_CONFIG` lines and the
+    daily feature logs have still not been seen starting up inside MotiveWave. First sighting: the laptop's Phase 1
+    (or the user re-adding the study here).
+  - **Test sheet**: `docs/runbook.md` §13.1 lists every open doubt as a checkable row (layout/`FLOW_HOME`, Windows
+    user name in the extensions path, JDK vs MotiveWave's bundled Java, MotiveWave version, first deploy into a new
+    `dev` folder, Sim Trade Only, licence, Rithmic on two machines, live depth arriving, contract, clock, the
+    start-up lines, the first live run of the changed order code, the recorders with ticks, laptop performance and
+    power settings, stop conditions), each with how to test and what a pass looks like; the `todo.md` handoff points to
+    it. Most of these were not in the docs before; the ones that were (licence, Rithmic, sleep, auto-update) are folded
+    in with a test.
+  - **Checked now, no longer doubts**: (1) a fresh clone with Windows' default `core.autocrlf=true` — shell scripts,
+    Java sources **and** the replay fixtures all converted to CRLF — builds with every gate passing under Git Bash
+    (not tested: a shell other than Git Bash); (2) the old one-shot test-trade path is confirmed stripped, so
+    activation places no order.
+  - **Finding (not fixed, awaiting the user's go)**: `analysis/status.py` reports `DOWN`/exit 2 after a **clean** stop.
+    MotiveWave logs `DEACTIVATE` and then `DESTROY`; `stopped_cleanly()` requires the last log record to be
+    `DEACTIVATE`, so D-96's `STOPPED` state never fires in practice (seen for real at 22:30 that night). Proposed fix and
+    test are in `todo.md`.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

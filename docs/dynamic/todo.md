@@ -36,10 +36,16 @@ driven by the user (you read, build, analyse; you do not arm or place orders —
 | Log retention (D-106) | Built, unit-tested; the `startSession` wiring is **unseen inside MotiveWave**. Leave `config/risk.local.json` **absent** for an identical-to-dev trial (keeps every log). |
 | **Guard against a real-account order** | **Only** MotiveWave's per-installation **"Sim Trade Only"** checkbox + a human reading the account selector. **No code-level check exists** (the SDK has an `Account` type with `getName()` but no accessor reaches it — searched all 132 SDK classes). A fresh install must be assumed to have it **OFF**. |
 
-**Not the same on both machines — know this before comparing them:** the dev machine's deployed build is from
-**2026-09-26 21:16** (D-89…D-101 + tooling); the laptop will deploy **HEAD**, which also contains D-104 (volume
-profile math extracted into flow-core) and D-106 (rolling/pruned feature logs, `risk.local.json`). To make the
-dev machine identical, redeploy it after removing its study (`bash build/build.sh`, no session running).
+**Both machines run the same code (updated 2026-09-26 23:41 IST):** the dev machine was **redeployed from HEAD
+`c3ef87f`** (full `build.sh`, all gates, exit 0) after its study was removed; the laptop deploys the same commit.
+*Caveat:* the dev machine's study was **not re-added after that deploy**, so the newest wiring (`LOG_RETENTION` /
+`RISK_LOCAL_CONFIG` lines, daily feature logs, D-104 VP math) has **not yet been seen starting up inside MotiveWave
+on either machine** — the laptop's Phase 1 (or the user re-adding the study here) is its first sighting.
+**The complete doubts-and-tests sheet for the laptop trial is `docs/runbook.md` §13.1 — use it as the checklist.**
+Known things it lists that are easy to miss: the clone location vs `FLOW_HOME` (A1); the Windows user name inside the
+default extensions path (A2); MotiveWave's bundled Java vs the build JDK (A4); the first deploy into a brand-new
+`dev` folder (A9); live depth actually arriving (B4); laptop power/sleep settings (D6); entries silently blocked by the lag guard on a slower
+machine (D5).
 Also unknown: whether the laptop's MotiveWave version equals the dev machine's **7.0.28** (a fresh download is
 probably newer — the dev machine has 7.1.1's release notes downloaded and the user plans to install it; **the new
 version has never been tried with this code**), and whether one Rithmic login may be used from two machines at once
@@ -258,6 +264,11 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
   (previously a fixed 48 h) — intended (dev keeps logs) but `logs/` will grow.
 - [x] (2026-09-26, D-106) **MotiveWave update: decided to leave it as is** until
   the user installs the new version in a live market to test it immediately.
+- [ ] **`status.py` prints `DOWN` (exit 2) after a CLEAN stop — found 2026-09-26, NOT fixed (asked, not silently
+  changed).** MotiveWave logs `DEACTIVATE` and then `DESTROY`; `status.py`'s `stopped_cleanly()` requires the *last*
+  log record to start with `DEACTIVATE`, so the `STOPPED` state (D-96) never fires in practice and a normal removal
+  looks like a crash. Proposed fix: treat a trailing `DEACTIVATE`/`DESTROY` pair (either as last) as a clean stop;
+  add a regression test. Worth doing before unattended use, because "DOWN" is what a future alert would key on.
 - [ ] **Second-machine (spare laptop) trial** — the user's own next step, after
   all off-market work is done (it is now); script = `docs/runbook.md` §13.
   **Push first** (commits are local only). Pre-checked from here with a fresh

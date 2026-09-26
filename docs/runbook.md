@@ -362,8 +362,76 @@ order code was **live-verified on Sim on 2026-09-21–23 but has changed since**
 of that has run with ticks or orders — that first live session is a test on either machine; (2) Phase 1 (below) is
 safe by construction (`DRY_RUN`, Armed unchecked), Phase 2 is the only time an order can exist.
 
+**The complete test sheet — every doubt, how to test it, what a pass looks like — is §13.1 below. Work through it; the steps above are the outline, the sheet is the checklist.**
+
 **What a pass looks like:** the scratch build exits 0; (with MotiveWave) the §5 lines appear and
 `status.py` prints `ALIVE … data: ok`; nothing needed a path or file that only exists on this machine.
+
+### 13.1 Doubts and needs this trial must answer (the test sheet)
+
+Everything below is something **nobody has checked on a second machine**, or a difference from the dev machine
+that could matter. Run it as a checklist; write **PASS / FAIL / not-tried + what you saw** next to each, and hand the
+sheet back (it becomes a `decisions.md` entry). "Phase" = when it can be tested: **1** = off-market, **2** = trading
+hours. Rows marked **Already checked** are here so the laptop's Claude does not redo them.
+
+**A. Layout, install and build (Phase 1)**
+
+| # | Doubt / need | How to test | Pass looks like |
+|---|---|---|---|
+| A1 | **Where the laptop's clone lives.** The runtime's default `FLOW_HOME` is `C:/yadvendra/trading/FLOW_V2`; the Python tools default to the current directory. A clone anywhere else + no `FLOW_HOME` → the runtime silently creates `C:\yadvendra\trading\FLOW_V2\logs\…` while `status.py` looks in the clone and says `DOWN` (a confusing split). | **Recommended for an identical trial:** clone to exactly `C:\yadvendra\trading\FLOW_V2` — no variable needed. Otherwise set the `FLOW_HOME` environment variable **before launching MotiveWave** (restart it after setting). | The `FLOW_HOME root=… source=…` line names the folder you expect; the journal appears under *that* folder's `logs/`. |
+| A2 | **Windows user name in the default extensions path.** `build.sh` defaults to `/c/Users/MSI/MotiveWave Extensions`. The laptop's user is different. | Expect the **first** build to stop at once with `MotiveWave extensions folder not found … set MOTIVEWAVE_EXT_DIR`; set it (e.g. `export MOTIVEWAVE_EXT_DIR="/c/Users/<you>/MotiveWave Extensions"`). Also check the SDK jar: `MWAVE_SDK_JAR` if MotiveWave is not under `C:/Program Files (x86)/`. | Message names the variable; after setting it the build runs. |
+| A3 | **JDK layout.** Default is `../motivewave/tools/jdk-26.0.2.1+1/bin` (dev layout). | Either put a Temurin 26 at `C:\yadvendra\trading\motivewave\tools\jdk-26.0.2.1+1` (identical layout) **or** set `FLOW_JDK_BIN`. `java -version` must say 26. | `env_test.sh` prints PASS (dev-layout checks print SKIP on a different layout — fine). |
+| A4 | **MotiveWave's bundled Java = the JDK that built the classes.** `build.sh` has no `--release` flag; a class built by a JDK newer than MotiveWave's Java will not load. | Read `<MotiveWave install>\jre\release` → `JAVA_VERSION="…"`. Dev machine: 26 (MotiveWave 7.0.28). | Same major version as the JDK you build with (or older JDK). |
+| A5 | **MotiveWave version.** Dev machine: **7.0.28**. A fresh download is probably newer; **no newer version has ever been tried with this code.** | Record the laptop's exact version (startup log line `Version: … Java Version: …`). If it differs, treat *everything* below as also testing that version. The user plans to install the newer version on the dev machine during a live market anyway — do not mix the two experiments up. | Recorded. If the SDK changed, `SafetyHookReflectionTest` may fail because a **new order-capable hook is not overridden — that is a designed safety stop; do not bypass it**, report it. |
+| A6 | **Full build passes on the laptop.** | §2 step 7 (`MOTIVEWAVE_EXT_DIR=$(mktemp -d) bash build/build.sh`). | `exit 0`. *Already checked from the dev machine:* a fresh clone with no sibling repos passes; a clone converted to CRLF by Windows' default `core.autocrlf=true` (scripts, sources **and** replay fixtures) passes with Git Bash. **Not checked:** a shell other than Git Bash (WSL etc.), non-Windows. |
+| A7 | **Python.** Dev machine 3.14, standard library only; the **minimum** version the tools need was never determined. | `python --version`; run the three suites (`python analysis/test_*.py`). | All pass; record the version. |
+| A8 | **Disk space.** `data/` ≈ 3 GB per 7 trading days (liquidity map dominates), plus `logs/` which now **keeps everything** by default (~3 MB/h of `raw.jsonl` idle, a `decisions.jsonl` up to ~20 MB per long session). | Check free space before starting. | ≥ ~15 GB free for a first week; note the actual growth after the trading session. |
+| A9 | **First deploy to a brand-new `dev` folder.** Does MotiveWave load the classes without a restart, or must it be restarted (or only started after the folder exists)? Does the **FLOW menu → FLOW Runtime** entry appear? Unknown. | Deploy, then look for the menu; if missing, restart MotiveWave. **Write down which it was.** | The FLOW Runtime study can be added to a chart. |
+| A10 | **Antivirus/Defender** scanning the `dev` folder or the journal writes (slows or blocks class loading / file appends). | Note any Defender prompts; if `logs/` grows slowly or MotiveWave stalls, try excluding the repo and `MotiveWave Extensions` folders **[YOU — your call]**. | No prompts, no stalls. |
+
+**B. MotiveWave, broker and safety set-up (Phase 1)**
+
+| # | Doubt / need | How to test | Pass looks like |
+|---|---|---|---|
+| B1 | **"Sim Trade Only" is per installation and assumed OFF on a fresh install.** No code-level backstop exists. | Enable **before** Rithmic is connected and before the study is added (runbook §4.2). | Setting checked; the account selector reads "simulated". **Do not arm anything until this is confirmed on that machine.** |
+| B2 | **Licence** — Order Flow edition on the laptop; is it allowed on a second machine? | Startup log: `License Edition: ORDER_FLOW`. | Same edition as the dev machine. |
+| B3 | **Rithmic login on two machines at once.** A second login may disconnect the first. | **Do not run both machines at once until answered.** Check Rithmic/MotiveWave terms, or test with the dev machine idle and MotiveWave closed. | Recorded: allowed / not allowed / unknown. |
+| B4 | **Live depth permission on the laptop's Rithmic tier.** `SUBSCRIBED_DOM` in the log does **not** prove depth data arrives (the historical-order-book permission alert on the dev machine is unrelated and harmless). | After activation, look at `data/liquidity_map/<session>.jsonl`. | Lines contain **non-empty** `bids` and `asks` (dev machine: yes). |
+| B5 | **Instrument / contract.** The chart must be **`@GC`** 1-minute (continuous gold). The dev machine's chart resolved to `GCZ6`; a different contract (roll, expiry) changes the data. | `session_header.symbol` in `decisions.jsonl` must read `@GC`; check the contract month in MotiveWave. | `@GC`; tick size 0.1. |
+| B6 | **Simulated account state.** The runtime refuses to arm with an open position or resting orders. Starting balance differs by install (dev: `cash=98910.0`). | Read the `ACTIVATE pos=… cash=…` line. | `pos=0`; a balance that looks like a *simulated* one. **The line shows no account name — confirm in the control box.** |
+| B7 | **Trading Options tab on a fresh install.** A re-added study resets Trading Options to defaults (seen in the 2026-09-11 incident's experiment). | Look at it once before activating. | Nothing that could enter on activation; activation itself places no order (the old one-shot test-trade path is stripped). |
+| B8 | **Clock.** The system trusts the local clock; skew corrupts session boundaries and the flatten window. | Compare the laptop clock with a reference; in a fresh journal compare a heartbeat's `localTimeMs` with the first records' exchange times. | Within a couple of seconds. Time-sync service running. |
+
+**C. Start-up check (Phase 1) — the D-102 list, on the laptop**
+
+| # | Doubt / need | How to test | Pass looks like |
+|---|---|---|---|
+| C1 | The expected MotiveWave-log lines, in order (runbook §5), including the **new-since-D-102** ones: `LOG_RETENTION hours=0 (keep everything) …` (and `RISK_LOCAL_CONFIG …` only if you created an override). | Read the newest `%APPDATA%\MotiveWave\output\output (…).txt`. | All present; **no `RISK_LOCAL_CONFIG_IGNORED`, no `RISK_CONFIG_MISSING`, no Java exception.** |
+| C2 | The journal records (D-89/D-97): `session_header` with the real `mode`/`armedSetting`, `risk_config_loaded` (now with `logRetentionHours`, `localOverrideKeys`), `price_anchor`, `arming_state`, heartbeats with `armed`/`runtime`. | Open the new `logs/<strategy>_<ms>_inst<id>/decisions.jsonl`. | Present. |
+| C3 | **Feature logs are now daily files.** `logs/<feature>_feature_<yyyy-MM-dd>.log` (not the old single `*_feature.log`). | `ls logs`. | Dated files appear; nothing else named `*_feature.log` is created. |
+| C4 | The analysis tools on a real (closed-market) journal. | `python analysis/status.py` → `ALIVE … armed: no DRY_RUN … data: ok`, exit 0; `python analysis/daily_report.py --no-file`. | As on the dev machine. Weekend: `SESSION_FLATTEN_DUE` is expected. |
+| C5 | **`status.py` after a clean stop (known bug, found 2026-09-26).** MotiveWave logs `DEACTIVATE` **then** `DESTROY`; `status.py` looks for `DEACTIVATE` as the *last* log line, so a clean stop prints `DOWN … exit 2` instead of `STOPPED`. Not fixed (flagged, `todo.md`). | Remove the study and run `status.py` a minute later. | Expect the false `DOWN`; **do not treat it as a crash** — check the MotiveWave log for `DEACTIVATE`/`DESTROY`. |
+
+**D. Trading session (Phase 2) — the user arms `lvn_fade_test` on the Simulated account**
+
+| # | Doubt / need | How to test | Pass looks like |
+|---|---|---|---|
+| D1 | **First live run of the changed order code** (D-91 tracker, D-92 flatten, D-94 `order_fill`, D-97 arming records, D-99 partial-fill rule). Only the *old* form was live-verified (2026-09-21–23). | The watch-list in the `todo.md` "LAPTOP TRIAL HANDOFF" (Phase 2). | Every entry: submitted → filled → bracket → one leg fills → sibling cancelled → flat, nothing resting, no mismatch, no unexpected disarm; **none** of the three D-99 log lines. |
+| D2 | **What the fill numbers really mean** (`getAvgFillPrice()`, `getLastFillTime()`, `cash Δ`, `sdkTotalRealizedPnL`) — the report assumes; nobody has seen real ones. | `daily_report.py`, `trade_view.py --trade 1` after the session. | Prices/times plausible against the chart; note what `cash Δ`/`sdkTotalRealizedPnL` equal. |
+| D3 | **The recorders with ticks:** footprint, VWAP, big trades, OHLCV `bars/`; volume profile after the D-104 refactor (`volume_profile_feature_<date>.log` lines should look like the old ones). | `ls data/`; `status.py` `data: ok`; the report's "Recorded data" table. | All four files appear once trades/bars occur; no `**missing**` for liquidity/market-structure. |
+| D4 | **Big-trade Min Size is still the test value 1** → nearly every tick is a "big trade" (noisy chart, large `data/big_trades/`). | The user chooses 1 (capture test) or 10 before starting. | Decision recorded. |
+| D5 | **Laptop performance.** The risk chain **blocks new entries** (a `lag` verdict, not a disarm) while the event queue is backed up (depth ≥ 1000, `lagQueueDepthThreshold`) or one event took ≥ 2 s (`lagProcessingMsThreshold`); a slower machine may trigger it and the strategy would silently skip entries. | Watch the report's *What the risk chain blocked* section for `lag` blocks, the heartbeat gaps, and MotiveWave's memory during the session. | No `lag` blocks; the longest heartbeat gap is ~10 s. |
+| D6 | **Laptop power/sleep.** Lid close, sleep, hibernate, battery saver, Wi-Fi power saving or a Windows-Update restart will stop the study mid-session — possibly **with a position open**. | Before the session: plugged in, power plan "never sleep", **lid-close action = do nothing**, Wi-Fi power saving off (or wired), updates paused. | The session runs uninterrupted; `status.py` stays `ALIVE`. If it is interrupted with a position open: the runtime **refuses to arm** on restart and does not adopt or flatten it (README) — clear it by hand. |
+| D7 | **Entry-time window.** `lvn_fade_test` has a 2-minute warm-up after the study starts, then entries stop 15:45 CT (02:15 IST) and open positions flatten from 15:55 CT (02:25 IST). | Plan the session inside that window. | No entries before the warm-up ends. |
+| D8 | **Optional flatten test in a watched window (D-92)** using a git-ignored `config/risk.local.json` (`flattenLeadMinutes` 400, `noEntryLeadMinutes` 405); delete the override afterwards. | `todo.md` handoff, Phase 2. | `SESSION_FLATTEN_DUE`, flat account, **no disarm**; override removed. |
+| D9 | **Stop conditions** — an account that is not the Simulated one anywhere; an unexplained fill/position; kill switch; repeated disarms; a stuck resting order. | Watch throughout. | None occur; if one does, stop and tell the user. |
+
+**E. After the trial**
+
+| # | Need | Note |
+|---|---|---|
+| E1 | Hand back the filled-in sheet (this table with PASS/FAIL/notes) and every place the runbook was wrong, unclear or incomplete. | Becomes a `decisions.md` entry and runbook corrections. The runbook is a **draft** until this has been done once. |
+| E2 | Compare the two machines' journals for the same market period **only if** both ran (see B3 — not simultaneously on one Rithmic login unless confirmed). | Differences are findings. |
 
 ## 14. Sources
 
