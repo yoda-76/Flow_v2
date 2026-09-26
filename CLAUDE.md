@@ -193,4 +193,32 @@ real strategy existing; extract to a shared module only once two strategies
 actually need the same thing (same rule FLOW's `flow/backtest/common/`
 follows — see its README).
 
+## Working on a second machine (added 2026-09-26)
+
+This repo is meant to be cloned onto other machines (a cloud machine; the spare-laptop trial). A Claude session
+there starts with **no memory of the first machine's chats** — everything it needs is in the repo. Read, in this
+order: `docs/working-agreements.md` (how the user works), the **"LAPTOP TRIAL HANDOFF"** block at the top of
+`docs/dynamic/todo.md`, then `docs/runbook.md` (§13 is the trial script) and `docs/configuration.md`.
+
+- **Sibling repos may not exist.** `../motivewave` and `../FLOW` are not needed to build or run (only a JDK 26 is:
+  set `FLOW_JDK_BIN`). Links into `../motivewave/docs/…` are then dead; do not re-derive platform facts from
+  memory — tell the user which finding you need and ask them to fetch that repo
+  (`github.com/yoda-76/motivewave`).
+- **The order rules above apply unchanged, and on a second machine the *user* arms and runs the trading
+  session.** Claude reads logs and journals, runs the `analysis/` scripts, builds and tests — it does **not** check
+  *Armed*, switch *Mode* to `SIM_LIVE`, or place any order on its own initiative there. The Simulated-account-only /
+  real-account-forbidden line is identical everywhere.
+- **"Sim Trade Only" is a per-installation MotiveWave setting and a fresh install must be assumed to have it OFF**
+  (it was off on the first machine's fresh install). **There is no code-level check that the active account is the
+  Simulated one** — the SDK exposes an `Account` type but no accessor to it (searched 2026-09-26) — so this single
+  platform checkbox, plus the human confirming the account selector reads "simulated", is the entire guard against
+  a real-account order. On any new machine it must be enabled **before the study is added**, and confirmed at every
+  activation. If anything indicates a non-Simulated account, **stop and tell the user** (safety stop, not a
+  consent request).
+- **Per-machine differences go in `config/risk.local.json`** (git-ignored, optional; D-106), never in the tracked
+  `config/risk.json`. For an "identical to the first machine" trial, leave it absent.
+- **Claude cannot drive MotiveWave's GUI.** The user adds/removes/activates the study; Claude reads MotiveWave's log
+  (`%APPDATA%\MotiveWave\output\`) and the journal afterwards.
+- Push/commit only when the user asks (`docs/working-agreements.md` §6).
+
 No other standing rules recorded yet.

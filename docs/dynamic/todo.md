@@ -7,6 +7,88 @@ date, and link the decision/finding it produced; don't delete it.
 
 ## Roadmap to the target state (added 2026-09-24 — read this first)
 
+### LAPTOP TRIAL HANDOFF (2026-09-26) — if you are the Claude on the spare laptop, read this FIRST
+
+**Read order:** `CLAUDE.md` (esp. "Working on a second machine") → `docs/working-agreements.md` → this block →
+`docs/runbook.md` (§13 is the script) → `docs/configuration.md`. You have no memory of the first machine's chats;
+this repo is everything. The first machine is called "the dev machine" below.
+
+**Goal (the user's words):** the laptop runs the system **exactly like the dev machine does**, in two phases, both
+driven by the user (you read, build, analyse; you do not arm or place orders — `CLAUDE.md`):
+1. **Off-market (now / whenever the market is shut):** install MotiveWave, set it up per the runbook, clone + build +
+   **deploy** FLOW_V2, add the FLOW Runtime study in **`DRY_RUN`, Armed unchecked**, and run the **initialisation
+   check** that was done on the dev machine on 2026-09-26 (D-102): runbook §5. Success = the expected log lines, a
+   journal with the D-97/D-89 records, `python analysis/status.py` → `ALIVE … data: ok`.
+2. **In trading hours:** the user runs the **`lvn_fade_test`** strategy with **Mode `SIM_LIVE` + Armed on the
+   SIMULATED account** with everything else running (recorders, journal, analysis), then the nightly tools. Market
+   open: Sunday 17:00 CT = **Monday 03:30 IST** (US daylight time; 04:30 IST in winter). Entries stop 15:45 CT
+   (02:15 IST), flatten from 15:55 CT (02:25 IST).
+
+#### Readiness — stated plainly (assessed 2026-09-26 22:40 IST, before the push)
+
+| Item | State |
+|---|---|
+| Repo builds on a machine with **no sibling repos** (fresh clone, only `FLOW_JDK_BIN`/`MOTIVEWAVE_EXT_DIR`) | **Verified** 2026-09-26 (found and fixed a build-breaking env-test assumption). Not verified on a different Windows/MotiveWave install. |
+| Start-up / initialisation with the market closed | **Verified on the dev machine** (D-102). Never on a second machine. |
+| Order path for `lvn_fade_test` (entry → bracket → leg fill → sibling cancel) | **Live-verified on Sim on 2026-09-21–23** (D-67/D-81/D-85–D-87) — **but the code has changed since and none of the changes has ever run with ticks or orders:** `LiveOrderTracker` extraction (D-91), session-end/weekend flatten (D-92), `order_fill` records (D-94), arming records (D-97), partial-fill rule (D-99, provisional). Unit-tested and mutation-checked only. **Phase 2 is the first live run of all of it — on the dev machine too.** Treat the first session as a test, watch it, keep the bounds. |
+| Recorders: footprint, VWAP, big trades, OHLCV `bars/`; VP after the D-104 refactor | **Built, never seen with ticks.** Liquidity map + market-structure recording are verified (D-102). |
+| Analysis tools (`status.py`, `daily_report.py`, `trade_view.py`) | Verified on synthetic journals and on the dev machine's real closed-market journal; **never on a real trade's journal**. |
+| Log retention (D-106) | Built, unit-tested; the `startSession` wiring is **unseen inside MotiveWave**. Leave `config/risk.local.json` **absent** for an identical-to-dev trial (keeps every log). |
+| **Guard against a real-account order** | **Only** MotiveWave's per-installation **"Sim Trade Only"** checkbox + a human reading the account selector. **No code-level check exists** (the SDK has an `Account` type with `getName()` but no accessor reaches it — searched all 132 SDK classes). A fresh install must be assumed to have it **OFF**. |
+
+**Not the same on both machines — know this before comparing them:** the dev machine's deployed build is from
+**2026-09-26 21:16** (D-89…D-101 + tooling); the laptop will deploy **HEAD**, which also contains D-104 (volume
+profile math extracted into flow-core) and D-106 (rolling/pruned feature logs, `risk.local.json`). To make the
+dev machine identical, redeploy it after removing its study (`bash build/build.sh`, no session running).
+Also unknown: whether the laptop's MotiveWave version equals the dev machine's **7.0.28** (a fresh download is
+probably newer — the dev machine has 7.1.1's release notes downloaded and the user plans to install it; **the new
+version has never been tried with this code**), and whether one Rithmic login may be used from two machines at once
+(a second login may disconnect the first — **do not run both simultaneously until checked**).
+
+#### Phase 1 — off-market checklist (no orders possible: `DRY_RUN`, Armed unchecked)
+1. **Before adding any study:** MotiveWave → *Configure → Settings → General → Simulated Account tab* → **Enabled**
+   and **Sim Trade Only** checked (runbook §4.2). Confirm out loud/in writing; the account selector must read
+   "simulated". *Only then* connect Rithmic / add the study.
+2. Follow runbook §2 (install steps; **§2 step 7 = scratch-folder build, must exit 0**), §3 (`FLOW_HOME` etc.), §4,
+   then `bash build/build.sh` (real deploy; no session running) and re-add the study (§4.4).
+3. Verify with runbook §5 (expected lines incl. `FLOW_HOME`, `LOG_RETENTION hours=0 (keep everything)`,
+   `DATA_RECORDER_ON`, `SUBSCRIBED_DOM`, `ACTIVATE pos=0 cash=…`); `python analysis/status.py`;
+   `python analysis/daily_report.py --no-file`. Expected and fine with the market shut: `SESSION_FLATTEN_DUE` on a
+   weekend, no `vwap/`/`footprint/`/`big_trades/`/`bars/` files yet.
+4. **Report back** anything the runbook got wrong or left out — that is the deliverable of this phase (fix the
+   runbook, record a `decisions.md` entry).
+
+#### Phase 2 — trading hours (the USER arms; you watch)
+Setup: Strategy Id **`lvn_fade_test`**, Mode **`SIM_LIVE`**, Armed **checked** — only after: Sim Trade Only
+confirmed again, account selector reads "simulated", the Simulated account holds **no position and no resting
+orders** (the runtime refuses to arm otherwise), and `config/risk.json` bounds are as intended (1 contract, daily
+loss limit 200 ticks). Big-trade Min Size is **1** by default (a D-90 test value → nearly every tick is a "big
+trade"): the user decides whether to keep it for the capture test or set 10.
+`lvn_fade_test` fades every LVN touch (short when price enters an LVN from below, long from above), 5-tick
+stop/target, no entries in the first 2 minutes after start; the risk chain limits it to 6 position changes/min,
+5 s minimum dwell, 20 reversals/session, and trips the **kill switch** at a 200-tick daily loss.
+**What to watch, and what "as expected" looks like** (from the market-open batch, section 2 below):
+- Each entry: `real_order_submitted` → `ORDER_FILLED` → `LIVE_BRACKET_SUBMITTED`; one leg fills →
+  `LIVE_SIBLING_LEG_CANCELLED`; account flat, **nothing resting**, no `POSITION_MISMATCH_*`, **no unexpected
+  disarm**. A 1-lot flow must show **none** of `LIVE_ENTRY_PARTIAL_FILL`, `LIVE_BRACKET_SIZE_FROM_FILL`,
+  `LIVE_ENTRY_PARTIAL_FLATTENED` (D-99). If a step differs from 2026-09-21–23 behaviour, **revert the Study side of
+  commit `f9dd5f2` first and diagnose second** (D-91), and tell the user immediately.
+- An `order_fill` record per fill with real prices/times (D-94); `arming_state` on arming / on any denial (D-97).
+- `python analysis/status.py` at any time; afterwards `daily_report.py`, `trade_view.py --trade N`. **Confirm the
+  assumptions listed in section 2, item 4 below** (what `getAvgFillPrice()`, `cash Δ` and `sdkTotalRealizedPnL`
+  really mean).
+- Optional flatten test in a watched window (D-92): put `{ "flattenLeadMinutes": 400, "noEntryLeadMinutes": 405 }` in
+  the **git-ignored `config/risk.local.json`** (it moves the window to 09:15/09:20 CT), re-activate, expect
+  `SESSION_FLATTEN_DUE`, a flat account, **no disarm**; **delete the override afterwards** (D-106 lets you do this
+  without touching the tracked file).
+- **Stop conditions (tell the user at once):** an account that is not the Simulated one anywhere (the `ACTIVATE`
+  line, the selector, a fill on another account); a fill/position the journal does not explain; the kill switch;
+  repeated disarms; a stuck resting order.
+
+**You must not:** check *Armed*, switch to `SIM_LIVE`, submit/modify/cancel an order, read or write `.env`, or run
+`bash build/build.sh` while a session is running. You may read logs/journals, run the analysis scripts, and run
+the build against a scratch folder (`MOTIVEWAVE_EXT_DIR=$(mktemp -d)`).
+
 ### SPRINT HANDOFF — read this first, no re-explanation needed (updated 2026-09-26, end of session)
 
 **What the sprint is.** A sprint to prepare FLOW_V2 for an unattended run
@@ -69,13 +151,13 @@ plus D-89 (`price_anchor` journaling) and D-90 (`bars/`, `market_structure/`,
 `bash build/build.sh` ships all of it. None of it has ever run inside
 MotiveWave; the evidence is synthetic tests, mutation checks and replays.
 
-**Tests.** `build/build.sh` runs **20 Java gates** (17 `flow-core` incl.
-`TradingWindowTest`, `SessionEndTest`, `ArmingStateTest`, the replay tests; plus
-`SafetyHookReflectionTest`, `OrderGatewayTest`, `LiveOrderTrackerTest`) and the
-**3 Python suites** (`test_daily_report.py` 40, `test_trade_view.py` 24,
-`test_status.py` 24). **All pass** as of the last commit — but this session ran
-them from a scratch directory, never through `build.sh`, because MotiveWave was
-open and the script deploys (see §5 for how to run without deploying).
+**Tests (recounted 2026-09-26, end of day).** `build/build.sh` runs **24 Java gates** (21 `flow-core` — incl.
+`TradingWindowTest`, `SessionEndTest`, `ArmingStateTest`, `FlowHomeTest`, `ExternalConfigTest`, `RollingLogsTest`,
+`VolumeProfileMathTest`, the two replay tests — plus `SafetyHookReflectionTest`, `OrderGatewayTest`,
+`LiveOrderTrackerTest` in `flow-runtime`), the **build-environment shell test** (`build/env_test.sh`, first gate), and
+the **3 Python suites** (`test_daily_report.py` 49, `test_trade_view.py` 25, `test_status.py` 28). **All pass**,
+including one full `build.sh` run against a scratch deploy folder (`MOTIVEWAVE_EXT_DIR=$(mktemp -d) bash
+build/build.sh`, D-100 — how to run everything without touching MotiveWave; §5 has the by-hand alternative).
 
 #### 2. NEXT — the market-open batch (do this first when ticks are flowing)
 
@@ -146,16 +228,41 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
   after the next deploy, glance at `logs/volume_profile_feature.log` — the lines
   should look as before (POC/VAH/VAL/zones). Still uncovered: zone *identity*
   (ids) and a busy tape's edge cases.
-- **Runbook draft** (Phase 4): install, MotiveWave + Rithmic setup, Sim account +
-  "Sim Trade Only", auto-start, timezone, remote monitoring. Mark what only the
-  user can fill in.
+- [x] (2026-09-26, D-105) **Runbook drafted** — `docs/runbook.md`: install,
+  MotiveWave + Rithmic setup, Sim account + "Sim Trade Only", first-start
+  checklist, daily routine, deploying, time zones, unattended running, known
+  risks, and a table for what only the user can fill in. Every step is tagged
+  VERIFIED / FROM CODE-DOCS / UNKNOWN / YOU; **nothing has been done on a second
+  machine** — the first cloud setup is its real test.
+- **Feature logs are never pruned (found writing the runbook, D-105):**
+  `logs/*_feature.log` (7 diagnostic files, ~14 MB today) are opened for append
+  forever; only `raw.jsonl` is pruned (48 h). Decide: rotate/prune them, or drop
+  the ones the `data/` recorder has superseded. Also drop the old 10 s
+  decisions-tier `liquidity_snapshot` (already listed in Phase 0) — it dominates
+  the ~20 MB `decisions.jsonl` of a long session.
 - **§9 partial fills**: add partial fills to `FakeBroker`, a characterization
   test, then the `Order.getFilled()` bracket-sizing fix
   (`plumbingEdgeCases.md` §9). §10/§11 need a live probe (the harness refused
   to write one on 2026-09-23 — if it recurs, say so, don't work around it).
-- Housekeeping: delete `data_take1/` (gitignored first take); drop the old 10 s
-  decisions-tier `liquidity_snapshot` once `data/` is proven; wire the flatten
-  lead values into the nightly report.
+- Housekeeping: **`data_take1/` — asking the user (2026-09-26):** it is 11 MB of
+  real recorded data (gitignored) and holds the **only big-trade capture that
+  exists**, so it is NOT deleted without a yes; drop the old 10 s decisions-tier
+  `liquidity_snapshot` once `data/` is proven (waits on ticks). (The flatten-lead
+  values in the nightly report turned out to be done already.)
+- [x] (2026-09-26, D-106) **Log retention is configurable per machine**
+  (`logRetentionHours`, 0 = keep everything; dev 0, cloud 48 via the git-ignored
+  `config/risk.local.json`), and the per-feature logs now roll daily and are pruned
+  by it. Built, unit-tested (27/28 mutations caught, 1 equivalent), full build
+  passes; **not deployed** — the new `RISK_LOCAL_CONFIG`/`LOG_RETENTION` log lines
+  are unseen live. Note: this **stops raw.jsonl pruning on this machine**
+  (previously a fixed 48 h) — intended (dev keeps logs) but `logs/` will grow.
+- [x] (2026-09-26, D-106) **MotiveWave update: decided to leave it as is** until
+  the user installs the new version in a live market to test it immediately.
+- [ ] **Second-machine (spare laptop) trial** — the user's own next step, after
+  all off-market work is done (it is now); script = `docs/runbook.md` §13.
+  **Push first** (commits are local only). Pre-checked from here with a fresh
+  clone: build passes with no sibling repo (that found and fixed the
+  `env_test.sh` bug).
 
 #### 4. Only the user can decide
 
@@ -275,8 +382,9 @@ Two decisions only the user can make, both gate the safety work below:
     kill switch, and — after the window — nothing re-entering until the
     17:00 CT reopen. Also check a flat account gets **no** order at all
     during the window. Restore `flattenLeadMinutes` afterwards.
-  - [ ] Wire `flattenLeadMinutes`/`noEntryLeadMinutes` values into the
-    nightly report so the user can see which window was in force.
+  - [x] (found already done 2026-09-26) `flattenLeadMinutes`/`noEntryLeadMinutes`
+    appear in the nightly report's "Config in force" line (seen on the real
+    2026-09-26 report, D-102) — they come from the `risk_config_loaded` record.
 - [~] Feed-silence watchdog: **decided NOT to build (user, 2026-09-26,
   D-93)** — the system checks only whether trade conditions are met, not
   whether the market is silent; holidays are checked by the user. Reopen
@@ -378,9 +486,11 @@ Two decisions only the user can make, both gate the safety work below:
   `FLOW_JDK_BIN` / `MWAVE_SDK_JAR` / `MOTIVEWAVE_EXT_DIR`); analysis tools done
   2026-09-26 (D-101, they read `FLOW_HOME`)**. Remaining: the experiments' log
   paths in `../motivewave` (a different repo).
-- [ ] Runbook: install, MotiveWave + Rithmic account setup, Sim account
-  enablement and "Sim Trade Only", `.env` handling (user-only), auto-start,
-  time zone, remote monitoring.
+- [~] Runbook: **drafted 2026-09-26 (`docs/runbook.md`, D-105)** — install,
+  MotiveWave + Rithmic account setup, Sim account enablement and "Sim Trade Only",
+  time zone are written up; **auto-start, unattended desktop session, remote
+  monitoring and alerts are UNKNOWN / the user's** (§9 and §12 of the runbook).
+  Revise it after the first real setup on the cloud machine.
 
 **Phase 5 — strategy (open-ended, not engineering).** Nothing is validated
 (backtests were exploratory; the 15-point order-flow execution rules review

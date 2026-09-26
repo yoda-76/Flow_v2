@@ -581,6 +581,7 @@ can place an order — the analysis scripts only read files under `logs/` and
 | `python analysis/trade_view.py --date D --trade N` | **Market context around one trade**: how far it went for/against you, order flow before/during/after, price ladder, liquidity in the way of the target. Saves `reports/trade_<D>_<N>.md`. | When a trade needs a "why?" |
 | `bash build/build.sh` | Compiles, runs **every** test gate (Java and Python) and **deploys** to MotiveWave. **Wipes `MotiveWave Extensions/dev` — never run while a session is running.** | After a code change |
 | edit `config/risk.json`, or the study's settings | See [docs/configuration.md](docs/configuration.md): every setting, its default, when it takes effect. | To change limits/cadences |
+| — | **Setting up a machine** (install, MotiveWave + Rithmic, Sim account, first-start checklist, deploying, unattended running): [docs/runbook.md](docs/runbook.md). A draft — every step is tagged verified / unknown / yours. | New machine, or after a MotiveWave change |
 
 Where things land: `logs/<strategy>_<ms>_inst<id>/decisions.jsonl` (what the
 system decided, kept), `data/<construct>/<session>.jsonl` (recorded market
@@ -674,8 +675,11 @@ FLOW_V2/
 │                          trade_view.py (market context around one trade), status.py
 │                          ("is it alive" one line), journal_summary.py, and their tests
 ├── reports/               generated report pages, gitignored
-└── config/                risk.json (hand-edited, runtime-read-only; every key is
-                           documented in docs/configuration.md)
+├── config/                risk.json (hand-edited, runtime-read-only; every key is
+│                          documented in docs/configuration.md)
+└── docs/                  configuration.md (every setting), runbook.md (setting up a
+                           machine — a draft), working-agreements.md (how the user works;
+                           read by any new Claude session), dynamic/ (decisions, findings, todo)
 ```
 
 The two-unit split is the point, not a convention: it is what makes "a

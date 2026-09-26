@@ -4031,6 +4031,135 @@ readable rather than being silently rewritten.
     `volume_profile_feature.log` lines look as before is owed (a study is running
     right now, so it was not redeployed).
 
+- **D-105** (2026-09-26) — **Runbook drafted (`docs/runbook.md`), with every
+  claim tagged by how well it is known.** Requested as the last offline item of
+  the cloud-readiness phase. Covers what runs where, the reference machine
+  (MotiveWave 7.0.28 on Java 26, Temurin 26.0.2.1, Windows 10), install steps, the
+  path/env overrides (D-98/D-100/D-101), one-time MotiveWave set-up (Rithmic,
+  Simulated Account + Sim Trade Only, chart, the study), a first-start checklist
+  with the exact log lines seen on 2026-09-26 (D-102), the daily routine,
+  deploying a change, time zones, unattended running, known risks, and a table of
+  what only the user can fill in.
+  - **Method**: each statement is [VERIFIED] (done or observed here, dated),
+    [FROM CODE/DOCS], [UNKNOWN] or [YOU]. Nothing has been set up on a second
+    machine, so the "install" steps are reconstructed from this machine and the
+    scripts; the runbook says so at the top. Facts were re-checked against the
+    machine before being written (gate counts, folder sizes, versions) — and two
+    of my own first-draft numbers/claims were wrong and corrected (session-folder
+    count; that the large `decisions.jsonl` files predate raw pruning — they are
+    the old 10 s `liquidity_snapshot` records).
+  - **Findings while writing it** (all open, none fixed):
+    1. **`logs/*_feature.log` are never pruned** (7 diagnostic files, ~14 MB, append
+       forever) — only `raw.jsonl` is (48 h). Needs a rotate/prune/drop decision.
+       **Resolved by D-106** (daily rolling files, pruned by `logRetentionHours`).
+    2. **MotiveWave auto-updates**: the startup log shows a 7-day update check and
+       a completed download of release 7.1.1's notes while 7.0.28 is installed; an
+       update can change `mwave_sdk.jar` or the bundled Java, and the build has no
+       `--release` flag (the build JDK must not be newer than MotiveWave's bundled
+       Java — both 26 today). Update policy is the user's call.
+    3. **The runtime's default `FLOW_HOME` is this machine's path**; on a new
+       machine it must be set, or the runtime writes to a non-existent
+       `C:/yadvendra/...` (`logs/` is created, `config/risk.json` is not).
+    4. The runbook has **no answer** for auto-start, an always-logged-in desktop
+       session, remote monitoring or alerts — all marked UNKNOWN / the user's.
+  - **Not done**: no second-machine dry run; nothing beyond documentation and
+    the todo/README links changed. Revise after the first real cloud setup.
+
+- **D-106** (2026-09-26) — **Log retention is a per-machine setting; the
+  feature logs roll daily and obey it; the MotiveWave update is left alone; and a
+  clean-clone build test found a distributability bug.** All decided with the
+  user the same day.
+  - **Decisions (user):** *dev machine keeps the logs* ("we might need them to
+    research") *unless they start causing problems; the remote machine prunes at
+    48 h*; *"if the new version [of MotiveWave] is not installed I will install it
+    in the live market so that we can test it immediately — until then keep it as
+    is"*; and *finish all off-market work before the spare-laptop trial*.
+  - **Mechanism.** New config key **`logRetentionHours`** (0 = keep everything,
+    the default; negative counts as 0). It covers the past sessions' `raw.jsonl`
+    (D-75, formerly a fixed 48 h) and the per-feature logs (`logs/*_feature*.log`),
+    never `decisions.jsonl` or `data/`. To make machines differ without editing the
+    tracked file, an **optional git-ignored `config/risk.local.json`** is laid over
+    `risk.json` (any known key in it wins; missing file = nothing overridden).
+    `ExternalConfig.loadLayered`; journaled in `risk_config_loaded`
+    (`logRetentionHours`, `localOverrideKeys`, `localOverrideLastModifiedMs`,
+    `localOverrideError`); the MotiveWave log shows `RISK_LOCAL_CONFIG`/`LOG_RETENTION`.
+    **A broken override file is ignored as a whole** (no half-applied keys) and loudly
+    (`RISK_LOCAL_CONFIG_IGNORED`) — for retention the failure mode is "keep
+    everything" (a full disk), never silent deletion.
+  - **The feature logs (found writing the runbook, D-105): were never pruned.**
+    They were opened for append forever. New `RollingFileWriter` (flow-core, a
+    `Writer` wrapped by the existing `PrintWriter`s, so call sites barely changed)
+    starts a **new file per trading day** — `vwap_feature_2026-09-26.log`, the day
+    named as the report names it (17:00 CT → 17:00 CT) — and `FeatureLogs` applies
+    `LogRetention.pruneFeatureLogs` (by last-modified time) at activation and on each
+    roll. A file that cannot be opened is dropped, not retried until the day changes,
+    and never breaks the event thread. The seven `new FileWriter(… , true)` sites
+    were replaced. **Startup order changed**: the risk config now loads *before* the
+    feature logs and the pruning (it used to load after the features), because
+    retention is a config value.
+  - **Consequences to know:** raw.jsonl pruning **stops on this machine** (it was a
+    fixed 48 h) — intended, but `logs/` grows (~3 MB/h of raw on a quiet market);
+    feature-log **file names changed** (old `*_feature.log` files stay until aged
+    out); the `# feature start` header appears only in the first file of an
+    activation.
+  - **Tests**: `ExternalConfigTest` (layering, clamp, all-or-nothing, error
+    exposure) and `RollingLogsTest` (trading-day boundaries incl. DST, rolling,
+    append not truncate, failure handling, name matching, pruning boundaries,
+    directories and session folders untouched, `FeatureLogs` wiring) — two new
+    build gates; **28 mutations, 27 caught**, the survivor an equivalent mutant
+    (`failedDay` is only compared to the current day and time only moves
+    forward); the first round's survivors exposed real test gaps (no test of the
+    `FeatureLogs` glue; a partial-override case) — fixed. Full build passes.
+    **Not verified**: the `startSession` wiring inside MotiveWave (it can't run
+    outside it) — compiled only; deploy and read the log lines.
+  - **MotiveWave update:** no action; recorded in the runbook §10. The user
+    installs it in a live market and re-tests immediately.
+  - **A distributability bug found by a clean-clone build** (a fresh `git clone`
+    into a temp folder, no sibling `motivewave` repo, only `FLOW_JDK_BIN` /
+    `MOTIVEWAVE_EXT_DIR` set): `build/env_test.sh` — the **first gate of
+    `build.sh`** — asserted this machine's `../motivewave/tools/...` layout and
+    failed everywhere else, so **`build.sh` would have aborted on any other
+    machine before compiling anything**. Fixed: dev-layout checks run only if the
+    layout exists (else SKIP), the JDK used by the override tests comes from
+    `FLOW_JDK_BIN`/default/`PATH`, and a POSIX-form path is used inside `PATH`.
+    After the fix the clean clone builds with every gate passing and deploys to a
+    scratch folder. This is the partial check that could be done before the real
+    second-machine trial (runbook §13), which remains the real test.
+
+- **D-107** (2026-09-26) — **Second-machine (spare-laptop) trial: the plan, an honest readiness
+  assessment, and everything that lived only in memory moved into the repo.** Decided with the user: the trial has
+  two phases — (1) **off-market:** install MotiveWave, set up per the runbook, deploy, run the initialisation check
+  of D-102 (`DRY_RUN`, Armed off); (2) **in trading hours:** the user runs the **`lvn_fade_test`** strategy on the
+  **Simulated account** end to end (recorders, journal, analysis) — with the goal that the laptop runs **exactly
+  like the dev machine**. The user asked for the docs to be sufficient for a *separate Claude session on the
+  laptop* to pick up correctly, and (after being told what was not ready) said to commit and push without waiting.
+  - **Readiness assessment (recorded in the `todo.md` "LAPTOP TRIAL HANDOFF" block):** ready — the repo builds from
+    a clean clone with no sibling repos; start-up is verified on the dev machine. **Not verified — needs ticks or
+    orders, on either machine:** the order path since its changes (D-91/D-92/D-94/D-97/D-99; only the *old* form
+    was live-verified on Sim, 2026-09-21–23), the footprint/VWAP/big-trade/`bars` recorders, VP after the D-104
+    refactor, the analysis tools on a real trade. The first live session is therefore a test on both machines.
+  - **Finding — the only guard against a real-account order is a per-installation MotiveWave checkbox.** The
+    runtime has no code-level check that the active account is the Simulated one: `ACTIVATE` logs a cash balance,
+    not an account, and the SDK's `Account` interface (`getId()`/`getName()`/`getCashBalance()`) is not returned by
+    any method in the SDK's 132 classes (searched with `javap`), so no guard can be written against it. A **fresh
+    MotiveWave install must be assumed to have "Sim Trade Only" OFF**, so on the laptop it must be enabled **before
+    Rithmic is connected and the study added**, and the account selector confirmed. This is written into
+    `CLAUDE.md` ("Working on a second machine"), the runbook §4.2 and the handoff. **Not fixed / no code change** — a
+    code guard needs an SDK route to the account that does not exist; flagged for the user.
+  - **Known differences and unknowns between the two machines** (all in the handoff): the dev machine's *deployed*
+    build is from 21:16 (D-89…D-101) whereas the laptop deploys HEAD (adds D-104, D-106); MotiveWave version
+    (7.0.28 here; a fresh download is probably newer and **untested with this code**); whether one Rithmic login can
+    run on two machines at once (a second login may disconnect the first — do not run both at once until checked);
+    the big-trade Min Size default is still the test value 1.
+  - **Moved from per-machine memory into the repo** (`docs/working-agreements.md`, linked from `CLAUDE.md`): the
+    working style (review-then-rework, flag-don't-silently-fix, experiment reporting, handoff in `todo.md`,
+    commit/push only when asked), the verification habits (mutation testing, extract-before-test, clean-clone test),
+    and the machine quirks (Bash heredocs, no tz database, `build.sh` deploys / `MOTIVEWAVE_EXT_DIR`, the Git Bash
+    classpath path form, MotiveWave's log location). `CLAUDE.md` also states that on a second machine the **user**
+    arms and runs the trading session and Claude does not.
+  - **Stale numbers fixed** (recounted, not remembered): 24 Java gates + the shell env test + 3 Python suites
+    (49 / 25 / 28 tests).
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
