@@ -7,7 +7,7 @@ date, and link the decision/finding it produced; don't delete it.
 
 ## Roadmap to the target state (added 2026-09-24 — read this first)
 
-### SPRINT HANDOFF — read this first, no re-explanation needed (2026-09-24)
+### SPRINT HANDOFF — read this first, no re-explanation needed (updated 2026-09-26, end of session)
 
 **What the sprint is.** A sprint to prepare FLOW_V2 for an unattended run
 on a rented cloud machine. The user wants to finish everything that can be
@@ -30,57 +30,168 @@ refused to let me write an order-placing probe (`plumbingEdgeCases.md`
 §10/§11) — if that recurs, say so, don't work around it. The sprint ends
 when the user says so.
 
-**State at the end of the 2026-09-24 session.** All 15 test gates pass;
-everything is pushed.
-- **Deployed** to MotiveWave: the D-88 per-construct recorder including the
-  two fixes found on the first take.
-- **Built but NOT deployed** (deploy before the next recording, checking
-  first that no session is running — newest `logs/*/decisions.jsonl`
-  modified in the last minute means one is): `price_anchor` journaling
-  (D-89), `bars/` OHLCV + `market_structure/` state-change + `warm_start`
-  recording (D-90), and the big-trade minimum size default **1** (was 10 —
-  a test setting, revert to 10 after; an already-added study keeps its
-  saved value, so change it in the study or re-add it).
-- **Plumbing review** (`plumbingEdgeCases.md`): §1–§8 and §13's scope call
-  done (D-85–D-87 and the kill-switch-survives-disarm fix live in code);
-  still open: §9 (bracket sizing should use `order.getFilled()`), §10/§11
-  (need a live order-placing probe — see the harness note above), and the
-  fake-`OrderContext` harness (approved, not built).
-- **Replay**: `RecordingReplayTest` replays the committed 5-minute
-  recording (`flow-core/fixtures/recording_gc_20260924_5min/`, D-89):
-  footprint candles byte-identical, VWAP within anchor noise, VP rebuilt
-  from footprint candles. Gaps found are listed in D-89/D-90.
+**Where things stand — end of the 2026-09-26 session (Saturday, market closed
+all weekend).** Written so a fresh chat can start from here with no
+re-explanation. Everything below is committed and pushed to `origin/main`.
 
-**Also pending at the next market open — D-97 (arming journaled):** after the
-deploy, arm a Sim session and check that an `arming_state` record appears in
-`decisions.jsonl` (armed true, mode SIM_LIVE), that `python analysis/status.py`
-shows `armed: yes SIM_LIVE (as of …)`, that the report's **Arming** section
-matches what you did, and — if something disarms it (a rejected entry, a
-mismatch) — that it reads `DENIED`. Deliberately not deployed over the weekend.
+#### 1. What exists now
 
-**Also pending at the next market open**: the `LiveOrderTracker` live test
-(Phase 1, "Fake `OrderContext` test harness" item below) — deploy + one Sim
-entry→bracket→fill cycle. Deliberately not deployed over the weekend (no
-ticks to exercise it).
+**Built and unit-tested this session (D-91 … D-97), none of it deployed:**
 
-**Next planned step (2026-09-25).** Re-run the recording in busy hours to
-exercise big-trade capture: deploy first, then on an **@GC 1-minute chart**
-add **FLOW Runtime** (FLOW menu) → Runtime tab: Strategy Id
-`level_zone_observer`, **Armed unchecked**, Mode `DRY_RUN` → Activate →
-the log must show `DATA_RECORDER_ON` and `ACTIVATE pos=0` → run ~5 min →
-remove the study. Then check `data/` (footprint, vwap, big_trades,
-liquidity_map, bars, market_structure), confirm `price_anchor` is in the
-session's `decisions.jsonl`, and re-run the replay comparison on the new
-take. Storage measured so far: liquidity map ≈ 4–5 KB/s at 1 s (≈ 3 GB per
-7 trading days), everything else negligible. Housekeeping: `data_take1/`
-(gitignored first take) can be deleted.
+| Decision | What | Where |
+|---|---|---|
+| D-91 | Fake-broker test harness (`FakeBroker`, proxy-based, passive) and the order-callback state machine **extracted** from `FlowRuntimeStudy` into `LiveOrderTracker` (bodies moved verbatim) | `flow-runtime/src/com/flow/rt/` |
+| D-92 | **Session-end / weekend flatten** + entry block: entries stop 15:45 CT, open positions flattened from 15:55 CT until the 17:00 CT reopen, and Fri 15:55 → Sun 17:00 CT. Config: `flattenLeadMinutes` (5), `noEntryLeadMinutes` (15); 0 disables | `flow-core/.../TradingWindow.java`, `RiskChain`, `Pipeline`, `LiveOrderTracker.flattenForSessionEnd` |
+| D-93 | **Decision (user): no feed-silence watchdog; holidays/early closes are not modelled — the user checks the calendar.** Stands until a live-execution bug traces to it or the user picks it up | `decisions.md` |
+| D-94 | **Daily report** `analysis/daily_report.py` + the journal fields it needed: structured `order_fill` record, `t` on every `log` line, `eventTimeMs` on `intent_changed` | `analysis/`, `OrderGateway.describeFill` |
+| D-95 | **Trade viewer** `analysis/trade_view.py` (MFE/MAE, order flow before/during/after, ladders, liquidity in the way of the target) | `analysis/` |
+| D-96 | **"Is it alive" line** `analysis/status.py` (exit codes 0/1/2) | `analysis/` |
+| D-97 | **Armed flag + mode journaled**: `arming_state` records, `armed`+`runtime` on every heartbeat, real `mode` in `session_header`; report gets an Arming section; status shows the exact flag. Also fixed a bug in my own D-94/D-96 tools (see §5) | `Pipeline`, `FlowRuntimeStudy`, `analysis/` |
 
-**Open questions for the user** (none block the next step): dense
-1-second candles (a candle every second, zero volume) vs the current sparse
-ones; the alert channel for unattended runs; whether the market-structure
-line schema (a first draft, D-90) is final; what the nightly report must
-show; a standing-authorization rule for *after* the sprint (today's covers
-only the sprint).
+Also added: `docs/configuration.md` (every setting, default, when it takes
+effect, how to change), explicit keys in `config/risk.json`, the README
+"Commands you run" table.
+
+**Live in MotiveWave right now: only the D-88 per-construct recorder** (with
+its two first-take fixes), deployed 2026-09-24. **Everything in the table above
+plus D-89 (`price_anchor` journaling) and D-90 (`bars/`, `market_structure/`,
+`warm_start` recording, big-trade default 1) is built but NOT deployed** — one
+`bash build/build.sh` ships all of it. None of it has ever run inside
+MotiveWave; the evidence is synthetic tests, mutation checks and replays.
+
+**Tests.** `build/build.sh` runs **20 Java gates** (17 `flow-core` incl.
+`TradingWindowTest`, `SessionEndTest`, `ArmingStateTest`, the replay tests; plus
+`SafetyHookReflectionTest`, `OrderGatewayTest`, `LiveOrderTrackerTest`) and the
+**3 Python suites** (`test_daily_report.py` 40, `test_trade_view.py` 24,
+`test_status.py` 24). **All pass** as of the last commit — but this session ran
+them from a scratch directory, never through `build.sh`, because MotiveWave was
+open and the script deploys (see §5 for how to run without deploying).
+
+#### 2. NEXT — the market-open batch (do this first when ticks are flowing)
+
+Everything unverified needs live ticks, so batch it into one monitored window.
+Sim only (third exception in `CLAUDE.md`: Sim pre-authorized, real forbidden;
+stop and tell the user if `ACTIVATE` shows a non-Simulated account).
+
+1. **Pre-flight.** No session running (newest `logs/*/decisions.jsonl` not
+   modified in the last minute). `bash build/build.sh` — must pass all gates,
+   then it deploys (**wipes `MotiveWave Extensions/dev`**; also removes any
+   experiment studies deployed from `../motivewave`). Restart/refresh the
+   study in MotiveWave.
+2. **Recording take (the postponed 2026-09-25 step).** @GC 1-minute chart →
+   FLOW menu → FLOW Runtime → Runtime tab: Strategy Id `level_zone_observer`,
+   Armed unchecked, Mode `DRY_RUN` → Activate. The log must show
+   `DATA_RECORDER_ON` and `ACTIVATE pos=0`. Run ~5 min in a busy period, remove
+   the study. Check `data/` has `footprint`, `vwap`, `big_trades`,
+   `liquidity_map`, `bars`, `market_structure`; `price_anchor` is in the
+   session's `decisions.jsonl`; **now `arming_state` and `armed`/`runtime` on
+   heartbeats too**. Re-run the replay comparison on the new take. Then set the
+   big-trade **Min Size back to 10** (it is 1 as a test value, D-90) — an
+   already-added study keeps its saved value, so change it in the study or
+   re-add it.
+3. **Armed Sim session (covers D-91, D-92, D-94, D-97 in one go).** Mode
+   `SIM_LIVE`, Armed checked, a strategy that trades (`lvn_fade_test` trades
+   often). To test the flatten inside a watched window, edit
+   `config/risk.json` (the user edits it): `flattenLeadMinutes` ≈ 400 and
+   `noEntryLeadMinutes` ≈ 405 puts the flatten at 09:20 CT and the entry block at
+   09:15 CT — re-activate the study after editing (the file is read at
+   activation). **Restore 5 / 15 afterwards.** Watch for:
+   - D-91: `real_order_submitted` → `ORDER_FILLED` → `LIVE_BRACKET_SUBMITTED`;
+     one leg fills → `LIVE_SIBLING_LEG_CANCELLED`, flat, nothing resting, no
+     `POSITION_MISMATCH_*`, no unexpected disarm. If any step differs from
+     before the extraction, **revert the Study side of `f9dd5f2` first and
+     diagnose second**.
+   - D-92: `SESSION_FLATTEN_DUE`, a `SESSION_FLATTEN` line, account flat, **no
+     disarm**, nothing re-entering until 17:00 CT; and a flat account gets **no**
+     order at all in the window.
+   - D-94: an `order_fill` record per fill with real prices/times.
+   - D-97: an `arming_state` record when you arm; `DENIED` if something
+     disarms it.
+4. **Then run the tools on the real journal** and read them critically:
+   `python analysis/status.py`, `python analysis/daily_report.py`,
+   `python analysis/trade_view.py --trade 1`. Things to confirm (all assumptions
+   until now): the SDK's `getAvgFillPrice()`/`getLastFillTime()` values are real;
+   what `cash Δ` and `sdkTotalRealizedPnL` actually mean (the report treats cash Δ
+   as indicative because the platform may update it after the callback); the
+   big-trade and market-structure sections of the viewer against real recorded
+   data; that heartbeats' `localTimeMs` behaves on a quiet market.
+5. **Live retests still owed** (from Phase 1): D-85 kill switch, D-86
+   bracket-only close, D-87 double fill (only if one happens), the kill switch
+   surviving a Pipeline disarm.
+
+#### 3. Offline work still available (no market needed)
+
+- **Move the three hard-coded `C:/yadvendra/...` paths** (`LOG_ROOT`,
+  `DATA_ROOT`, `RISK_CONFIG_PATH` in `FlowRuntimeStudy`) into configuration —
+  proposed: one `FLOW_HOME` setting defaulting to today's paths (Phase 4).
+- **VAH/VAL/zones replay comparison** on the committed fixture (only POC,
+  totals, buckets are checked today).
+- **Runbook draft** (Phase 4): install, MotiveWave + Rithmic setup, Sim account +
+  "Sim Trade Only", auto-start, timezone, remote monitoring. Mark what only the
+  user can fill in.
+- **§9 partial fills**: add partial fills to `FakeBroker`, a characterization
+  test, then the `Order.getFilled()` bracket-sizing fix
+  (`plumbingEdgeCases.md` §9). §10/§11 need a live probe (the harness refused
+  to write one on 2026-09-23 — if it recurs, say so, don't work around it).
+- Housekeeping: delete `data_take1/` (gitignored first take); drop the old 10 s
+  decisions-tier `liquidity_snapshot` once `data/` is proven; wire the flatten
+  lead values into the nightly report.
+
+#### 4. Only the user can decide
+
+- **Review the 15 order-flow execution rules**
+  (`docs/dynamic/orderFlowExecutionRules.md`, waiting since 2026-09-20). This is
+  the real gate on the day-long-run goal: unattended Sim trading is only worth
+  much once a strategy has something worth learning from.
+- **Alerts:** nothing tells the user when the system disarms, trips the kill
+  switch or the disk fills. Needs a delivery channel. Until then the daily report
+  and the status line are the only signals.
+- Dense 1-second candles (a candle every second, zero volume) vs the current
+  sparse ones; whether the market-structure recording schema (D-90) is final.
+- A standing-authorization rule for *after* the sprint (today's covers only the
+  sprint).
+- D-86: what to do if both bracket legs are rejected (no software fallback
+  today).
+- **Already decided this session — don't re-ask:** flatten times (15:55 CT flatten,
+  15:45 CT entry stop, weekend Fri 16:00 → Sun 17:00 CT); no feed-silence
+  watchdog and no holiday modelling (D-93); no `/nightly` skill; commit and push
+  only when the user asks.
+
+#### 5. Working notes for the next chat
+
+- **Build/test without deploying** (`build.sh` deploys and wipes MotiveWave's
+  `dev` folder — never run it while MotiveWave is running a session). Compile to
+  a scratch directory and run the test classes directly:
+  `J=../motivewave/tools/jdk-26.0.2.1+1/bin`, `SDK="C:/Program Files
+  (x86)/MotiveWave/lib/mwave_sdk.jar"`; `javac -encoding UTF-8 -d $T/core $(find
+  flow-core/src -name '*.java')`, then `javac -encoding UTF-8 -cp "$SDK;$T/core"
+  -d $T/rt $(find flow-runtime/src -name '*.java')`, then `java -cp $T/core
+  com.flow.core.<Test>` (or `-cp "$SDK;$T/core;$T/rt" com.flow.rt.<Test>`).
+  The two replay tests take a fixture-directory argument (see `build.sh`).
+  Python: `python analysis/test_daily_report.py` etc.
+- **Mutation testing is how every new piece was checked**: copy the source to a
+  scratch tree, break one behaviour, and the tests must fail. Survivors are
+  either equivalent mutants (say so) or a missing test (add one). It found real
+  bugs this session, e.g. bracket levels attached to the wrong trade in the
+  report; a report that would say "never armed" for a study armed across the
+  17:00 CT boundary; the `LiveOrderTracker` stale-cancel-callback case.
+- **Bug found in my own tools (fixed in D-97):** the report and status line read
+  a heartbeat's time from `exchangeTimeMs` (the *last tick's* time, frozen when
+  the market is quiet) instead of `localTimeMs` (the runtime's own clock). Read
+  `localTimeMs` for anything about the system being alive.
+- **Machine quirks.** The Bash tool here mangles inline heredocs containing
+  quotes/apostrophes and turns `\n` inside Python `'''` strings into real
+  newlines — write scripts with the file-write tool and run them. This Windows
+  Python has **no tz database** (`zoneinfo` can't find `America/Chicago`), so the
+  tools compute US Central DST by hand; don't `pip install tzdata`. Source files
+  are a mix of LF and CRLF — edit scripts preserve each file's endings.
+- **Where things are:** `logs/` (journals), `data/` (recorded constructs, rolling
+  7 trading days), `reports/` (generated pages, gitignored), `config/risk.json`,
+  `docs/configuration.md`, README "Commands you run".
+- **Known limits, on purpose:** the journal stores no position of its own
+  (`status.py` reads it from the newest `order_fill`); `FakeBroker` fills whole
+  orders only and delivers callbacks one at a time (§9/§10 not covered); big-trade
+  and market-structure recording have never been seen live.
 
 **Target state, stated by the user 2026-09-24**: leave the system running
 for the whole day on this machine — recording replayable data and trading
@@ -209,9 +320,9 @@ Two decisions only the user can make, both gate the safety work below:
   footprint candles, liquidity map and VWAP around its entry and exit — so
   reviewing a trade doesn't mean reading JSONL by hand.
 - [x] (2026-09-26, D-96) **"Is it alive" one-liner built** — `python
-  analysis/status.py`; 20 tests + mutation-checked. `armed`/`position` are
-  inferred (the journal doesn't store them) — recording the armed flag and
-  mode in the journal would make it exact (runtime change, not made). Original
+  analysis/status.py`; 24 tests + mutation-checked. `armed` is now exact once
+  the journal records it (D-97, built, **not deployed** — inferred until then);
+  `position` comes from the newest `order_fill`. Original
   spec: a one-line "is it alive" status the user can check in seconds during
   a short monitoring window.
 

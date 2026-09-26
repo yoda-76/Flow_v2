@@ -36,6 +36,9 @@ FLOW_V2/
 ├── README.md          what this project is, architecture, open questions
 ├── docs/dynamic/      decisions.md, findings.md — working record for THIS system
 ├── data/              retained per-construct data, rolling 7 trading days (D-88), gitignored
+├── analysis/          offline Python report/status/viewer scripts (read-only over logs/ and data/)
+├── config/            risk.json — hand-edited limits; docs/configuration.md explains every key
+├── reports/           generated report pages, gitignored
 ├── flow-core/         core logic — compiles without mwave_sdk.jar on the classpath (D-09)
 ├── flow-runtime/      SDK adapters + the deployed Study — compiles with flow-core + SDK
 └── build/             compile + redeploy scripts

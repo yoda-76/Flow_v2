@@ -643,7 +643,9 @@ and the order-hook override check in `flow-runtime`.
 FLOW_V2/
 ├── README.md              this file
 ├── CLAUDE.md              working rules (inherits FLOW's and motivewave's)
-├── docs/dynamic/          decisions.md, findings.md — about this system
+├── docs/                  configuration.md — every setting and how to change it
+├── docs/dynamic/          decisions.md, findings.md, todo.md (start with its SPRINT
+│                          HANDOFF block) — the working record about this system
 ├── flow-core/             compiled WITHOUT mwave_sdk.jar on the classpath
 │   └── src/com/flow/
 │       ├── core/          event types, MarketState, Intent, FlowStrategy, registry
@@ -667,8 +669,13 @@ FLOW_V2/
 ├── logs/                  per-session journals (decisions.jsonl, raw.jsonl), gitignored
 ├── data/                  retained per-construct data, rolling 7 trading days (D-88), gitignored
 ├── flow-core/fixtures/    committed recordings + expected outputs used by replay tests
-├── analysis/              offline Python tooling over journals (journal_summary.py)
-└── config/                risk.json (hand-edited, runtime-read-only)
+├── analysis/              offline Python tooling over logs/ and data/ — never talks to
+│                          MotiveWave or the broker: daily_report.py (nightly review page),
+│                          trade_view.py (market context around one trade), status.py
+│                          ("is it alive" one line), journal_summary.py, and their tests
+├── reports/               generated report pages, gitignored
+└── config/                risk.json (hand-edited, runtime-read-only; every key is
+                           documented in docs/configuration.md)
 ```
 
 The two-unit split is the point, not a convention: it is what makes "a
