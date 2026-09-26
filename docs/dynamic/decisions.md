@@ -3480,6 +3480,62 @@ readable rather than being silently rewritten.
     small change — not done.
   - Built + tested (`DataRecorderTest`), not yet deployed or live-verified.
 
+- **D-91** (2026-09-26) — **Fake-broker test harness for `OrderGateway`
+  (plumbingEdgeCases.md §13, approved 2026-09-22).** `FakeBroker` is an
+  in-memory pretend broker: `OrderContext`, `Order` and `Instrument` are
+  interfaces in the SDK jar, so each is a `java.lang.reflect.Proxy` over a
+  small state object rather than a 60-method hand-written implementation.
+  It is **passive** (never calls an order callback itself — the test
+  scripts every fill/cancel/reject and its order) and **fails loudly** on
+  any method it doesn't model. It never holds a real `OrderContext`, so it
+  cannot reach any account.
+  - `OrderGatewayTest` (the 16th gate, wired into `build.sh` after the
+    safety reflection test) drives the real `OrderGateway`: refuse-to-arm,
+    dry-run places nothing, entry, bracket legs independent (no OCO),
+    `cancelIfActive` on active / already-cancelled / already-filled / null,
+    `closeAtMarket` leaves resting legs alone, kill-switch close-before-
+    cancel order (§7), and two full entry→bracket→leg-fill→sibling-cancel
+    lifecycles. Mutation-checked: swapping the kill-switch order and
+    dropping the `isActive()` guard in a scratch copy made it fail.
+  - **Fidelity is stated in `FakeBroker`'s javadoc**, row by row, as LIVE /
+    DOC / ASSUMED. The ASSUMED rows (cancelling a resolved order is a no-op;
+    `submitOrders` activates instantly; `closeAtMarket` fills instantly) are
+    the fake's own choices, not findings — a test passing on them proves
+    nothing about the platform.
+  - **State machine extracted, user-approved 2026-09-26.** The fill/cancel/
+    reject callback logic (`reconcileLive`, `onOrderFilled`/`Cancelled`/
+    `Rejected`, the D-87 double-fill check, and the resting-leg/in-flight/
+    self-cancel bookkeeping) lived inside `FlowRuntimeStudy`, which can't be
+    instantiated outside MotiveWave (its constructor needs `MotiveWave.jar`
+    and JavaFX, and its logging path — `Study.info()`, a `final` method —
+    initialises MotiveWave's own UI/config classes and throws). It is now
+    `LiveOrderTracker`, a plain package-private class taking four injected
+    dependencies (gateway supplier, price-codec supplier, log callback,
+    deny-arm callback); the Study's three hooks and `reconcileLive` call
+    delegate to it, and the kill-switch lambda calls `resetForKillSwitch()`.
+    **Method bodies moved verbatim** (their javadocs went with them); the
+    Study keeps `armDenied` itself, the tracker only sets it. This is a
+    change to code that was live-verified on Sim (D-67/D-81/D-85–D-87), so
+    **run one short Sim session before relying on it** — not done yet.
+  - `LiveOrderTrackerTest` (the 17th gate, 65 checks): entry → bracket on
+    fill (long and short, exact stop/target prices), second intent skipped
+    while in flight, every guard places nothing (noop, closing, flip,
+    resting orders), clean stop-out and target-hit with sibling cancel, the
+    D-87 double-fill detected and flattened, rejected/cancelled entry
+    disarms, the **stale cancel callback arriving after a new entry** does
+    not disarm (the case the self-cancel exemption exists for), untracked
+    fills ignored, no-bracket-prices, gateway gone at fill, kill-switch
+    reset. Mutation-checked with six deliberate breakages (double-fill check
+    off, self-cancel exemption off, rejected-entry disarm off, bracket side
+    inverted, sibling not cancelled, in-flight guard off) — each is caught;
+    the first version of the suite missed the self-cancel one, which is why
+    the stale-callback case exists.
+  - Still **not** covered: partial fills (`FakeBroker` fills whole orders
+    only — §9 stays untested), and callbacks delivered concurrently for two
+    legs (§10). Both are platform questions the fake can only assume.
+  - Does **not** answer §10/§11 (thread delivery, `onActivate` sync) — those
+    are platform questions the fake can only assume, never answer.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

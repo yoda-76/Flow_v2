@@ -82,6 +82,14 @@ echo "== safety reflection test =="
 "$JAVA" -cp "$SDKJAR;build/classes/core;build/classes/runtime" com.flow.rt.SafetyHookReflectionTest
 echo "(safety test passed -- see output above)"
 
+echo "== order gateway test against the fake broker (D-91, plumbingEdgeCases.md 13) =="
+"$JAVA" -cp "$SDKJAR;build/classes/core;build/classes/runtime" com.flow.rt.OrderGatewayTest
+echo "(order gateway test passed -- see output above)"
+
+echo "== live order tracker test against the fake broker (D-91) =="
+"$JAVA" -cp "$SDKJAR;build/classes/core;build/classes/runtime" com.flow.rt.LiveOrderTrackerTest
+echo "(live order tracker test passed -- see output above)"
+
 echo "== deploy =="
 rm -rf "$DEV_DIR"
 mkdir -p "$DEV_DIR"

@@ -526,6 +526,15 @@ test. Not yet built — this closes the scope question, not the work
 itself. Once it exists, it's the prerequisite for turning §8/§9/§10's
 gaps into real regression tests rather than only Sim-live checklist items.
 
+**Built 2026-09-26 (`decisions.md` D-91):** `FakeBroker` (proxy-based,
+passive, fails loudly on unmodelled methods), `OrderGatewayTest`, and — after
+the user approved extracting the `onOrder*`/`reconcileLive` state machine out
+of `FlowRuntimeStudy` (which can't be instantiated outside MotiveWave) into
+`LiveOrderTracker` — `LiveOrderTrackerTest`, which now covers §8's D-87
+double-fill correction as a regression test. §9 (partial fills) and §10
+(concurrent callbacks) are still not covered: the fake fills whole orders
+only and delivers callbacks one at a time.
+
 Every SDK-bound behavior above — `refuseToArmReason()`, `submitRealEntry`/
 `submitRealBracket`, `cancelIfActive`/`cancelAllAndClose`, the whole
 `onOrderFilled`/`onOrderCancelled`/`onOrderRejected` state machine — is

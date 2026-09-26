@@ -128,8 +128,19 @@ Two decisions only the user can make, both gate the safety work below:
 - [ ] D-86's "no software fallback if both bracket legs are rejected"
   revisit, and `plumbingEdgeCases.md` §9 (bracket sizing should read
   `order.getFilled()`).
-- [ ] Fake `OrderContext` test harness (approved 2026-09-22, strictly a
-  unit-test double, not built).
+- [x] Fake `OrderContext` test harness (approved 2026-09-22, strictly a
+  unit-test double) — **built 2026-09-26** (D-91): `FakeBroker`,
+  `OrderGatewayTest` (16th gate), and the callback state machine extracted
+  from `FlowRuntimeStudy` into `LiveOrderTracker` (user-approved) with
+  `LiveOrderTrackerTest` (17th gate), both mutation-checked. Compiled and
+  run from a scratch dir, **not yet run through `build.sh`** (MotiveWave was
+  running; the script deploys) and **not deployed**.
+  - [ ] Because the extraction touched live-verified order code: run
+    `build/build.sh` with MotiveWave closed, then one short Sim session
+    (entry → bracket → leg fill) before trusting it unattended.
+  - [ ] §9 (`getFilled()` bracket sizing) is still open and untested:
+    `FakeBroker` only fills whole orders. Add partial fills to the fake
+    first, then a characterization test, then the fix.
 
 **Phase 2 — the nightly review (new requirement, 2026-09-24).** The
 1–2 hour evening session needs tooling, not raw logs:
