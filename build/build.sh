@@ -6,10 +6,17 @@
 set -e
 cd "$(dirname "$0")/.."   # repo root
 
-JAVAC="../motivewave/tools/jdk-26.0.2.1+1/bin/javac.exe"
-JAVA="../motivewave/tools/jdk-26.0.2.1+1/bin/java.exe"
-SDKJAR="C:/Program Files (x86)/MotiveWave/lib/mwave_sdk.jar"
-EXT_DIR="/c/Users/MSI/MotiveWave Extensions"
+echo "== build environment resolution test (D-100) =="
+bash build/env_test.sh
+echo "(build environment test passed -- see output above)"
+
+# JDK / SDK jar / MotiveWave extensions folder: see build/env.sh (env-var overrides, today's paths by default).
+source build/env.sh
+problem="$(flow_env_problem sdk)"
+if [ -n "$problem" ]; then
+  echo "build.sh: $problem" >&2
+  exit 2
+fi
 DEV_DIR="$EXT_DIR/dev"
 
 echo "== flow-core (no SDK on classpath) =="
@@ -92,18 +99,18 @@ echo "(replay-equivalence test passed -- see output above)"
 echo "== flow-runtime (SDK + flow-core) =="
 rm -rf build/classes/runtime
 mkdir -p build/classes/runtime
-"$JAVAC" -encoding UTF-8 -cp "$SDKJAR;build/classes/core" -d build/classes/runtime $(find flow-runtime/src -name "*.java")
+"$JAVAC" -encoding UTF-8 -cp "${SDKJAR}${SEP}build/classes/core" -d build/classes/runtime $(find flow-runtime/src -name "*.java")
 
 echo "== safety reflection test =="
-"$JAVA" -cp "$SDKJAR;build/classes/core;build/classes/runtime" com.flow.rt.SafetyHookReflectionTest
+"$JAVA" -cp "${SDKJAR}${SEP}build/classes/core${SEP}build/classes/runtime" com.flow.rt.SafetyHookReflectionTest
 echo "(safety test passed -- see output above)"
 
 echo "== order gateway test against the fake broker (D-91, plumbingEdgeCases.md 13) =="
-"$JAVA" -cp "$SDKJAR;build/classes/core;build/classes/runtime" com.flow.rt.OrderGatewayTest
+"$JAVA" -cp "${SDKJAR}${SEP}build/classes/core${SEP}build/classes/runtime" com.flow.rt.OrderGatewayTest
 echo "(order gateway test passed -- see output above)"
 
 echo "== live order tracker test against the fake broker (D-91) =="
-"$JAVA" -cp "$SDKJAR;build/classes/core;build/classes/runtime" com.flow.rt.LiveOrderTrackerTest
+"$JAVA" -cp "${SDKJAR}${SEP}build/classes/core${SEP}build/classes/runtime" com.flow.rt.LiveOrderTrackerTest
 echo "(live order tracker test passed -- see output above)"
 
 echo "== daily report tests (python, D-94) =="

@@ -3878,6 +3878,37 @@ readable rather than being silently rewritten.
     Sim session at the next market open (a normal 1-lot entry → bracket → leg fill
     must look exactly as before).
 
+- **D-100** (2026-09-26) — **Build scripts find the JDK, SDK jar and
+  MotiveWave folder through environment variables, not literals** (todo Phase 4,
+  the second half of D-98's "left out" list). `build/build.sh` and
+  `build/replay_check.sh` had the portable-JDK path, `mwave_sdk.jar`, the
+  `MotiveWave Extensions` folder and the Windows-only `;` classpath separator
+  written in. They now `source build/env.sh`, which reads `FLOW_JDK_BIN`,
+  `MWAVE_SDK_JAR` and `MOTIVEWAVE_EXT_DIR` and otherwise resolves to **exactly
+  what was hard-coded before** — nothing changes on this machine (documented in
+  `docs/configuration.md`).
+  - **Rules chosen**: an explicitly set `FLOW_JDK_BIN` is used or it is an
+    error (a wrong value must not quietly compile with some other JDK found on
+    `PATH`); with it unset, the old default is tried, then `javac`/`java` on
+    `PATH`. A missing JDK/jar/folder stops the script **up front** with a message
+    naming the variable (previously: a confusing failure partway through, or worse
+    a deploy into a folder that didn't exist). `replay_check.sh` needs only the JDK,
+    so it does not demand the SDK jar. The classpath separator follows the shell.
+  - **Also gained, deliberately**: `MOTIVEWAVE_EXT_DIR=$(mktemp -d) bash
+    build/build.sh` runs **every gate and the whole deploy against a scratch
+    folder** — the full build without touching MotiveWave, which the handoff notes
+    kept working around by hand-compiling in a scratch directory.
+  - **Tests**: `build/env_test.sh` (21 checks, run as the first gate of
+    `build.sh`); 13 mutations of `env.sh`, all caught after one weak check (a
+    substring match that let `java` resolve to `javac`) was tightened. **Verified
+    end to end**: the real `build.sh`, with `MOTIVEWAVE_EXT_DIR` pointed at a temp
+    folder, ran all gates to exit 0 and deployed there; MotiveWave's own
+    `dev` folder was confirmed untouched.
+  - **Not done, on purpose**: the `analysis/*.py` defaults (still cwd-relative
+    `logs`/`data`); the experiments' paths in `../motivewave`; nothing was tried
+    on a non-Windows machine (the `:` separator and the PATH fall-back are
+    tested only by the resolver test, not by a real Linux build).
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

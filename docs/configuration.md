@@ -179,8 +179,29 @@ when setting up a new home.
 
 Not covered by `FLOW_HOME` yet: the `analysis/*.py` tools still default to
 `logs`/`data` relative to the directory you run them from (pass `--logs` /
-`--data`), and `build/build.sh` still has the JDK, `mwave_sdk.jar` and
-MotiveWave-extensions paths written in (`docs/dynamic/todo.md`, Phase 4).
+`--data`) (`docs/dynamic/todo.md`, Phase 4).
+
+### Where the build finds the JDK, the SDK jar and MotiveWave (D-100)
+
+`build/build.sh` and `build/replay_check.sh` read three environment variables
+(resolved in `build/env.sh`); with none set they use exactly the paths that used
+to be written in the scripts, so nothing changes on this machine.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FLOW_JDK_BIN` | `../motivewave/tools/jdk-26.0.2.1+1/bin` (then `javac`/`java` on `PATH` if that folder doesn't exist) | Folder holding `javac`/`java` (`.exe` on Windows). **If you set it, it is used or it is an error** — never a silent fall-back to another JDK. |
+| `MWAVE_SDK_JAR` | `C:/Program Files (x86)/MotiveWave/lib/mwave_sdk.jar` | The SDK jar `flow-runtime` compiles against. |
+| `MOTIVEWAVE_EXT_DIR` | `/c/Users/MSI/MotiveWave Extensions` | MotiveWave's extensions folder; `build.sh` deploys to `<this>/dev`. |
+
+The classpath separator (`;` on Windows shells, `:` elsewhere) is picked
+automatically. A missing JDK / jar / folder stops the script at the start with a
+message naming the variable to set, not halfway through.
+
+> **Running the whole build without touching MotiveWave:** point the deploy at a
+> scratch folder — `MOTIVEWAVE_EXT_DIR=$(mktemp -d) bash build/build.sh`. Every
+> gate runs and the deploy step wipes only that folder. (This is how D-100 was
+> verified.) The default, with the variable unset, still wipes MotiveWave's `dev`
+> folder — never run that while a session is running.
 
 **Per-strategy parameters are constants inside each strategy** — there is no
 external per-strategy config yet (`StrategyConfig` only carries

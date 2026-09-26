@@ -5,7 +5,12 @@
 set -e
 cd "$(dirname "$0")/.."   # repo root
 
-JAVA="../motivewave/tools/jdk-26.0.2.1+1/bin/java.exe"
+source build/env.sh   # JDK location: env-var overrides, today's path by default
+problem="$(flow_env_problem)"
+if [ -n "$problem" ]; then
+  echo "replay_check.sh: $problem" >&2
+  exit 2
+fi
 
 if [ -z "$1" ]; then
   echo "usage: $0 <sessionDir>" >&2

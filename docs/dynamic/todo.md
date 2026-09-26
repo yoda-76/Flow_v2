@@ -129,7 +129,7 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
   today's default); tested and mutation-checked, **not deployed** (one more
   thing the next `build.sh` ships; check the `FLOW_HOME root=…` log line at
   the next activation). Still hard-coded, deliberately left: `analysis/*.py`
-  cwd defaults, `build/build.sh`'s JDK/SDK/extensions paths.
+  cwd defaults. (`build/*.sh` paths done as D-100.)
 - **VAH/VAL/zones replay comparison** on the committed fixture (only POC,
   totals, buckets are checked today).
 - **Runbook draft** (Phase 4): install, MotiveWave + Rithmic setup, Sim account +
@@ -165,9 +165,14 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
 
 #### 5. Working notes for the next chat
 
-- **Build/test without deploying** (`build.sh` deploys and wipes MotiveWave's
-  `dev` folder — never run it while MotiveWave is running a session). Compile to
-  a scratch directory and run the test classes directly:
+- **Build/test without deploying (simplest, since D-100):** `MOTIVEWAVE_EXT_DIR=$(mktemp -d)
+  bash build/build.sh` runs **every gate** and deploys into that scratch folder —
+  MotiveWave's real `dev` folder is not touched. (Plain `bash build/build.sh` **does**
+  wipe MotiveWave's `dev` folder — never run it while MotiveWave is running a
+  session.) Or, to compile by hand into a scratch directory and run single test
+  classes directly (**use Windows-style `C:/...` paths for anything inside a
+  `-cp` list** — Git Bash only converts standalone arguments, so `/c/...` inside
+  `"$SDK;$T/core"` makes `javac` see an empty classpath):
   `J=../motivewave/tools/jdk-26.0.2.1+1/bin`, `SDK="C:/Program Files
   (x86)/MotiveWave/lib/mwave_sdk.jar"`; `javac -encoding UTF-8 -d $T/core $(find
   flow-core/src -name '*.java')`, then `javac -encoding UTF-8 -cp "$SDK;$T/core"
@@ -355,9 +360,9 @@ Two decisions only the user can make, both gate the safety work below:
 
 **Phase 4 — cloud readiness (do last, but do everything possible before).**
 - [~] Hardcoded `C:/yadvendra/...` paths: **runtime done 2026-09-26 (D-98,
-  `FLOW_HOME`, not deployed)**. Remaining: `analysis/*.py` defaults,
-  `build/build.sh`'s JDK/SDK/extensions paths, and the experiments' log paths
-  in `../motivewave`.
+  `FLOW_HOME`, not deployed); build scripts done 2026-09-26 (D-100,
+  `FLOW_JDK_BIN` / `MWAVE_SDK_JAR` / `MOTIVEWAVE_EXT_DIR`)**. Remaining:
+  `analysis/*.py` defaults, and the experiments' log paths in `../motivewave`.
 - [ ] Runbook: install, MotiveWave + Rithmic account setup, Sim account
   enablement and "Sim Trade Only", `.env` handling (user-only), auto-start,
   time zone, remote monitoring.
