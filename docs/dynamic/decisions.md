@@ -3669,8 +3669,44 @@ readable rather than being silently rewritten.
     synthetic journals shaped like the real lines; the SDK's real
     `getAvgFillPrice()`/`getLastFillTime()` values are unseen. First thing to
     check after the next live Sim window.
-  - **Not built yet** (todo Phase 2, still open): the trade-against-data
-    viewer and the "is it alive" one-liner.
+  - **Not built yet** (todo Phase 2, still open): the "is it alive"
+    one-liner. (The trade-against-data viewer is D-95.)
+
+- **D-95** (2026-09-26) — **Trade viewer: one page of market context around
+  one trade.** `python analysis/trade_view.py --date D` lists that day's
+  trades (numbered as in the daily report); `--trade N` prints and saves
+  `reports/trade_<date>_<N>.md`. Options: `--before/--after` seconds of price
+  history (default 300), `--flow-secs` (60), `--ladder-ticks` (12).
+  - **What a page shows**: the trade; **MFE/MAE** (best and worst it got, and
+    what fraction of the way to the target / to the stop that was); entry vs
+    VWAP; order flow (bought at ask / sold at bid / delta) for the minute
+    before entry, during the trade, and the minute after exit; a price/volume/
+    delta/VWAP time table with ENTRY/EXIT marked (buckets auto-sized to ≤ 40
+    rows); footprint price ladders before entry and during the trade with the
+    trade's own lines (entry, exit, stop, target) marked, empty rows trimmed;
+    the resting liquidity ladder at entry, with **lots in the way of the
+    target** and **lots behind the stop**; big trades and market-structure
+    changes when recorded. Any construct with no data says so in words.
+  - **Reads big files safely**: the liquidity map is hundreds of MB a day, so
+    lines are matched on their leading `{"t":` and JSON-parsed only inside the
+    window, stopping at the first line past it; a window crossing the 17:00 CT
+    boundary reads both session files.
+  - **Limits, stated so they aren't mistaken for findings**: excursions come
+    from 1-second candle highs/lows (≈ 1 s accuracy); "in the way" / "behind
+    the stop" use the one snapshot at or before entry (the interval is
+    `liquidityIntervalSeconds`, 1 s by default), not how the book moved
+    afterwards; volume is only what printed — a second with no trades has no
+    candle. Big trades and market structure have never been recorded live
+    (their recorder is built but undeployed), so those two sections are
+    untested against real data.
+  - **Verified** against the real 2026-09-23 recording (footprint, VWAP,
+    liquidity map) with a synthetic trade placed inside it — rendered
+    correctly. Not verified against a real trade's journal, which needs the
+    next live Sim window.
+  - **Tests**: 24 in `analysis/test_trade_view.py` (run by `build.sh` with
+    the report's); 21 mutations, all caught after three boundary tests were
+    added (which window a candle exactly at entry/exit belongs to; a trade
+    with a fill but no price).
 
 ## Open questions (not yet decisions)
 

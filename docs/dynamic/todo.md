@@ -193,7 +193,12 @@ Two decisions only the user can make, both gate the safety work below:
   why; disarms / kill switch / position-mismatch events; system health
   (feed gaps, lag, restarts, `DROPPED` markers, disk use); data-health (which
   `data/` files exist for the day, gaps).
-- [ ] A way to look at any one trade **against the recorded data** — the
+- [x] (2026-09-26, D-95) **Trade viewer built** — `python
+  analysis/trade_view.py --date D --trade N`; 24 tests + mutation-checked;
+  checked on the real 2026-09-23 recording with a synthetic trade. **Pending
+  live check**: view a real trade after the next Sim window, and see the big-
+  trade / market-structure sections against real recorded data (those two
+  constructs are built but undeployed). Original spec: a way to look at any one trade **against the recorded data** — the
   footprint candles, liquidity map and VWAP around its entry and exit — so
   reviewing a trade doesn't mean reading JSONL by hand.
 - [ ] A one-line "is it alive" status the user can check in seconds during
