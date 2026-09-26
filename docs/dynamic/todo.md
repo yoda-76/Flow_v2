@@ -201,7 +201,11 @@ Two decisions only the user can make, both gate the safety work below:
   constructs are built but undeployed). Original spec: a way to look at any one trade **against the recorded data** — the
   footprint candles, liquidity map and VWAP around its entry and exit — so
   reviewing a trade doesn't mean reading JSONL by hand.
-- [ ] A one-line "is it alive" status the user can check in seconds during
+- [x] (2026-09-26, D-96) **"Is it alive" one-liner built** — `python
+  analysis/status.py`; 20 tests + mutation-checked. `armed`/`position` are
+  inferred (the journal doesn't store them) — recording the armed flag and
+  mode in the journal would make it exact (runtime change, not made). Original
+  spec: a one-line "is it alive" status the user can check in seconds during
   a short monitoring window.
 
 **Phase 3 — ops hardening on this machine (needs live calendar time).**

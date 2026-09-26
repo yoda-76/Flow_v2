@@ -566,6 +566,37 @@ run directory per session per strategy. Analysis tooling there can be
 Python; the constraint is that the *runtime* is all-Java, not that every
 script ever written is.
 
+## Commands you run
+
+Everything below is a script **you** run in a terminal from the repo root.
+None of it involves Claude, and none of it talks to MotiveWave or the broker or
+can place an order — the analysis scripts only read files under `logs/` and
+`data/`. (Rules Claude follows live in `CLAUDE.md`; this section is for you.)
+
+| Command | What it does | When |
+|---|---|---|
+| `python analysis/status.py` | **One line: is it alive?** State (`ALIVE`/`STALE`/`DOWN`/`STOPPED`), time, heartbeat age, strategy, armed, position, last trade, alert count, data health. Exit code 0 alive, 1 stale/stopped, 2 down. | Any time you check in |
+| `python analysis/daily_report.py` | **The nightly review page** for one trading day: trades, what was blocked, what needs attention, sessions, config in force, data health. Prints and saves `reports/<date>.md`. Add `--date YYYY-MM-DD` for another day. | Evening |
+| `python analysis/trade_view.py --date D` | Lists that day's trades, numbered as in the report. | After the report |
+| `python analysis/trade_view.py --date D --trade N` | **Market context around one trade**: how far it went for/against you, order flow before/during/after, price ladder, liquidity in the way of the target. Saves `reports/trade_<D>_<N>.md`. | When a trade needs a "why?" |
+| `bash build/build.sh` | Compiles, runs **every** test gate (Java and Python) and **deploys** to MotiveWave. **Wipes `MotiveWave Extensions/dev` — never run while a session is running.** | After a code change |
+| edit `config/risk.json`, or the study's settings | See [docs/configuration.md](docs/configuration.md): every setting, its default, when it takes effect. | To change limits/cadences |
+
+Where things land: `logs/<strategy>_<ms>_inst<id>/decisions.jsonl` (what the
+system decided, kept), `data/<construct>/<session>.jsonl` (recorded market
+data, rolling 7 trading days), `reports/` (generated pages, gitignored).
+
+Reading the status line: `heartbeat Ns ago` is the runtime's own clock, so a
+growing number means the **system** stopped, not that the market went quiet
+(the system deliberately does not watch for a silent feed, D-93). `armed` is
+read from the newest risk verdict ("as of the last intent") and `position`
+from the newest recorded fill — the journal doesn't store either directly, so
+both say `unknown` until there is something to read them from.
+
+Tests for the scripts: `python analysis/test_status.py`,
+`python analysis/test_daily_report.py`, `python analysis/test_trade_view.py`
+(also run by `build.sh` when Python is installed).
+
 ## Forward-test workflow
 
 Three modes, in order, each a gate on the next:

@@ -3669,8 +3669,8 @@ readable rather than being silently rewritten.
     synthetic journals shaped like the real lines; the SDK's real
     `getAvgFillPrice()`/`getLastFillTime()` values are unseen. First thing to
     check after the next live Sim window.
-  - **Not built yet** (todo Phase 2, still open): the "is it alive"
-    one-liner. (The trade-against-data viewer is D-95.)
+  - **Not built yet** (todo Phase 2, still open): nothing — the "is it
+    alive" one-liner is D-96 and the trade-against-data viewer is D-95.
 
 - **D-95** (2026-09-26) — **Trade viewer: one page of market context around
   one trade.** `python analysis/trade_view.py --date D` lists that day's
@@ -3707,6 +3707,43 @@ readable rather than being silently rewritten.
     the report's); 21 mutations, all caught after three boundary tests were
     added (which window a candle exactly at entry/exit belongs to; a trade
     with a fill but no price).
+
+- **D-96** (2026-09-26) — **"Is it alive" one-liner, and a README "Commands
+  you run" section.** `python analysis/status.py` prints one line — e.g.
+  `ALIVE | 09-29 10:15:03 CT (20:45 IST) | heartbeat 4s ago | lvn_fade_test |
+  armed: yes (verdict 2m ago) | position: flat | last trade 09:58 CT +2.0 pts
+  | alerts today: 0 | data: ok` — for the short windows when the user checks
+  in. It is a script the user runs, not a prompt and not part of CLAUDE.md
+  (that file is rules for Claude; the user's commands live in the README).
+  - **States and exit codes**: `ALIVE` (journal written within 30 s, exit 0),
+    `STALE` (30 s–5 min, exit 1), `DOWN` (> 5 min or no journal, exit 2),
+    `STOPPED` (the study's last log line is `DEACTIVATE`: a clean stop, exit
+    1). `ALERTS n` is added to the state word when today's journals hold
+    alerts (same definition as the daily report, incl. fills with no trade).
+  - **"Alive" is the journal's own clock** — the newest of the last
+    timestamped record and the file's modification time. The runtime writes a
+    heartbeat ~every 10 s from its own timer, so silence means the *system*
+    stopped, not that the market was quiet; consistent with D-93 (no
+    feed-silence watchdog).
+  - **Honest limits**: the journal stores neither the armed flag
+    (`session_header.mode` is a hard-coded `"DRY_RUN"`) nor the position
+    directly. `armed` is read from the newest risk verdict's `armed` filter
+    ("as of the last intent", with its age) and `position` from the newest
+    `order_fill.positionAfter`; both print `unknown` until such a record
+    exists. Recording the armed flag and mode in the journal properly would
+    make this exact — **not done** (a runtime change; noted, not silently
+    made).
+  - **Data health** is checked only while the system is running: the two
+    per-interval constructs (`vwap`, `liquidity_map`) must have a file for
+    the current session written within the last 30 s; otherwise `CHECK: …`.
+  - **Tests**: 20 in `analysis/test_status.py` (run by `build.sh`);
+    18 mutations, 17 caught and one equivalent (the old-journal filter is
+    only a speed optimisation, the report re-filters by time). Run against
+    the real journals it correctly reports `DOWN` (nothing has run since
+    2026-09-23).
+  - **Completes todo Phase 2's tooling** (report D-94, viewer D-95, status
+    D-96). Still to do on all three: check them against a real armed Sim
+    session's journal.
 
 ## Open questions (not yet decisions)
 
