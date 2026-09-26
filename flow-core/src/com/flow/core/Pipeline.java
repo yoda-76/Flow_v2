@@ -64,6 +64,13 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   /** While a position is still open in the flatten window, retry the flatten this often (a rejected close must not be a one-shot). */
   static final long FLATTEN_RETRY_MS = 5_000L;
   private volatile DataRecorder dataRecorder; // nullable, D-88; set once before events flow
+  // D-97: what the runtime's arming state is, journaled so a reader can tell armed from dry-run. Nullable; set once
+  // before events flow. Returns a JSON object string (mode, armed setting, denial) -- flow-core never sees the SDK.
+  private volatile java.util.function.Supplier<String> runtimeStatus;
+  private Boolean lastArmedJournaled = null;   // drain-thread-only
+  private String lastRuntimeJournaled = null;  // drain-thread-only
+  /** How often (in ~100 ms clock events) the arming state is compared with the last journaled one: ~1 s. */
+  static final long ARMING_CHECK_EVERY_CLOCK_EVENTS = 10;
 
   /**
    * features is required explicitly (an empty Map.of() is fine, but
@@ -153,6 +160,14 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     this.dataRecorder = recorder;
   }
 
+  /**
+   * D-97: supply the runtime's own arming detail (see runtimeStatus). Optional: without it the journal still
+   * records the effective armed flag, just without mode/denial detail. Call before the first event is published.
+   */
+  public void attachRuntimeStatus(java.util.function.Supplier<String> status) {
+    this.runtimeStatus = status;
+  }
+
   public MarketState marketState() {
     return marketState;
   }
@@ -176,6 +191,10 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
 
     if (e instanceof ClockEvent) {
       long count = clockEventCount.incrementAndGet();
+      if (armedSupplier != null && riskChain != null
+          && (lastArmedJournaled == null || count % ARMING_CHECK_EVERY_CLOCK_EVENTS == 0)) {
+        journalArmingChange(e);
+      }
       if (count % HEARTBEAT_EVERY_CLOCK_EVENTS == 0) heartbeat(e);
       if (count % DOM_SNAPSHOT_EVERY_CLOCK_EVENTS == 0) maybeDomSnapshot(e);
     }
@@ -442,14 +461,52 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   }
 
   private void heartbeat(Event e) {
-    journal.writeDecision(e.seq(), Json.object()
+    Json j = Json.object()
         .field("type", "heartbeat")
         .field("seq", e.seq())
         .field("generation", marketState.generation())
+        // exchangeTimeMs is the LAST TICK's time (frozen while the market is quiet); localTimeMs is the runtime's
+        // own clock (advances every beat). Anything asking "is the system alive" must read localTimeMs.
         .field("exchangeTimeMs", marketState.exchangeTimeMs())
         .field("localTimeMs", marketState.localTimeMs())
         .field("healthy", healthy.get())
-        .field("lastIntentReason", lastIntent.reason())
+        .field("lastIntentReason", lastIntent.reason());
+    if (riskChain != null && armedSupplier != null) {
+      // D-97: absent (not false) when there is no risk chain, so replay/observer journals keep their old shape.
+      j.field("armed", armedSupplier.getAsBoolean()).fieldRaw("runtime", runtimeJson());
+    }
+    journal.writeDecision(e.seq(), j.build());
+  }
+
+  /** The runtime's arming detail as a JSON object string, or "null" -- a supplier that throws must never hurt the pipeline. */
+  private String runtimeJson() {
+    java.util.function.Supplier<String> s = runtimeStatus;
+    if (s == null) return "null";
+    try {
+      String v = s.get();
+      return v == null ? "null" : v;
+    } catch (RuntimeException ex) {
+      return "null";
+    }
+  }
+
+  /**
+   * D-97: an `arming_state` record on the first observation and whenever the effective armed flag or the runtime's
+   * arming detail (mode, armed setting, denial) changes -- so "armed 10:02, disarmed 14:10 by a mismatch" is a list
+   * of records rather than something to reconstruct from intents. Checked about once a second.
+   */
+  private void journalArmingChange(Event e) {
+    boolean armed = armedSupplier.getAsBoolean();
+    String runtime = runtimeJson();
+    if (lastArmedJournaled != null && lastArmedJournaled == armed && runtime.equals(lastRuntimeJournaled)) return;
+    lastArmedJournaled = armed;
+    lastRuntimeJournaled = runtime;
+    journal.writeDecision(e.seq(), Json.object()
+        .field("type", "arming_state")
+        .field("seq", e.seq())
+        .field("eventTimeMs", e.eventTimeMs())
+        .field("armed", armed)
+        .fieldRaw("runtime", runtime)
         .build());
   }
 

@@ -69,6 +69,10 @@ echo "== session-end flatten test (RiskChain + Pipeline, D-92) =="
 "$JAVA" -cp build/classes/core com.flow.core.SessionEndTest
 echo "(session-end test passed -- see output above)"
 
+echo "== arming-state journaling test (D-97) =="
+"$JAVA" -cp build/classes/core com.flow.core.ArmingStateTest
+echo "(arming state test passed -- see output above)"
+
 echo "== per-construct data recorder synthetic test (D-88) =="
 "$JAVA" -cp build/classes/core com.flow.core.DataRecorderTest
 echo "(data recorder test passed -- see output above)"

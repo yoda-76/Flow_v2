@@ -279,7 +279,10 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         .field("tickSize", instrument.getTickSize())
         .field("sessionStartMs", sessionStartMs)
         .field("instanceId", instanceId)
-        .field("mode", "DRY_RUN")
+        // D-97: the real mode/armed settings at activation (this was a hard-coded "DRY_RUN" that could be wrong).
+        // The live values, and every change, are journaled by Pipeline as arming_state / on each heartbeat.
+        .field("mode", String.valueOf(getSettings().getString(MODE_KEY)))
+        .field("armedSetting", getSettings().getBoolean(ARMED_KEY))
         .build());
 
     // D-75: raw-log retention (com.flow.journal.LogRetention, flow-core
@@ -424,6 +427,13 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     };
 
     IntentSink sink = this::onIntentChanged;
+    // D-97 (attached after the Pipeline is built, below): what to journal about arming besides the effective flag.
+    java.util.function.Supplier<String> runtimeStatus = () -> Json.object()
+        .field("mode", String.valueOf(getSettings().getString(MODE_KEY)))
+        .field("armedSetting", getSettings().getBoolean(ARMED_KEY))
+        .field("armDenied", armDenied)
+        .field("refusedAtActivation", refusedAtActivation)
+        .build();
     // D-92 session-end flatten: only when this session is explicitly armed for live Sim trading, and never
     // for a position that was already there at activation (D-24 -- not ours to close). armDenied is
     // deliberately NOT consulted: a session disarmed by a mismatch must still close what it opened.
@@ -433,6 +443,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     };
     pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks,
         riskChain, armedSupplier, queueDepthSupplier, killSwitch, sessionFlatten);
+    pipeline.attachRuntimeStatus(runtimeStatus);
     com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT);
     ds.start();
     dataStore = ds;

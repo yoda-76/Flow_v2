@@ -51,6 +51,13 @@ everything is pushed.
   footprint candles byte-identical, VWAP within anchor noise, VP rebuilt
   from footprint candles. Gaps found are listed in D-89/D-90.
 
+**Also pending at the next market open — D-97 (arming journaled):** after the
+deploy, arm a Sim session and check that an `arming_state` record appears in
+`decisions.jsonl` (armed true, mode SIM_LIVE), that `python analysis/status.py`
+shows `armed: yes SIM_LIVE (as of …)`, that the report's **Arming** section
+matches what you did, and — if something disarms it (a rejected entry, a
+mismatch) — that it reads `DENIED`. Deliberately not deployed over the weekend.
+
 **Also pending at the next market open**: the `LiveOrderTracker` live test
 (Phase 1, "Fake `OrderContext` test harness" item below) — deploy + one Sim
 entry→bracket→fill cycle. Deliberately not deployed over the weekend (no

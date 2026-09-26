@@ -86,6 +86,13 @@ class TestLiveness(Base):
                 self.write(j, ago_s=3600)
                 self.assertEqual(self.line()[0].split(" |")[0], want)
 
+    def test_a_quiet_market_does_not_make_it_look_dead(self):
+        # No tick for an hour (exchangeTimeMs frozen), but the runtime's own clock is still beating.
+        j = self.journal()
+        j.heartbeat(NOW - 2_000, exchange=NOW - 3_600_000)
+        self.write(j, ago_s=3600)
+        self.assertTrue(self.line()[0].startswith("ALIVE"), self.line()[0])
+
     def test_a_fresh_record_counts_even_if_the_file_looks_old(self):
         j = self.journal()
         j.heartbeat(NOW - 2_000)
@@ -140,7 +147,7 @@ class TestFields(Base):
         j = self.journal()
         j.intent(NOW - 120_000, 1, "e1")                                         # allowed -> armed yes
         self.write(j)
-        self.assertIn("armed: yes (verdict 2m ago)", self.line()[0])
+        self.assertIn("armed: yes (inferred, verdict 2m ago)", self.line()[0])
 
         self.tearDown()
         self.setUp()
@@ -148,7 +155,7 @@ class TestFields(Base):
         j.intent(NOW - 300_000, 1, "e1")
         j.intent(NOW - 30_000, 1, "e2", verdict="blocked", filt="armed", why="not armed")   # newest says not armed
         self.write(j)
-        self.assertIn("armed: no (verdict 30s ago)", self.line()[0])
+        self.assertIn("armed: no (inferred, verdict 30s ago)", self.line()[0])
 
         self.tearDown()
         self.setUp()
@@ -156,6 +163,35 @@ class TestFields(Base):
         j.heartbeat(NOW - 1000)
         self.write(j)
         self.assertIn("armed: unknown", self.line()[0])
+
+    def test_armed_is_read_exactly_when_the_journal_records_it(self):
+        cases = ((True, "SIM_LIVE", False, "armed: yes SIM_LIVE (as of 4s ago)"),
+                 (False, "DRY_RUN", False, "armed: no DRY_RUN (as of 4s ago)"),
+                 (False, "SIM_LIVE", True, "armed: DENIED SIM_LIVE (as of 4s ago)"))
+        for armed, mode, denied, want in cases:
+            with self.subTest(want=want):
+                self.tearDown()
+                self.setUp()
+                j = self.journal()
+                j.heartbeat(NOW - 4000, armed=armed, mode=mode, denied=denied)
+                self.write(j)
+                self.assertIn(want, self.line()[0])
+
+    def test_the_newest_arming_record_wins_and_beats_inference(self):
+        j = self.journal()
+        j.intent(NOW - 200_000, 1, "e", verdict="blocked", filt="armed", why="not armed")    # inference would say "no"
+        j.arming(NOW - 60_000, True)                                                          # ...but it was armed a minute ago
+        self.write(j)
+        line = self.line()[0]
+        self.assertIn("armed: yes SIM_LIVE (as of 60s ago)", line)
+        self.assertNotIn("inferred", line)
+
+    def test_a_disarm_after_the_last_heartbeat_is_seen(self):
+        j = self.journal()
+        j.heartbeat(NOW - 20_000, armed=True, mode="SIM_LIVE")
+        j.arming(NOW - 8_000, False, setting=True, denied=True)                               # a mismatch, 8 s ago
+        self.write(j)
+        self.assertIn("armed: DENIED SIM_LIVE (as of 8s ago)", self.line()[0])
 
     def test_position_from_the_newest_fill(self):
         for pos_after, want in ((1, "LONG 1"), (-2, "SHORT 2"), (0, "flat")):

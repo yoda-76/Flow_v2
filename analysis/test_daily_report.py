@@ -65,9 +65,22 @@ class Journal:
         cfg.update(over)
         return self.add(cfg)
 
-    def heartbeat(self, t):
-        return self.add({"type": "heartbeat", "seq": self.seq, "generation": self.seq, "exchangeTimeMs": t,
-                         "localTimeMs": t + 40, "healthy": True, "lastIntentReason": "none"})
+    def heartbeat(self, t, exchange=None, armed=None, mode="DRY_RUN", denied=False):
+        """A heartbeat at wall-clock time t. exchangeTimeMs is the last TICK's time: near t on a busy market,
+        frozen (pass `exchange`) on a quiet one. With `armed` given it carries the D-97 armed/runtime fields."""
+        rec = {"type": "heartbeat", "seq": self.seq, "generation": self.seq,
+               "exchangeTimeMs": t - 40 if exchange is None else exchange,
+               "localTimeMs": t, "healthy": True, "lastIntentReason": "none"}
+        if armed is not None:
+            rec["armed"] = armed
+            rec["runtime"] = {"mode": mode, "armedSetting": armed or denied, "armDenied": denied, "refusedAtActivation": False}
+        return self.add(rec)
+
+    def arming(self, t, armed, mode="SIM_LIVE", setting=None, denied=False, refused=False):
+        """An arming_state record (D-97)."""
+        return self.add({"type": "arming_state", "seq": self.seq, "eventTimeMs": t, "armed": armed,
+                         "runtime": {"mode": mode, "armedSetting": armed if setting is None else setting,
+                                     "armDenied": denied, "refusedAtActivation": refused}})
 
     def log(self, t, msg):
         return self.add({"type": "log", "t": t, "msg": msg})
@@ -375,6 +388,29 @@ class TestWindowAndSessions(Base):
         self.assertEqual(h["max_hb_gap_ms"], 240_000)
         self.assertIn("4m00s ⚠", dr.render(self.model()))
 
+    def test_a_quiet_market_is_not_reported_as_a_system_stall(self):
+        # The last tick was at 10:00:00; then nothing traded for 8 minutes. The runtime's clock kept beating every
+        # 10 s (localTimeMs), while exchangeTimeMs stayed frozen -- then a tick arrived and it jumped.
+        j = self.journal()
+        frozen = ct_ms(DAY, 10, 0, 0)
+        for i in range(0, 49):
+            j.heartbeat(ct_ms(DAY, 10, 0, 0) + i * 10_000, exchange=frozen)
+        j.heartbeat(ct_ms(DAY, 10, 8, 10), exchange=ct_ms(DAY, 10, 8, 5))   # a tick finally arrives
+        j.write()
+        (s, h, cfg), = self.model()["sessions"]
+        self.assertEqual(h["max_hb_gap_ms"], 10_000, "the runtime clock never skipped a beat")
+        self.assertNotIn("⚠", dr.render(self.model()).split("## Sessions and system health")[1].split("## Config")[0])
+
+    def test_a_real_system_stall_is_still_caught_when_the_market_is_busy(self):
+        j = self.journal()
+        j.heartbeat(ct_ms(DAY, 10, 0, 0))
+        j.heartbeat(ct_ms(DAY, 10, 0, 10))
+        j.heartbeat(ct_ms(DAY, 10, 5, 10))    # the runtime's clock stopped for 5 minutes, ticks or not
+        j.write()
+        (s, h, cfg), = self.model()["sessions"]
+        self.assertEqual(h["max_hb_gap_ms"], 300_000)
+        self.assertIn("5m00s ⚠", dr.render(self.model()))
+
     def test_config_change_between_sessions_is_called_out(self):
         self.journal(name="s_a_inst1").config().heartbeat(ct_ms(DAY, 10)).write()
         self.journal(name="s_b_inst2").config(dailyLossLimitTicks=50).heartbeat(ct_ms(DAY, 11)).write()
@@ -394,6 +430,124 @@ class TestWindowAndSessions(Base):
     def test_a_session_with_nothing_in_the_window_is_omitted(self):
         self.journal(name="old_inst1", start=ct_ms(date(2026, 9, 1), 10)).heartbeat(ct_ms(date(2026, 9, 1), 10)).write()
         self.assertEqual(self.model()["sessions"], [])
+
+
+class TestArming(Base):
+    def test_timeline_and_armed_duration(self):
+        j = self.journal()
+        j.arming(ct_ms(DAY, 9, 0, 0), False, mode="DRY_RUN")
+        j.arming(ct_ms(DAY, 10, 0, 0), True)
+        j.arming(ct_ms(DAY, 11, 30, 0), False, setting=True, denied=True)      # a mismatch disarmed it
+        j.arming(ct_ms(DAY, 13, 0, 0), True)
+        j.heartbeat(ct_ms(DAY, 13, 45, 0))                                     # still armed when the journal ends
+        j.write()
+        m = self.model()
+        (s, recs, armed_ms, known), = m["arming"]
+        self.assertTrue(known)
+        self.assertEqual(len(recs), 4)
+        self.assertEqual(armed_ms, 90 * 60_000 + 45 * 60_000)                  # 10:00-11:30 plus 13:00-13:45
+        text = dr.render(m)
+        self.assertIn("armed for 2h15m in this window (4 state record(s))", text)
+        self.assertIn("## Arming", text)
+        self.assertIn("10:00:00 CT — ARMED (SIM_LIVE)", text)
+        self.assertIn("denied after arming", text)
+        self.assertIn("09:00:00 CT — not armed (DRY_RUN)", text)
+
+    def test_never_armed_says_dry_run_only(self):
+        j = self.journal()
+        j.arming(ct_ms(DAY, 9, 0, 0), False, mode="DRY_RUN")
+        j.heartbeat(ct_ms(DAY, 9, 10, 0))
+        j.write()
+        self.assertIn("never armed in this window (1 state record(s)) — dry-run only", dr.render(self.model()))
+
+    def test_refused_at_activation_is_explained(self):
+        j = self.journal()
+        j.arming(ct_ms(DAY, 9, 0, 0), False, setting=True, denied=True, refused=True)
+        j.write()
+        self.assertIn("refused at activation", dr.render(self.model()))
+
+    def test_legacy_journal_says_not_recorded(self):
+        j = self.journal()
+        j.heartbeat(ct_ms(DAY, 9, 0, 0))
+        j.write()
+        text = dr.render(self.model())
+        self.assertIn("**Arming:** not recorded", text)
+        self.assertIn("predate D-97", text)
+
+    def test_the_armed_interval_is_clipped_to_the_window(self):
+        # armed at 16:30 and still armed at 17:01: only the 30 min before the 17:00 CT boundary belong to this day
+        j = self.journal()
+        j.arming(ct_ms(DAY, 16, 30, 0), True)
+        j.heartbeat(ct_ms(DAY, 17, 1, 0), armed=True, mode="SIM_LIVE")
+        j.write()
+        (s, recs, armed_ms, known), = self.model()["arming"]
+        self.assertEqual(armed_ms, 30 * 60_000)
+        # ...and the next trading day sees it armed from its very start, with no arming_state of its own
+        (s2, recs2, ms2, known2), = self.model(date(2026, 9, 24))["arming"]
+        self.assertTrue(known2)
+        self.assertEqual(recs2, [])
+
+    def test_an_all_day_armed_study_is_not_reported_as_never_armed(self):
+        # The study armed the previous morning and NEVER changed: no arming_state in today's window, only heartbeats.
+        j = self.journal(start=ct_ms(date(2026, 9, 22), 9, 0))
+        j.arming(ct_ms(date(2026, 9, 22), 9, 0, 5), True)          # BEFORE the 17:00 CT boundary: belongs to the previous day
+        for i in range(0, 61, 10):
+            j.heartbeat(ct_ms(DAY, 9, 0, 0) + i * 1000, armed=True, mode="SIM_LIVE")
+        j.write()
+        m = self.model()
+        (s, recs, armed_ms, known), = m["arming"]
+        self.assertTrue(known)
+        self.assertEqual(recs, [], "no change record today")
+        # armed from the window start (17:00 CT the previous day) until the last record (09:01:00): 16 h 1 min
+        self.assertEqual(armed_ms, 16 * 3600_000 + 60_000)
+        text = dr.render(m)
+        self.assertNotIn("never armed", text)
+        self.assertIn("no change during this window — ARMED (SIM_LIVE), as of the last heartbeat", text)
+
+    def test_heartbeats_alone_give_the_armed_duration(self):
+        j = self.journal()
+        base = ct_ms(DAY, 10, 0, 0)
+        for i in range(0, 6):
+            j.heartbeat(base + i * 10_000, armed=True, mode="SIM_LIVE")           # armed 10:00:00 - 10:00:50
+        j.heartbeat(base + 60_000, armed=False, mode="SIM_LIVE")                   # disarmed by 10:01:00
+        j.heartbeat(base + 70_000, armed=False, mode="SIM_LIVE")
+        j.write()
+        (s, recs, armed_ms, known), = self.model()["arming"]
+        self.assertEqual(armed_ms, 60_000)                                         # 10:00:00 -> 10:01:00
+        self.assertEqual(recs, [])
+
+    def test_a_flag_recorded_only_on_other_days_does_not_make_today_known(self):
+        # The only arming records are days old; today's records (legacy heartbeats) do not say. Today is "not recorded",
+        # not "never armed" -- the flag can't be assumed to have stayed put across a journal that stopped recording it.
+        j = self.journal(start=ct_ms(date(2026, 9, 20), 9, 0))
+        j.arming(ct_ms(date(2026, 9, 20), 9, 0, 5), True)
+        j.heartbeat(ct_ms(DAY, 9, 0, 0))
+        j.write()
+        m = self.model()
+        (s, recs, armed_ms, known), = m["arming"]
+        self.assertFalse(known)
+        self.assertIn("**Arming:** not recorded", dr.render(m))
+
+    def test_time_before_the_window_is_not_counted(self):
+        j = self.journal(start=ct_ms(date(2026, 9, 21), 18, 0))
+        j.arming(ct_ms(date(2026, 9, 21), 18, 0, 5), True)                         # two days back
+        j.arming(ct_ms(DAY, 9, 0, 0), False)                                       # disarmed at 09:00 today
+        j.write()
+        (s, recs, armed_ms, known), = self.model()["arming"]
+        # armed from the window start (09-22 17:00 CT) to 09:00: 16 h -- NOT the whole time since 09-21 18:00
+        self.assertEqual(armed_ms, 16 * 3600_000)
+
+    def test_two_sessions_add_up(self):
+        a = self.journal(name="s_a_inst1")
+        a.arming(ct_ms(DAY, 9, 0, 0), True)
+        a.arming(ct_ms(DAY, 9, 30, 0), False)
+        a.write()
+        b = self.journal(name="s_b_inst2")
+        b.arming(ct_ms(DAY, 12, 0, 0), True)
+        b.heartbeat(ct_ms(DAY, 12, 10, 0))
+        b.write()
+        m = self.model()
+        self.assertEqual(sum(x[2] for x in m["arming"]), 30 * 60_000 + 10 * 60_000)
 
 
 class TestDataHealth(Base):

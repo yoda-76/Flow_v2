@@ -589,9 +589,11 @@ data, rolling 7 trading days), `reports/` (generated pages, gitignored).
 Reading the status line: `heartbeat Ns ago` is the runtime's own clock, so a
 growing number means the **system** stopped, not that the market went quiet
 (the system deliberately does not watch for a silent feed, D-93). `armed` is
-read from the newest risk verdict ("as of the last intent") and `position`
-from the newest recorded fill — the journal doesn't store either directly, so
-both say `unknown` until there is something to read them from.
+the exact flag and mode once the journal records them (D-97; `armed: yes
+SIM_LIVE`, `no DRY_RUN`, or `DENIED SIM_LIVE` when the system disarmed itself);
+journals from before that only allow a guess, printed `(inferred, …)`.
+`position` comes from the newest recorded fill and says `unknown` until there
+is one. Both need the D-94/D-97 records, which only exist after a deploy.
 
 Tests for the scripts: `python analysis/test_status.py`,
 `python analysis/test_daily_report.py`, `python analysis/test_trade_view.py`

@@ -3725,14 +3725,13 @@ readable rather than being silently rewritten.
     heartbeat ~every 10 s from its own timer, so silence means the *system*
     stopped, not that the market was quiet; consistent with D-93 (no
     feed-silence watchdog).
-  - **Honest limits**: the journal stores neither the armed flag
-    (`session_header.mode` is a hard-coded `"DRY_RUN"`) nor the position
-    directly. `armed` is read from the newest risk verdict's `armed` filter
-    ("as of the last intent", with its age) and `position` from the newest
-    `order_fill.positionAfter`; both print `unknown` until such a record
-    exists. Recording the armed flag and mode in the journal properly would
-    make this exact — **not done** (a runtime change; noted, not silently
-    made).
+  - **Honest limits**: the journal stored neither the armed flag
+    (`session_header.mode` was a hard-coded `"DRY_RUN"`) nor the position
+    directly. `armed` was read from the newest risk verdict's `armed` filter
+    and `position` from the newest `order_fill.positionAfter`; both print
+    `unknown` until such a record exists. **Update (D-97):** the armed flag and
+    mode are now journaled properly (after the next deploy) and the status line
+    prefers them, keeping the inference only for older journals.
   - **Data health** is checked only while the system is running: the two
     per-interval constructs (`vwap`, `liquidity_map`) must have a file for
     the current session written within the last 30 s; otherwise `CHECK: …`.
@@ -3744,6 +3743,58 @@ readable rather than being silently rewritten.
   - **Completes todo Phase 2's tooling** (report D-94, viewer D-95, status
     D-96). Still to do on all three: check them against a real armed Sim
     session's journal.
+
+- **D-97** (2026-09-26) — **The journal now records whether the system is
+  armed and in what mode; and a heartbeat-clock bug in the D-94/D-96 tools
+  found on the way.** Closes the limit D-96 flagged: the journal stored
+  neither the armed flag nor the mode (`session_header.mode` was a hard-coded
+  `"DRY_RUN"`), so an armed session and a dry run were indistinguishable
+  except by inference.
+  - **What is journaled** (additive; `Pipeline` + the Study): an
+    **`arming_state`** record on the first observation and whenever the
+    *effective* armed flag (the Armed setting **and** not denied) or the
+    runtime detail changes — `{armed, runtime:{mode, armedSetting, armDenied,
+    refusedAtActivation}}`, checked about once a second; every **heartbeat**
+    (~10 s) also carries `armed` and `runtime`; `session_header` now has the
+    real `mode` and `armedSetting`. `Pipeline.attachRuntimeStatus(supplier)`
+    (same pattern as `attachDataRecorder`) keeps `flow-core` SDK-free — the
+    supplier returns a JSON string built in the Study. A supplier that throws
+    yields `runtime:null` and can't hurt the pipeline; with no risk chain
+    (replay, observers) nothing new is written and heartbeats keep their old
+    shape. A denial (`armDenied`) is visible: effective `armed:false` while
+    `armedSetting:true`.
+  - **Consumers**: the daily report gained an **Arming** section (a timeline
+    of `arming_state` records, plus "armed for Xh Ym" in the summary) and the
+    status line now reads the exact flag — `armed: yes SIM_LIVE (as of 4s
+    ago)`, `no DRY_RUN`, `DENIED SIM_LIVE` — falling back to the old guess only
+    for older journals, labelled `(inferred, …)`.
+  - **Armed duration is built from heartbeats too, not only the change
+    records**: `arming_state` is written only on a *change*, so a study that
+    stays armed across the 17:00 CT boundary writes none in the next day's
+    window and would have been reported as "never armed". Caught by mutation
+    testing (a survivor forced the question). Marks from before the window are
+    used only to carry the state in; everything is clipped to the window; a day
+    whose journal doesn't record the flag at all is "not recorded", never
+    "never armed".
+  - **Bug found in my own D-94/D-96 tools (fixed)**: the report and the status
+    line took a heartbeat's time from `exchangeTimeMs` — the **last tick's**
+    time, which freezes on a quiet market and jumps when ticks resume — instead
+    of `localTimeMs`, the runtime's own clock (checked on a real journal: it
+    advances exactly 10 000 ms per heartbeat). On a quiet market that would have
+    produced false "system stalled" gaps and misplaced heartbeats in time,
+    contradicting what the docs claimed. Now `localTimeMs`; two regression
+    tests each in the report and the status suite (verified to fail against the
+    old behaviour), and a comment on `Pipeline.heartbeat` saying which clock to
+    read for liveness.
+  - **Tests**: `ArmingStateTest` (a new Java gate, 24 checks; 12 mutations
+    all caught after one added case — the armed flag flipping while the runtime
+    detail is unchanged) and 16 new Python tests; 19 Python mutations all
+    caught after four rounds of tightening.
+  - **Not deployed** — the fields only appear in journals written after the
+    next deploy. Until then every existing journal reports "arming: not
+    recorded" and the status line infers. Live check: after the first armed Sim
+    session, confirm `arming_state` appears on arming and on a denial, and the
+    report's arming timeline matches what you did.
 
 ## Open questions (not yet decisions)
 

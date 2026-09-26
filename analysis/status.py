@@ -21,12 +21,13 @@ about every 10 s from its own timer, so silence means the SYSTEM stopped -- not
 that the market went quiet. The system deliberately does not watch for a
 silent feed (D-93).
 
-Honest limits, because the journal was not built to answer these:
-  - armed: the flag itself is not journaled (session_header.mode is a fixed
-    "DRY_RUN"). It is read from the newest risk verdict -- "as of the last
-    intent" -- and shows "unknown" if there has been none.
+Where each field comes from:
+  - armed: the journal records it since D-97 (every heartbeat and arming_state
+    carries the effective flag and the mode), e.g. "armed: yes (SIM_LIVE) (as of
+    4s ago)". Journals from before that only allow a guess from the newest risk
+    verdict, printed as "(inferred, ...)"; "unknown" if there is none.
   - position: from the newest order_fill record (D-94); "unknown" for sessions
-    before that.
+    before that. (The journal still stores no position of its own.)
 Everything comes from the files under logs/ and data/; nothing talks to
 MotiveWave or the broker.
 """
@@ -75,14 +76,26 @@ def last_activity_ms(session, mtime_ms):
 
 
 def armed_state(session, now):
-    """'yes'/'no'/'unknown', from the newest risk verdict's first ('armed') filter."""
+    """The armed flag. Exact when the journal records it (D-97: every heartbeat and arming_state carries it);
+    otherwise INFERRED from the newest risk verdict's 'armed' filter and labelled as such; else 'unknown'."""
+    for r in reversed(session.records):
+        if r.get("type") in ("heartbeat", "arming_state") and r.get("armed") is not None:
+            rt = r.get("runtime") if isinstance(r.get("runtime"), dict) else {}
+            mode = f" {rt['mode']}" if rt.get("mode") else ""
+            if r["armed"]:
+                word = "yes" + mode
+            elif rt.get("armDenied"):
+                word = "DENIED" + mode     # the setting is on but the system disarmed itself (or refused at activation)
+            else:
+                word = "no" + mode
+            return word + ("" if r["_t"] is None else f" (as of {ago(now - r['_t'])} ago)")
     for r in reversed(session.records):
         if r.get("type") == "risk_verdict":
             v = next((v for v in r.get("verdicts", []) if v.get("filter") == "armed"), None)
             if v is not None:
                 t = r["_t"]
-                age = "" if t is None else f" (verdict {ago(now - t)} ago)"
-                return ("yes" if v.get("allowed") else "no") + age
+                age = "" if t is None else f", verdict {ago(now - t)} ago"
+                return ("yes" if v.get("allowed") else "no") + f" (inferred{age})"
     return "unknown"
 
 

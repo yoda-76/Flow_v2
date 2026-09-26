@@ -132,8 +132,10 @@ def _own_time(r):
     if t in ("log", "order_fill"):
         return r.get("t")
     if t == "heartbeat":
-        return r.get("exchangeTimeMs")
-    if t == "SESSION_FLATTEN_DUE":
+        # localTimeMs is the runtime's own clock (advances 10 s per heartbeat). exchangeTimeMs is the LAST TICK's
+        # time: it freezes on a quiet market and jumps when ticks resume, which would fake "stalled" gaps.
+        return r.get("localTimeMs") or r.get("exchangeTimeMs")
+    if t in ("SESSION_FLATTEN_DUE", "arming_state"):
         return r.get("eventTimeMs")
     if t == "session_header":
         return r.get("sessionStartMs")
@@ -366,6 +368,52 @@ def health(session, window):
             "parse_errors": session.parse_errors}
 
 
+def describe_arming(r):
+    """One arming_state / heartbeat record -> (armed: bool|None, words)."""
+    armed = r.get("armed")
+    rt = r.get("runtime") if isinstance(r.get("runtime"), dict) else {}
+    mode = rt.get("mode")
+    if armed is None:
+        return None, "unknown"
+    if armed:
+        return True, f"ARMED ({mode})" if mode else "ARMED"
+    if rt.get("armDenied"):
+        why = "refused at activation (a position/orders were already there)" if rt.get("refusedAtActivation") \
+            else "denied after arming (kill switch, mismatch, or a rejected/cancelled entry)"
+        return False, f"NOT ARMED — {why}; setting is {'on' if rt.get('armedSetting') else 'off'} ({mode})"
+    return False, f"not armed ({mode})" if mode else "not armed"
+
+
+def arming_timeline(session, window):
+    """(changes, armed_ms, known) for one session over one trading-day window.
+
+    `changes` are the arming_state records inside the window. The armed DURATION is computed from every record that
+    carries the flag -- arming_state AND the heartbeats (one per ~10 s) -- because arming_state is written only when
+    something CHANGES: a study that stays armed across the 17:00 CT boundary writes none in the next day's window, and
+    must not be reported as "never armed". A mark's state holds until the next mark; the last one holds to the last
+    record in the window; everything is clipped to the window. `known` = the journal recorded the flag at all in it."""
+    marks = [(r["_t"], bool(r["armed"])) for r in session.records
+             if r.get("type") in ("heartbeat", "arming_state") and r.get("armed") is not None and r["_t"] is not None]
+    if not any(window[0] <= t < window[1] for t, _ in marks):
+        return [], 0, False
+    changes = [r for r in session.records if r.get("type") == "arming_state" and in_window(r, window)]
+    armed_ms = 0
+    for (t0, a0), (t1, _) in zip(marks, marks[1:]):
+        if a0:
+            lo, hi = max(t0, window[0]), min(t1, window[1])
+            if hi > lo:
+                armed_ms += hi - lo
+    last_t, last_armed = marks[-1]
+    in_win = [r["_t"] for r in session.records if r["_t"] is not None and in_window(r, window)]
+    if last_armed and in_win:
+        # in_win is already inside the window, and last_t is inside it whenever `known` (checked above); a last mark
+        # AFTER the window makes hi < lo, so nothing is added (the pairs above already covered up to the window end).
+        lo, hi = last_t, max(in_win)
+        if hi > lo:
+            armed_ms += hi - lo
+    return changes, armed_ms, True
+
+
 def config_in_force(session):
     for r in session.records:
         if r.get("type") == "risk_config_loaded":
@@ -413,6 +461,7 @@ def build_model(sessions, day, data_root):
     window = trading_day_window(day)
     per_session = []
     all_trades, all_orphans, all_attention, all_legacy = [], [], [], []
+    arming = []   # (session, records, armed_ms)
     intent_totals = {"changes": 0, "allowed_entries": 0, "entries_blocked_by_armed": 0,
                      "blocked_counts": Counter(), "blocked_entries_listed": []}
     for s in sessions:
@@ -426,6 +475,8 @@ def build_model(sessions, day, data_root):
         if not any(r.get("type") == "order_fill" for r in recs):
             all_legacy += entries_without_fills(recs)
         all_attention += attention_events(recs)
+        a_recs, a_ms, a_known = arming_timeline(s, window)
+        arming.append((s, a_recs, a_ms, a_known))
         ia = intent_analysis(recs)
         for k in ("changes", "allowed_entries", "entries_blocked_by_armed"):
             intent_totals[k] += ia[k]
@@ -435,13 +486,17 @@ def build_model(sessions, day, data_root):
     all_attention.sort(key=lambda a: a[0] or 0)
     sid, data_rows = data_health(data_root, day)
     return {"day": day, "window": window, "sessions": per_session, "trades": all_trades, "orphans": all_orphans,
-            "attention": all_attention, "legacy_entries": all_legacy, "intents": intent_totals,
+            "attention": all_attention, "legacy_entries": all_legacy, "intents": intent_totals, "arming": arming,
             "data_session_id": sid, "data": data_rows}
 
 
 # ---------------------------------------------------------------------------
 # Rendering (Markdown)
 # ---------------------------------------------------------------------------
+
+
+def dr_dur(ms):
+    return fmt_dur(ms)
 
 
 def _money(x):
@@ -489,6 +544,14 @@ def render(model) -> str:
     L.append(f"- **Intents:** {ia['changes']} strategy intent changes; {ia['allowed_entries']} entries allowed by the "
              f"risk chain; {sum(v for (f, _), v in ia['blocked_counts'].items() if f != 'armed')} blocked by a limit "
              f"(other than 'not armed'); {ia['entries_blocked_by_armed']} entries seen while not armed.")
+    known = [a for a in model["arming"] if a[3]]
+    if known:
+        armed_ms = sum(a[2] for a in known)
+        changes = sum(len(a[1]) for a in known)
+        L.append(f"- **Arming:** armed for {dr_dur(armed_ms)} in this window ({changes} state record(s)) — see the timeline below."
+                 if armed_ms else f"- **Arming:** never armed in this window ({changes} state record(s)) — dry-run only.")
+    else:
+        L.append("- **Arming:** not recorded (these journals predate D-97, which added the armed/mode record).")
     L.append(f"- **Needs attention:** {len(alerts)} alert(s), {sum(1 for a in model['attention'] if a[2] == 'WARN')} warning(s)."
              + ("" if alerts else " None."))
     L.append(f"- **Sessions:** {len(model['sessions'])} journal(s) in the window.")
@@ -556,6 +619,32 @@ def render(model) -> str:
     if not counts:
         L.append("Nothing blocked.")
         L.append("")
+
+    # ---- arming timeline
+    L.append("## Arming")
+    L.append("")
+    if known:
+        for s, recs, ms, k in model["arming"]:
+            if not k:
+                continue
+            L.append(f"`{s.name}`:")
+            L.append("")
+            if recs:
+                for r in recs:
+                    _, words = describe_arming(r)
+                    L.append(f"- {fmt_ct(r['_t'])[6:]} — {words}")
+            else:
+                beat = next((r for r in reversed(s.records) if r.get("type") == "heartbeat" and r.get("armed") is not None
+                             and in_window(r, model["window"])), None)
+                _, words = describe_arming(beat) if beat else (None, "unknown")
+                L.append(f"- no change during this window — {words}, as of the last heartbeat")
+            L.append("")
+        L.append("`ARMED` means the effective flag was on: the study's Armed setting **and** not denied. A session in "
+                 "`DRY_RUN` mode never places orders even when armed.")
+    else:
+        L.append("Not recorded: journals from before D-97 do not say whether the system was armed. (The armed state can "
+                 "only be guessed from risk verdicts.)")
+    L.append("")
 
     # ---- flatten / notes
     notes = [a for a in model["attention"] if a[2] == "NOTE" and a[3] in ("SESSION_FLATTEN", "SESSION_FLATTEN_DUE")]
