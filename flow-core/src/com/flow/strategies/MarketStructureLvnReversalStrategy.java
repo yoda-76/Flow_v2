@@ -136,6 +136,16 @@ public final class MarketStructureLvnReversalStrategy implements FlowStrategy {
   }
 
   @Override
+  public void onFlattened(String reason) {
+    // D-92: the runtime closed everything (session-end flatten) -- drop the phantom position.
+    phase = Phase.SEARCHING;
+    positionDirection = 0;
+    positionStopTicks = null;
+    positionTargetTicks = null;
+    pendingMutationSeq = -1;
+  }
+
+  @Override
   public String id() {
     return "market_structure_lvn_reversal";
   }

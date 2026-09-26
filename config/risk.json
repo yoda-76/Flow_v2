@@ -6,5 +6,10 @@
   "minDwellMs": 5000,
   "maxReversalsPerSession": 20,
   "lagQueueDepthThreshold": 1000,
-  "lagProcessingMsThreshold": 2000
+  "lagProcessingMsThreshold": 2000,
+  "flattenLeadMinutes": 5,
+  "noEntryLeadMinutes": 15,
+  "dataIntervalSeconds": 1,
+  "liquidityIntervalSeconds": 1,
+  "dataKeepTradingDays": 7
 }

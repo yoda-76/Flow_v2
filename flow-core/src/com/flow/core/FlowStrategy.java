@@ -38,4 +38,14 @@ public interface FlowStrategy {
    * observers that never emit a real intent).
    */
   default void onIntentRejected(Intent intent, String reason) {}
+
+  /**
+   * D-92: the runtime is treating the account as flat -- the session-end
+   * flatten window was entered (before the daily halt / weekend). Any
+   * "I'm in a position" state must be dropped, or the strategy would carry a
+   * phantom position through the halt and manage a stop/target for it.
+   * Called at most once per flatten window, only while the pipeline is
+   * healthy. Default no-op for strategies with no position state.
+   */
+  default void onFlattened(String reason) {}
 }

@@ -216,6 +216,20 @@ final class OrderGateway {
   }
 
   /**
+   * D-92: cancel everything resting WITHOUT sending a close -- for the session-end flatten when the account is
+   * already flat but orders are still working (e.g. a bracket whose entry was closed another way). Avoids
+   * sending closeAtMarket() to a flat account, whose behaviour there is unconfirmed.
+   */
+  String cancelAllOrders(String reason) {
+    ctx.cancelOrders();
+    return Json.object()
+        .field("type", "session_orders_cancelled")
+        .field("instrument", ctx.getInstrument().getSymbol())
+        .field("reason", reason)
+        .build();
+  }
+
+  /**
    * The one sanctioned use of a blanket sweep -- everywhere else in this
    * class cancels by reference (cancelIfActive()), deliberately, per the
    * user's "a leg is owned by its position" design call. The daily-loss

@@ -61,7 +61,8 @@ public final class ExternalConfig {
   private static final String[] KNOWN_KEYS = {
       "fixedContracts", "maxContracts", "dailyLossLimitTicks", "rateLimitPerMinute",
       "minDwellMs", "maxReversalsPerSession", "lagQueueDepthThreshold", "lagProcessingMsThreshold",
-      "dataIntervalSeconds", "liquidityIntervalSeconds", "dataKeepTradingDays"
+      "dataIntervalSeconds", "liquidityIntervalSeconds", "dataKeepTradingDays",
+      "flattenLeadMinutes", "noEntryLeadMinutes"
   };
 
   private int getInt(String key, int def) {
@@ -106,6 +107,16 @@ public final class ExternalConfig {
 
   /** D-88: rolling window of trading days kept under data/; the oldest is deleted when a new day starts. */
   public int dataKeepTradingDays() { return getInt("dataKeepTradingDays", 7); }
+
+  /**
+   * D-92: minutes before the 16:00 CT maintenance halt at which any open position is flattened (default 5
+   * -> 15:55 CT; on Fridays the flatten holds through the weekend). 0 disables session-end flattening and
+   * the entry block entirely.
+   */
+  public int flattenLeadMinutes() { return getInt("flattenLeadMinutes", 5); }
+
+  /** D-92: minutes before the halt at which NEW entries stop (default 15 -> 15:45 CT); never less than flattenLeadMinutes. */
+  public int noEntryLeadMinutes() { return getInt("noEntryLeadMinutes", 15); }
 
   /** For staleness journaling (README: "traceable after the fact, not silently assumed current"). 0 = no file loaded, using pure defaults. */
   public long fileLastModifiedMs() { return fileLastModifiedMs; }

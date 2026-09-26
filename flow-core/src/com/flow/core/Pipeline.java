@@ -52,11 +52,17 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   private final java.util.function.BooleanSupplier armedSupplier; // nullable, only consulted if riskChain != null
   private final java.util.function.IntSupplier queueDepthSupplier; // nullable, only consulted if riskChain != null
   private final java.util.function.Consumer<String> killSwitch; // nullable, only consulted if riskChain != null
+  private final java.util.function.Consumer<String> sessionFlatten; // nullable, D-92, only consulted if riskChain != null
 
   private final AtomicBoolean healthy = new AtomicBoolean(true);
   private final AtomicLong clockEventCount = new AtomicLong(0);
   private final AtomicBoolean killSwitchTripped = new AtomicBoolean(false);
   private volatile Intent lastIntent;
+  // D-92 (drain-thread-only): whether we are inside a flatten window, and when the flatten callback last ran in it.
+  private boolean flattenWindowActive = false;
+  private long lastFlattenAttemptMs = Long.MIN_VALUE;
+  /** While a position is still open in the flatten window, retry the flatten this often (a rejected close must not be a one-shot). */
+  static final long FLATTEN_RETRY_MS = 5_000L;
   private volatile DataRecorder dataRecorder; // nullable, D-88; set once before events flow
 
   /**
@@ -102,6 +108,26 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
                    RiskChain riskChain, java.util.function.BooleanSupplier armedSupplier,
                    java.util.function.IntSupplier queueDepthSupplier,
                    java.util.function.Consumer<String> killSwitch) {
+    this(strategy, journal, intentSink, features, priceDecoder, riskChain, armedSupplier, queueDepthSupplier,
+        killSwitch, null);
+  }
+
+  /**
+   * sessionFlatten (D-92, nullable) is invoked with a reason string on entering the flatten window
+   * (TradingWindow.Phase.FLATTEN -- before the daily halt and all weekend) and then every
+   * FLATTEN_RETRY_MS while the window lasts, on every event including ClockEvents, so a silent book still
+   * flattens on schedule. It must be idempotent: flow-runtime makes it a no-op when the account is already
+   * flat with nothing resting. Like the kill switch it sits above the healthy check, so a pipeline disarmed
+   * for an unrelated reason still flattens. Entering the window also tells RiskChain and the strategy the
+   * account is now flat (see RiskChain.onFlattened / FlowStrategy.onFlattened) -- once per window.
+   */
+  public Pipeline(FlowStrategy strategy, JournalWriter journal, IntentSink intentSink,
+                   Map<String, Feature> features, IntToDoubleFunction priceDecoder,
+                   RiskChain riskChain, java.util.function.BooleanSupplier armedSupplier,
+                   java.util.function.IntSupplier queueDepthSupplier,
+                   java.util.function.Consumer<String> killSwitch,
+                   java.util.function.Consumer<String> sessionFlatten) {
+    this.sessionFlatten = sessionFlatten;
     this.strategy = strategy;
     this.journal = journal;
     this.intentSink = intentSink;
@@ -208,6 +234,10 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
       }
     }
 
+    if (riskChain != null) {
+      checkSessionFlatten(e);
+    }
+
     if (!healthy.get()) return; // keep ingesting/journaling raw events; stop invoking the strategy (kill switch above is exempt -- see its own comment)
 
     // Every declared trigger is evaluated every event, never short-circuited
@@ -272,6 +302,40 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
       }
       // Blocked: nothing forwarded to intentSink -- the suppressed trade
       // is visible in the risk_verdict record above, not silently dropped.
+    }
+  }
+
+  /**
+   * D-92: session-end flatten, checked on EVERY event (ClockEvents keep time moving when the book is quiet).
+   * Runs above the healthy check for the same reason the kill switch does. On entering the window: journal it,
+   * tell the risk chain and the strategy the account is flat, forget the last intent so the first entry after
+   * the reopen registers as a change. Then call sessionFlatten now and every FLATTEN_RETRY_MS.
+   */
+  private void checkSessionFlatten(Event e) {
+    long now = e.eventTimeMs();
+    if (!riskChain.flattenDue(now)) {
+      flattenWindowActive = false;
+      return;
+    }
+    if (!flattenWindowActive) {
+      flattenWindowActive = true;
+      lastFlattenAttemptMs = Long.MIN_VALUE;
+      journal.writeDecision(e.seq(), Json.object()
+          .field("type", "SESSION_FLATTEN_DUE")
+          .field("reason", "flatten window before the daily halt / weekend")
+          .field("eventTimeMs", now)
+          .field("seq", e.seq())
+          .build());
+      riskChain.onFlattened(new RiskChain.Context(armedSupplier.getAsBoolean(), true, marketState.lastPriceTicks(),
+          now, 0, 0L));
+      if (healthy.get()) {
+        strategy.onFlattened("session-end flatten window");
+      }
+      lastIntent = Intent.none(strategy.id(), 0);
+    }
+    if (sessionFlatten != null && (lastFlattenAttemptMs == Long.MIN_VALUE || now - lastFlattenAttemptMs >= FLATTEN_RETRY_MS)) {
+      lastFlattenAttemptMs = now;
+      sessionFlatten.accept("session-end flatten window");
     }
   }
 

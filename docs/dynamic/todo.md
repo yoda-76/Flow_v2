@@ -51,6 +51,11 @@ everything is pushed.
   footprint candles byte-identical, VWAP within anchor noise, VP rebuilt
   from footprint candles. Gaps found are listed in D-89/D-90.
 
+**Also pending at the next market open**: the `LiveOrderTracker` live test
+(Phase 1, "Fake `OrderContext` test harness" item below) — deploy + one Sim
+entry→bracket→fill cycle. Deliberately not deployed over the weekend (no
+ticks to exercise it).
+
 **Next planned step (2026-09-25).** Re-run the recording in busy hours to
 exercise big-trade capture: deploy first, then on an **@GC 1-minute chart**
 add **FLOW Runtime** (FLOW menu) → Runtime tab: Strategy Id
@@ -109,11 +114,30 @@ Two decisions only the user can make, both gate the safety work below:
   ≈ 2.7–3 GB per 7 trading days; everything else is negligible.
 
 **Phase 1 — safe to leave running unattended (the bulk of the engineering).**
-- [ ] Session-end / weekend flatten (D-29's stated default, still unbuilt) —
-  today a position can sit open across the daily halt and the weekend.
-- [ ] Feed-silence watchdog: nothing currently notices ticks stopping (the
-  lag guard only covers a slow pipeline). Disarm/flag on N seconds of
-  silence.
+- [x] Session-end / weekend flatten (D-29's stated default) — **built
+  2026-09-26 (D-92)**, unit-tested and mutation-checked, **not deployed**.
+  - [x] Defaults confirmed by the user 2026-09-26: flatten 15:55 CT, no new
+    entries from 15:45 CT, weekend closed Fri 16:00 → Sun 17:00 CT; holidays
+    and early closes not modelled (the user checks them, D-93). Values are
+    now explicit in `config/risk.json`; every config setting is documented in
+    `docs/configuration.md`.
+  - [ ] **PENDING LIVE TEST (next market open, Sim, armed `SIM_LIVE`)**: the
+    real 15:55 CT is ~02:25 IST, so move the window into a watched session
+    by setting `flattenLeadMinutes` in `config/risk.json` (user-edited) —
+    e.g. 400 starts the flatten at 09:20 CT and the entry block at 09:15 CT
+    (`noEntryLeadMinutes` must be ≥ it). Take one entry, then let the clock
+    reach the window; expect `SESSION_FLATTEN_DUE` in `decisions.jsonl`, a
+    `SESSION_FLATTEN` log line with `real_close_at_market`-style close then
+    cancel-all, the account flat with nothing resting, **no disarm**, no
+    kill switch, and — after the window — nothing re-entering until the
+    17:00 CT reopen. Also check a flat account gets **no** order at all
+    during the window. Restore `flattenLeadMinutes` afterwards.
+  - [ ] Wire `flattenLeadMinutes`/`noEntryLeadMinutes` values into the
+    nightly report so the user can see which window was in force.
+- [~] Feed-silence watchdog: **decided NOT to build (user, 2026-09-26,
+  D-93)** — the system checks only whether trade conditions are met, not
+  whether the market is silent; holidays are checked by the user. Reopen
+  only if a live-execution bug traces back to it or the user picks it up.
 - [ ] Alerts: nothing tells the user when it disarms, trips the kill
   switch, loses the feed, or the disk fills. Pick a channel first.
 - [ ] Restart / auto-recovery policy: MotiveWave or the PC restarts with a
@@ -135,9 +159,22 @@ Two decisions only the user can make, both gate the safety work below:
   `LiveOrderTrackerTest` (17th gate), both mutation-checked. Compiled and
   run from a scratch dir, **not yet run through `build.sh`** (MotiveWave was
   running; the script deploys) and **not deployed**.
-  - [ ] Because the extraction touched live-verified order code: run
-    `build/build.sh` with MotiveWave closed, then one short Sim session
-    (entry → bracket → leg fill) before trusting it unattended.
+  - [ ] **PENDING LIVE TEST — do at the next market open (user's call
+    2026-09-26: no point deploying while there are no ticks).** The
+    `LiveOrderTracker` extraction (bodies moved verbatim from the
+    already-deployed code, so a regression is not expected, but it is
+    untested on the real platform) needs: (1) confirm no session is running,
+    then `build/build.sh` (deploys, wipes `MotiveWave Extensions/dev` — this
+    also ships everything else built-but-undeployed, see the handoff block);
+    (2) on a Sim chart, `SIM_LIVE` + Armed (Sim-authorized, CLAUDE.md third
+    exception), let the strategy take one entry and watch the log for
+    `real_order_submitted` → `ORDER_FILLED` → `LIVE_BRACKET_SUBMITTED`;
+    (3) one bracket leg fills → `LIVE_SIBLING_LEG_CANCELLED`, account flat,
+    nothing resting, no `POSITION_MISMATCH_*`; (4) confirm the study did not
+    disarm itself. If any step differs from before the extraction, revert
+    `f9dd5f2`'s Study changes first, diagnose second. Fold this into the
+    same window as the 09-25/26 recording take so one short monitored
+    window covers both.
   - [ ] §9 (`getFilled()` bracket sizing) is still open and untested:
     `FakeBroker` only fills whole orders. Add partial fills to the fake
     first, then a characterization test, then the fix.

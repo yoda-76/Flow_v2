@@ -61,6 +61,14 @@ echo "== pipeline exception boundary / kill switch synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.PipelineExceptionBoundaryTest
 echo "(pipeline exception boundary test passed -- see output above)"
 
+echo "== trading window clock test (D-92) =="
+"$JAVA" -cp build/classes/core com.flow.core.TradingWindowTest
+echo "(trading window test passed -- see output above)"
+
+echo "== session-end flatten test (RiskChain + Pipeline, D-92) =="
+"$JAVA" -cp build/classes/core com.flow.core.SessionEndTest
+echo "(session-end test passed -- see output above)"
+
 echo "== per-construct data recorder synthetic test (D-88) =="
 "$JAVA" -cp build/classes/core com.flow.core.DataRecorderTest
 echo "(data recorder test passed -- see output above)"

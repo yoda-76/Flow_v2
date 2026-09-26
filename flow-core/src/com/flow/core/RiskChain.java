@@ -21,10 +21,10 @@ import java.util.List;
  * returned allowed, so a blocked intent never pollutes churn/rate/PnL
  * tracking as if it had actually happened.
  *
- * "Session open" is still a hard-coded ALLOW -- D-29 settled on a 24h
- * session with no defined "closed" window to check against, so there is
- * nothing for this specific verdict to gate on even now that
- * SessionBoundary exists (D-68b). What SessionBoundary DOES do here:
+ * "Session open" gates on TradingWindow since D-92: entries are blocked
+ * in the last minutes before the daily halt and all weekend, flat intents
+ * are always allowed. (It was a hard-coded ALLOW until then -- D-29 had
+ * no defined closed window to check against.) What SessionBoundary DOES do here:
  * reversalsThisSession (D-19) and realizedPnlTicks (D-30's "daily"-loss
  * PnL) are zeroed at the 17:00 CT rollover, same reset SessionBoundary's
  * own javadoc explains. lastPosition/entryPriceTicks are deliberately
@@ -102,8 +102,9 @@ public final class RiskChain {
     verdicts.add(armedV);
     if (!armedV.allowed()) return new Result(false, verdicts);
 
-    Verdict sessionV = allow("session_open"); // see class javadoc
+    Verdict sessionV = checkSessionWindow(intent, ctx);
     verdicts.add(sessionV);
+    if (!sessionV.allowed()) return new Result(false, verdicts);
 
     Verdict readyV = ctx.ready() ? allow("readiness") : block("readiness", "required features not all ready");
     verdicts.add(readyV);
@@ -162,6 +163,47 @@ public final class RiskChain {
   public boolean dailyLossBreached(Context ctx) {
     maybeRolloverSession(ctx.nowEventTimeMs());
     return !checkDailyLoss(ctx).allowed();
+  }
+
+  /**
+   * D-92: true while an open position must be closed -- the flatten window
+   * before the daily halt and the whole weekend (TradingWindow). Called on
+   * every event by Pipeline, like dailyLossBreached().
+   */
+  public boolean flattenDue(long nowEventTimeMs) {
+    return phaseAt(nowEventTimeMs) == TradingWindow.Phase.FLATTEN;
+  }
+
+  private TradingWindow.Phase phaseAt(long nowEventTimeMs) {
+    return TradingWindow.phaseAt(nowEventTimeMs, config.noEntryLeadMinutes(), config.flattenLeadMinutes());
+  }
+
+  /**
+   * D-92: the session-end flatten just ran (or the window was entered), so
+   * the account is treated as flat from here. Books the open trade's PnL at
+   * the current price and forgets the position -- without this, lastPosition/
+   * entryPriceTicks would keep marking a position that no longer exists
+   * against every later price, and a gap across the weekend could read as a
+   * daily-loss breach and trip the kill switch on an empty account.
+   * Deliberately not counted as a reversal.
+   */
+  public void onFlattened(Context ctx) {
+    if (lastPosition != 0 && entryPriceTicks != null && ctx.currentPriceTicks() != null) {
+      realizedPnlTicks += (ctx.currentPriceTicks() - entryPriceTicks) * Integer.signum(lastPosition);
+    }
+    lastPosition = 0;
+    entryPriceTicks = null;
+  }
+
+  /**
+   * Blocks anything that would OPEN or CHANGE a position outside the OPEN
+   * window; an intent to go flat is always allowed (it reduces risk, and
+   * blocking it would leave a strategy believing it is still in).
+   */
+  private Verdict checkSessionWindow(Intent intent, Context ctx) {
+    TradingWindow.Phase phase = phaseAt(ctx.nowEventTimeMs());
+    if (phase == TradingWindow.Phase.OPEN || intent.targetPosition() == 0) return allow("session_open");
+    return block("session_open", "no new entries: " + phase + " window before the daily halt / weekend");
   }
 
   private Verdict checkDailyLoss(Context ctx) {

@@ -96,6 +96,12 @@ public final class LvnFadeTestStrategy implements FlowStrategy {
     return result;
   }
 
+  @Override
+  public void onFlattened(String reason) {
+    phase = Phase.SEARCHING; // D-92: the runtime closed everything -- drop the phantom position
+    positionDirection = 0;
+  }
+
   private Intent manageOpenPosition(int price) {
     boolean stopHit = positionDirection > 0 ? price <= positionStopTicks : price >= positionStopTicks;
     boolean targetHit = positionDirection > 0 ? price >= positionTargetTicks : price <= positionTargetTicks;

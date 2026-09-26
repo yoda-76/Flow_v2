@@ -3536,6 +3536,84 @@ readable rather than being silently rewritten.
   - Does **not** answer §10/§11 (thread delivery, `onActivate` sync) — those
     are platform questions the fake can only assume, never answer.
 
+- **D-92** (2026-09-26) — **Session-end and weekend flatten (D-29's
+  stated default, finally built).** The times below were confirmed by the
+  user the same day ("the timing looks good"); all are config.
+  - **The rule** (`TradingWindow`, pure clock function in America/Chicago,
+    CME Globex @GC): the market pauses daily 16:00–17:00 CT and closes
+    Friday 16:00 CT until Sunday 17:00 CT. Phases: `OPEN`;
+    `NO_NEW_ENTRIES` from **15:45 CT** (`noEntryLeadMinutes`=15); `FLATTEN`
+    from **15:55 CT** (`flattenLeadMinutes`=5) until the 17:00 reopen — and
+    on Fridays through the whole weekend until Sunday 17:00. `flattenLeadMinutes`
+    ≤ 0 switches all of it off. Leads are clamped to 600 min (a large lead
+    is also the way to **test it live**: 15:55 CT is ~02:25 IST, outside any
+    monitored window, so e.g. `flattenLeadMinutes=400` moves the window to
+    start at 09:20 CT).
+  - **Entry block**: `RiskChain`'s `session_open` filter — until now a
+    hard-coded ALLOW — blocks any intent with a non-zero target outside
+    `OPEN`, journaled as a normal risk verdict. Flat intents are always
+    allowed.
+  - **The flatten** (`Pipeline.checkSessionFlatten`, checked on every event
+    incl. `ClockEvent`s, above the `healthy` check like the kill switch, so
+    a pipeline disarmed by an unrelated exception still flattens): on
+    entering the window it journals `SESSION_FLATTEN_DUE`, calls
+    `RiskChain.onFlattened` and `FlowStrategy.onFlattened` (new default
+    hook; both real strategies reset to SEARCHING) and forgets the last
+    intent; then it calls the runtime's flatten now and **every 5 s** for as
+    long as the window lasts, so a rejected close is retried, not one-shot.
+  - **Why `RiskChain.onFlattened` matters**: `RiskChain` marks its believed
+    position against every later price. Without the reset, a weekend gap
+    reads as a daily-loss breach on an empty account and fires the kill
+    switch (tested end to end through `Pipeline`). It books the trade's PnL
+    at the current price and clears the position; not counted as a reversal.
+  - **Runtime** (`LiveOrderTracker.flattenForSessionEnd`, idempotent):
+    nothing when flat with nothing resting (never sends `closeAtMarket` to a
+    flat account); position open → the kill switch's close-then-cancel-all
+    sweep; flat but stray orders → new `OrderGateway.cancelAllOrders`
+    (cancel only, no close). **Does not disarm** — unlike the kill switch it
+    is routine, so the study trades again after the reopen. Runs only when
+    the session is `SIM_LIVE` **and** Armed, and never when the study
+    refused to arm at activation (`refusedAtActivation` — a position that
+    was already there is not ours to close, D-24); `armDenied` is
+    deliberately not consulted, so a session disarmed by a mismatch still
+    closes what it opened. Dry-run never touches an order.
+  - **Tests**: `TradingWindowTest` (43 — boundaries to the second, Friday →
+    Sunday, DST, disable/clamp), `SessionEndTest` (41 — verdicts, cadence,
+    once-per-window, re-arm next day, unhealthy pipeline, the gap/kill-
+    switch case), and 22 new checks in `LiveOrderTrackerTest`/
+    `OrderGatewayTest`. 19 deliberate mutations, all caught (the first pass
+    missed that nothing proved `Pipeline` calls `RiskChain.onFlattened`,
+    hence the end-to-end gap test). Two existing tests (`RiskChainTest`,
+    `SessionResetWiringTest`) used 2026-03-15 — a **Sunday**, i.e. inside the
+    weekend closure — so their dates were shifted a day; their meaning is
+    unchanged.
+  - **Not modelled**: exchange **holidays and early closes** (a holiday
+    looks like a normal day — the user checks the calendar; see D-93, which
+    also decides against a feed-silence watchdog); a per-strategy opt-in to
+    overnight carry (D-29 anticipated one).
+  - **Not verified live** — the flatten call itself is the same close-then-
+    cancel sweep as the kill switch, but the kill switch has also never
+    fired live. See todo.md's pending live test.
+
+- **D-93** (2026-09-26) — **No feed-silence watchdog; holidays are the
+  user's call.** The user's decision: the system does **not** check whether
+  the market is silent, and does not model exchange holidays or early
+  closes — the user watches the calendar. The only thing the system checks
+  is whether the conditions for a trade are met. **Stands until a bug in
+  live execution traces back to this, or the user explicitly picks it up
+  again** — not before.
+  - What this means in practice, stated so it isn't rediscovered as a
+    surprise: with the feed silent (a holiday, a disconnect) no events reach
+    the strategy, so nothing trades and nothing alerts; a position open at
+    that moment is protected only by its resting bracket legs. The
+    session-end flatten still runs on schedule because `ClockEvent`s keep
+    time moving without ticks — but on a holiday it will simply find nothing
+    to do.
+  - Closes the todo's "feed-silence watchdog" item as *decided not to
+    build*. The separate "alerts" item (nothing tells the user when the
+    system disarms or trips the kill switch) is **not** covered by this and
+    stays open.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

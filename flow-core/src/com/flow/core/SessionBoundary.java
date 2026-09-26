@@ -31,7 +31,7 @@ import java.time.ZonedDateTime;
  */
 public final class SessionBoundary {
   private static final ZoneId ZONE = ZoneId.of("America/Chicago");
-  private static final LocalTime BOUNDARY = LocalTime.of(17, 0);
+  static final LocalTime BOUNDARY = LocalTime.of(17, 0); // package-private: TradingWindow reopens at the same time
 
   private SessionBoundary() {}
 

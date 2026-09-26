@@ -94,6 +94,11 @@ public final class LiveOrderTrackerTest {
     testEntryWithoutBracketPrices();
     testGatewayGoneAtFill();
     testKillSwitchResetForgetsEverything();
+    testSessionFlattenClosesAPositionAndItsBracket();
+    testSessionFlattenIsIdempotentWhenFlat();
+    testSessionFlattenCancelsStrayOrdersWithoutAClose();
+    testSessionFlattenRetriesUntilFlat();
+    testSessionFlattenWithNoGateway();
 
     if (failures > 0) {
       System.err.println(failures + " FAILURE(S)");
@@ -313,6 +318,75 @@ public final class LiveOrderTrackerTest {
     check("no gateway -> bracket skipped and logged, no exception", r.logged("LIVE_BRACKET_SKIPPED"));
     checkEq("no bracket orders", r.broker.allOrders().size(), 1);
     check("in-flight cleared", !r.tracker.orderInFlight());
+  }
+
+  // ---- D-92: session-end flatten ---------------------------------------
+
+  private static void testSessionFlattenClosesAPositionAndItsBracket() {
+    Rig r = new Rig();
+    r.openLong();
+    check("precondition: long 1 with two resting legs", r.broker.position() == 1 && r.broker.activeOrders().size() == 2);
+
+    boolean sent = r.tracker.flattenForSessionEnd("session-end flatten window");
+    check("a flatten was sent", sent);
+    checkEq("flat", r.broker.position(), 0);
+    checkEq("nothing resting", r.broker.activeOrders().size(), 0);
+    check("close came before the blanket cancel", r.broker.calls().indexOf("closeAtMarket positionBefore=1")
+        < r.broker.calls().indexOf("cancelOrders(all)"));
+    check("the flatten is logged", r.logged("SESSION_FLATTEN"));
+    check("the tracker forgot its legs", r.tracker.restingStop() == null && r.tracker.restingTarget() == null);
+    check("it does NOT disarm -- the study trades again after the reopen", !r.armDenied);
+
+    // The cancels of our own bracket legs now arrive as callbacks: they must not be read as an anomaly.
+    r.tracker.onOrderCancelled(r.broker.allOrders().get(1).order());
+    r.tracker.onOrderCancelled(r.broker.allOrders().get(2).order());
+    check("the late cancel callbacks for the swept legs do not disarm", !r.armDenied);
+
+    // Trading resumes normally after the reopen.
+    r.reconcile(1, -10, 20);
+    check("after the flatten a new entry can be submitted", r.tracker.orderInFlight());
+  }
+
+  private static void testSessionFlattenIsIdempotentWhenFlat() {
+    Rig r = new Rig();
+    boolean sent = r.tracker.flattenForSessionEnd("session-end flatten window");
+    check("flat account, nothing resting: nothing is sent", !sent);
+    check("...and no call was made at all", r.broker.calls().isEmpty());
+    check("...and nothing logged", r.log.isEmpty());
+
+    r.openLong();
+    r.tracker.flattenForSessionEnd("first");
+    int callsAfterFirst = r.broker.calls().size();
+    check("second call after a successful flatten is a no-op", !r.tracker.flattenForSessionEnd("second"));
+    checkEq("...no further calls", r.broker.calls().size(), callsAfterFirst);
+  }
+
+  private static void testSessionFlattenCancelsStrayOrdersWithoutAClose() {
+    Rig r = new Rig();
+    r.broker.restingOrder("LIMIT", "SELL", 1, 4310f); // flat, but an order is still working
+    boolean sent = r.tracker.flattenForSessionEnd("session-end flatten window");
+    check("a stray resting order is swept", sent && r.broker.activeOrders().isEmpty());
+    check("but no close is sent to a flat account", !r.broker.called("closeAtMarket"));
+    check("logged as a session flatten", r.logged("SESSION_FLATTEN"));
+  }
+
+  private static void testSessionFlattenRetriesUntilFlat() {
+    Rig r = new Rig();
+    r.openLong();
+    r.tracker.flattenForSessionEnd("try 1");
+    // Simulate the close having been rejected: the account is still long.
+    r.broker.setPosition(1);
+    boolean again = r.tracker.flattenForSessionEnd("try 2");
+    check("the account is still long -> the retry sends another flatten", again);
+    checkEq("flat after the retry", r.broker.position(), 0);
+  }
+
+  private static void testSessionFlattenWithNoGateway() {
+    Rig r = new Rig();
+    r.openLong();
+    r.gatewayAvailable = false;
+    check("no gateway (study deactivated) -> nothing sent, no exception", !r.tracker.flattenForSessionEnd("x"));
+    checkEq("the position is untouched", r.broker.position(), 1);
   }
 
   private static void testKillSwitchResetForgetsEverything() {

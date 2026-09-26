@@ -194,6 +194,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // (clearing the position/orders manually and reactivating creates a
   // fresh instance anyway, per the zombie-instance discussion elsewhere).
   private volatile boolean armDenied = false;
+  private volatile boolean refusedAtActivation = false; // D-92: a position/orders were already there at activation -- never flatten those
   private volatile long sessionStartMs;
   // D-91: the automatic-real-order state machine (in-flight entry, pending bracket, resting legs,
   // self-cancel bookkeeping), extracted so a FakeBroker can drive it. Declared after gateway/
@@ -396,6 +397,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         .field("maxReversalsPerSession", riskConfig.maxReversalsPerSession())
         .field("lagQueueDepthThreshold", riskConfig.lagQueueDepthThreshold())
         .field("lagProcessingMsThreshold", riskConfig.lagProcessingMsThreshold())
+        .field("flattenLeadMinutes", riskConfig.flattenLeadMinutes())
+        .field("noEntryLeadMinutes", riskConfig.noEntryLeadMinutes())
         .field("fileLastModifiedMs", riskConfig.fileLastModifiedMs())
         .field("sessionStartMs", sessionStartMs) // staleness: compare against fileLastModifiedMs (README "traceable... not silently assumed current")
         .build());
@@ -421,8 +424,15 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     };
 
     IntentSink sink = this::onIntentChanged;
+    // D-92 session-end flatten: only when this session is explicitly armed for live Sim trading, and never
+    // for a position that was already there at activation (D-24 -- not ours to close). armDenied is
+    // deliberately NOT consulted: a session disarmed by a mismatch must still close what it opened.
+    java.util.function.Consumer<String> sessionFlatten = reason -> {
+      if (!isLiveModeRequested() || refusedAtActivation) return;
+      liveOrders.flattenForSessionEnd(reason);
+    };
     pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks,
-        riskChain, armedSupplier, queueDepthSupplier, killSwitch);
+        riskChain, armedSupplier, queueDepthSupplier, killSwitch, sessionFlatten);
     com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT);
     ds.start();
     dataStore = ds;
@@ -488,6 +498,10 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
    * all already means armed/session/readiness/daily-loss/size-cap/
    * rate-limit/churn/lag all passed for this intent.
    */
+  private boolean isLiveModeRequested() {
+    return "SIM_LIVE".equals(getSettings().getString(MODE_KEY)) && getSettings().getBoolean(ARMED_KEY);
+  }
+
   private boolean isLiveModeArmed() {
     return "SIM_LIVE".equals(getSettings().getString(MODE_KEY))
         && getSettings().getBoolean(ARMED_KEY) && !armDenied;
@@ -1208,9 +1222,11 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     String refuseReason = gateway.refuseToArmReason();
     if (refuseReason != null) {
       armDenied = true;
+      refusedAtActivation = true;
       logLine("REFUSE_TO_ARM " + refuseReason);
     } else {
       armDenied = false;
+      refusedAtActivation = false;
     }
   }
 

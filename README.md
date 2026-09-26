@@ -463,6 +463,11 @@ than argued about.
 Ordered filters between intent and gateway, each recording its verdict so a
 suppressed trade is visible rather than invisible: armed, session open,
 readiness, daily-loss limit, size cap, rate limit, churn guard, lag guard.
+"Session open" blocks new entries in the last 15 minutes before the daily
+16:00 CT halt and all weekend, and the runtime flattens any open position
+from 15:55 CT (D-92, all configurable in `config/risk.json`). Every setting
+FLOW_V2 uses — `risk.json`, the MotiveWave study settings, and constants in
+code — and how to change each is in [docs/configuration.md](docs/configuration.md).
 
 Two of those exist specifically because decisions are event-level, and both
 are core rather than per-strategy — comparability is lost the moment each

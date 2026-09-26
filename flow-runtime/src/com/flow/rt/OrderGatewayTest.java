@@ -12,10 +12,11 @@ import java.util.List;
  * anywhere in this test, so nothing can reach an account.
  *
  * Scope: OrderGateway only -- the SDK-bound half that needs no MotiveWave
- * runtime. The fill/cancel/reject callback state machine lives inside
+ * runtime. The fill/cancel/reject callback state machine used to live inside
  * FlowRuntimeStudy, which cannot be instantiated outside MotiveWave (its
- * logging path initializes MotiveWave's own UI/config classes), so that half
- * is not covered here.
+ * logging path initializes MotiveWave's own UI/config classes); it was
+ * extracted into LiveOrderTracker (D-91) and is covered by
+ * LiveOrderTrackerTest.
  *
  * Plain main(), nonzero exit on failure, wired into build/build.sh.
  */
@@ -49,6 +50,7 @@ public final class OrderGatewayTest {
     testCancelIfActive();
     testCloseAtMarketLeavesRestingOrders();
     testKillSwitchFlattensPositionAndOrders();
+    testCancelAllOrdersNeverSendsAClose();
     testFullLifecycleStopFills();
     testFullLifecycleTargetFillsShort();
 
@@ -214,6 +216,21 @@ public final class OrderGatewayTest {
     }
     check("close is issued before the blanket cancel (plumbingEdgeCases.md §7)",
         closeIdx >= 0 && cancelIdx > closeIdx);
+  }
+
+  /** D-92: the session-end flatten's flat-account branch -- cancel resting orders without a close. */
+  private static void testCancelAllOrdersNeverSendsAClose() {
+    FakeBroker b = new FakeBroker();
+    OrderGateway gw = new OrderGateway(b.ctx());
+    b.restingOrder("LIMIT", "SELL", 1, 4310f);
+    b.restingOrder("STOP", "SELL", 1, 4300f);
+
+    String line = gw.cancelAllOrders("session end");
+    check("journal line says session_orders_cancelled", line.contains("\"type\":\"session_orders_cancelled\"")
+        && line.contains("session end"));
+    checkEq("nothing resting any more", b.activeOrders().size(), 0);
+    check("a blanket cancel was issued", b.called("cancelOrders(all)"));
+    check("NO closeAtMarket was sent to the flat account", !b.called("closeAtMarket"));
   }
 
   // ---- whole lifecycle, as FlowRuntimeStudy sequences it ---------------

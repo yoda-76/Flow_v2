@@ -65,7 +65,7 @@ public final class SessionResetWiringTest {
         "{\"maxReversalsPerSession\":2,\"minDwellMs\":0,\"rateLimitPerMinute\":100,\"dailyLossLimitTicks\":100000}");
     RiskChain rc = new RiskChain(cfg);
 
-    long t0 = ct(2026, 3, 15, 10, 0);
+    long t0 = ct(2026, 3, 16, 10, 0);
     Intent enter = new Intent("s", 1, 1, null, null, "enter");
     Intent flip1 = new Intent("s", 2, -1, null, null, "flip1");
     Intent flip2 = new Intent("s", 3, 1, null, null, "flip2");
@@ -88,7 +88,7 @@ public final class SessionResetWiringTest {
         rc.evaluate(flip3, c3).allowed(), false);
 
     // Cross 17:00 CT into the next session, retry the exact same reversal.
-    long tNext = ct(2026, 3, 15, 17, 30); // same day, after the rollover
+    long tNext = ct(2026, 3, 16, 17, 30); // same day, after the rollover
     RiskChain.Context c4 = ctx(true, 1000, tNext);
     check("Same reversal ALLOWED after the session boundary -- cap reset to 0",
         rc.evaluate(flip3, c4).allowed(), true);
@@ -118,7 +118,7 @@ public final class SessionResetWiringTest {
         "{\"dailyLossLimitTicks\":50,\"minDwellMs\":0,\"rateLimitPerMinute\":100,\"maxReversalsPerSession\":1000}");
     RiskChain rc = new RiskChain(cfg);
 
-    long t0 = ct(2026, 3, 15, 10, 0);
+    long t0 = ct(2026, 3, 16, 10, 0);
     Intent enterLong1 = new Intent("s", 1, 1, null, null, "enter1");
     Intent exitFlat = new Intent("s", 2, 0, null, null, "exit1");
     Intent enterLong2 = new Intent("s", 3, 1, null, null, "enter2");
@@ -147,7 +147,7 @@ public final class SessionResetWiringTest {
         rc.evaluate(enterLong2, c3).allowed(), false);
 
     // Cross 17:00 CT. Same open position, same price -- only realizedPnlTicks resets.
-    long tNext = ct(2026, 3, 15, 18, 0);
+    long tNext = ct(2026, 3, 16, 18, 0);
     RiskChain.Context c4 = ctx(true, 940, tNext);
     RiskChain.Result r4 = rc.evaluate(enterLong2, c4);
     check("ALLOWED after the session boundary -- realized loss reset to 0, only unrealized(-20) remains",
@@ -157,7 +157,7 @@ public final class SessionResetWiringTest {
   private static void testVwapResetsAcrossSessionBoundary() {
     VWAPFeature vwap = new VWAPFeature("vwap", ticks -> ticks); // trivial 1:1 decoder for round numbers
 
-    long t0 = ct(2026, 3, 15, 10, 0);
+    long t0 = ct(2026, 3, 16, 10, 0);
     vwap.onEvent(new TickEvent(1, t0, t0, 100, 10, true, 100, 100, 0L, 0L));
     vwap.onEvent(new TickEvent(2, t0 + 1000, t0 + 1000, 200, 10, true, 200, 200, 0L, 0L));
     check("VWAP ready after ticks", vwap.isReady(), true);
@@ -165,14 +165,14 @@ public final class SessionResetWiringTest {
     check("Total volume so far", vwap.totalVolume(), 20.0);
 
     // Cross 17:00 CT with a ClockEvent (no price) -- must reset even without a new tick.
-    long tBoundary = ct(2026, 3, 15, 17, 0);
+    long tBoundary = ct(2026, 3, 16, 17, 0);
     vwap.onEvent(new ClockEvent(3, tBoundary, tBoundary));
     check("VWAP not ready immediately after the rollover (no tick yet this session)", vwap.isReady(), false);
     check("VWAP value cleared by the rollover", vwap.vwap(), null);
     check("Total volume cleared by the rollover", vwap.totalVolume(), 0.0);
 
     // A fresh tick in the new session must not be polluted by the old totals.
-    long t1 = ct(2026, 3, 15, 18, 0);
+    long t1 = ct(2026, 3, 16, 18, 0);
     vwap.onEvent(new TickEvent(4, t1, t1, 500, 5, true, 500, 500, 0L, 0L));
     check("New session's VWAP reflects only its own tick (500), not the old accumulation",
         vwap.vwap(), 500.0);

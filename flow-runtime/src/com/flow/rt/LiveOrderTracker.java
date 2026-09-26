@@ -82,6 +82,25 @@ final class LiveOrderTracker {
   }
 
   /**
+   * D-92: session-end flatten. Idempotent -- when the account is already flat with nothing resting it does
+   * nothing (never sends closeAtMarket to a flat account), so Pipeline can call it every few seconds for the
+   * whole window and a rejected close simply gets retried. Otherwise it is the kill switch's blunt sweep
+   * (close, then cancel everything) and the tracker forgets its legs and any in-flight entry. Unlike the kill
+   * switch it does NOT disarm: the study stays armed and trades again after the reopen (entries are blocked
+   * by the risk chain until then). Returns true iff it sent a flatten.
+   */
+  boolean flattenForSessionEnd(String reason) {
+    OrderGateway gw = gateway.get();
+    if (gw == null) return false;
+    int position = gw.currentPosition();
+    if (position == 0 && !gw.hasRestingOrders()) return false;
+    resetForKillSwitch();
+    // Flat but orders still working: cancel only -- never send a close to a flat account.
+    log.accept("SESSION_FLATTEN " + (position == 0 ? gw.cancelAllOrders(reason) : gw.cancelAllAndClose(reason)));
+    return true;
+  }
+
+  /**
    * Real-order counterpart to OrderGateway.reconcileDryRun() -- diffs the
    * intent against the account's actual position (gw.currentPosition()),
    * not the strategy's own optimistic belief about it. Only handles

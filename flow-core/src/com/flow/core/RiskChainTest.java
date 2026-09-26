@@ -306,7 +306,7 @@ public final class RiskChainTest {
         + "\"rateLimitPerMinute\":1000,\"minDwellMs\":0,\"maxReversalsPerSession\":1000,"
         + "\"lagQueueDepthThreshold\":1000000,\"lagProcessingMsThreshold\":1000000}");
     RiskChain rc = new RiskChain(cfg);
-    long ct = java.time.ZonedDateTime.of(2026, 3, 15, 10, 0, 0, 0,
+    long ct = java.time.ZonedDateTime.of(2026, 3, 16, 10, 0, 0, 0,
         java.time.ZoneId.of("America/Chicago")).toInstant().toEpochMilli();
     Intent enter = new Intent("s", 1, 1, null, null, "enter");
     RiskChain.Context c0 = ctx(true, true, 1000, ct, 0, 0L);
@@ -325,7 +325,7 @@ public final class RiskChainTest {
 
     // Cross 17:00 CT via dailyLossBreached() ALONE -- evaluate() is never
     // called on or after this instant in this test.
-    long ctNextDay10am = java.time.ZonedDateTime.of(2026, 3, 16, 10, 0, 0, 0,
+    long ctNextDay10am = java.time.ZonedDateTime.of(2026, 3, 17, 10, 0, 0, 0,
         java.time.ZoneId.of("America/Chicago")).toInstant().toEpochMilli();
     check("dailyLossBreached false after its OWN rollover reset the -40 realized loss to 0, "
         + "with no evaluate() call ever crossing the boundary",
@@ -344,7 +344,7 @@ public final class RiskChainTest {
         + "\"rateLimitPerMinute\":1000,\"minDwellMs\":0,\"maxReversalsPerSession\":1,"
         + "\"lagQueueDepthThreshold\":1000000,\"lagProcessingMsThreshold\":1000000}");
     RiskChain rc = new RiskChain(cfg);
-    long ct = java.time.ZonedDateTime.of(2026, 3, 15, 10, 0, 0, 0,
+    long ct = java.time.ZonedDateTime.of(2026, 3, 16, 10, 0, 0, 0,
         java.time.ZoneId.of("America/Chicago")).toInstant().toEpochMilli();
     Intent enter = new Intent("s", 1, 1, null, null, "enter");
     RiskChain.Context c0 = ctx(true, true, 1000, ct, 0, 0L);
@@ -356,7 +356,7 @@ public final class RiskChainTest {
     check("flip #1 allowed (0/1 reversals used)", rc.evaluate(flip, c1).allowed(), true);
     rc.recordAccepted(flip, c1); // reversalsThisSession = 1, now at cap
 
-    long ctNextDay = java.time.ZonedDateTime.of(2026, 3, 16, 9, 0, 0, 0,
+    long ctNextDay = java.time.ZonedDateTime.of(2026, 3, 17, 9, 0, 0, 0,
         java.time.ZoneId.of("America/Chicago")).toInstant().toEpochMilli();
     RiskChain.Context cBoundary = ctx(true, true, 1000, ctNextDay, 0, 0L);
 
