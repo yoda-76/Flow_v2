@@ -28,8 +28,7 @@ final class MarketStructureFileLogger implements MarketStructureFeature.Listener
     this.codec = codec;
     PrintWriter w;
     try {
-      w = new PrintWriter(new FileWriter(
-          com.flow.core.FlowHome.logFile("market_structure_feature.log"), true));
+      w = new java.io.PrintWriter(com.flow.core.FeatureLogs.open("market_structure_feature"));
       w.println("# feature start " + System.currentTimeMillis() + " id=market_structure"
           + " -- reviewed rules, see docs/dynamic/marketStructureRules.md (all 10 points resolved)");
       w.flush();

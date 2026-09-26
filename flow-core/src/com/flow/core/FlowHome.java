@@ -56,10 +56,13 @@ public final class FlowHome {
   public static Path logs() { return logs(ROOT); }
   public static Path data() { return data(ROOT); }
   public static Path riskConfig() { return riskConfig(ROOT); }
+  public static Path riskLocalConfig() { return riskLocalConfig(ROOT); }
 
   public static Path logs(Path root) { return root.resolve("logs"); }
   public static Path data(Path root) { return root.resolve("data"); }
   public static Path riskConfig(Path root) { return root.resolve("config").resolve("risk.json"); }
+  /** D-106: the optional per-machine override laid over risk.json (git-ignored). */
+  public static Path riskLocalConfig(Path root) { return root.resolve("config").resolve("risk.local.json"); }
 
   /**
    * Path of a per-feature diagnostic log directly under logs/, creating logs/

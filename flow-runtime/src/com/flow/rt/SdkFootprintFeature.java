@@ -70,8 +70,7 @@ final class SdkFootprintFeature implements FootprintView {
 
     PrintWriter w;
     try {
-      w = new PrintWriter(new FileWriter(
-          com.flow.core.FlowHome.logFile("footprint_feature.log"), true));
+      w = new java.io.PrintWriter(com.flow.core.FeatureLogs.open("footprint_feature"));
       w.println("# feature start " + System.currentTimeMillis() + " id=" + id + " rangeTicks=" + rangeTicks);
       w.flush();
     } catch (IOException e) {

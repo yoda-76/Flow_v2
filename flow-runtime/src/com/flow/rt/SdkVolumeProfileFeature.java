@@ -116,8 +116,7 @@ final class SdkVolumeProfileFeature implements VolumeProfileView {
     this.current = newSdkProfile(System.currentTimeMillis());
     PrintWriter w;
     try {
-      w = new PrintWriter(new FileWriter(
-          com.flow.core.FlowHome.logFile("volume_profile_feature.log"), true));
+      w = new java.io.PrintWriter(com.flow.core.FeatureLogs.open("volume_profile_feature"));
       w.println("# feature start " + System.currentTimeMillis() + " id=" + id + " rangeTicks=" + rangeTicks);
       w.flush();
     } catch (IOException e) {

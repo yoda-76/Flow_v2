@@ -32,25 +32,69 @@ import java.util.TreeMap;
 public final class ExternalConfig {
   private final Map<String, String> raw;
   private final long fileLastModifiedMs;
+  private final java.util.List<String> localOverrideKeys;
+  private final long localOverrideLastModifiedMs;
+  private final String localOverrideError;
 
   private ExternalConfig(Map<String, String> raw, long fileLastModifiedMs) {
+    this(raw, fileLastModifiedMs, java.util.List.of(), 0L, null);
+  }
+
+  private ExternalConfig(Map<String, String> raw, long fileLastModifiedMs,
+                         java.util.List<String> localOverrideKeys, long localOverrideLastModifiedMs,
+                         String localOverrideError) {
     this.raw = raw;
     this.fileLastModifiedMs = fileLastModifiedMs;
+    this.localOverrideKeys = localOverrideKeys;
+    this.localOverrideLastModifiedMs = localOverrideLastModifiedMs;
+    this.localOverrideError = localOverrideError;
   }
 
   public static ExternalConfig load(Path file) throws IOException {
-    String content = Files.readString(file);
-    JsonObject obj = JsonObject.parse(content);
     Map<String, String> values = new TreeMap<>();
+    readKnownKeys(file, values);
+    return new ExternalConfig(values, Files.getLastModifiedTime(file).toMillis());
+  }
+
+  /**
+   * D-106: {@code base} (the tracked config/risk.json, required exactly as in {@link #load}) with an OPTIONAL
+   * per-machine {@code localOverride} (config/risk.local.json, git-ignored) laid over it: any known key present in
+   * the override wins, every other key keeps the base value. This is what lets two machines differ (a dev machine
+   * keeping every log, a cloud machine pruning at 48 h) without either editing the tracked file and fighting git.
+   * A missing override file is normal (nothing overridden). Which keys came from the override, and its
+   * modification time, are exposed so the session journal can say so -- an override nobody remembers is
+   * exactly the kind of silent difference that makes two machines behave differently.
+   */
+  public static ExternalConfig loadLayered(Path base, Path localOverride) throws IOException {
+    Map<String, String> values = new TreeMap<>();
+    readKnownKeys(base, values);
+    long baseMtime = Files.getLastModifiedTime(base).toMillis();
+    if (localOverride == null || !Files.isRegularFile(localOverride)) {
+      return new ExternalConfig(values, baseMtime);
+    }
+    Map<String, String> over = new TreeMap<>();
+    try {
+      readKnownKeys(localOverride, over);
+      long overMtime = Files.getLastModifiedTime(localOverride).toMillis();
+      values.putAll(over);
+      return new ExternalConfig(values, baseMtime, java.util.List.copyOf(over.keySet()), overMtime, null);
+    } catch (IOException | RuntimeException e) {
+      // A typo in the override must not stop the session, but it must not be silent either: the base values apply
+      // (for log retention that means "keep everything") and the error is exposed for the log and the journal.
+      return new ExternalConfig(values, baseMtime, java.util.List.of(), 0L, String.valueOf(e));
+    }
+  }
+
+  private static void readKnownKeys(Path file, Map<String, String> into) throws IOException {
+    JsonObject obj = JsonObject.parse(Files.readString(file));
     for (String key : KNOWN_KEYS) {
       // Every known key is a plain integer/long in the file -- getLong()
       // directly, not getString() (which assumes a quoted value and
       // would throw on a bare number).
       if (obj.has(key) && !obj.isNull(key)) {
-        values.put(key, String.valueOf(obj.getLong(key)));
+        into.put(key, String.valueOf(obj.getLong(key)));
       }
     }
-    return new ExternalConfig(values, Files.getLastModifiedTime(file).toMillis());
   }
 
   /** Empty config -- every accessor returns its default. Used when no file exists yet. */
@@ -62,7 +106,7 @@ public final class ExternalConfig {
       "fixedContracts", "maxContracts", "dailyLossLimitTicks", "rateLimitPerMinute",
       "minDwellMs", "maxReversalsPerSession", "lagQueueDepthThreshold", "lagProcessingMsThreshold",
       "dataIntervalSeconds", "liquidityIntervalSeconds", "dataKeepTradingDays",
-      "flattenLeadMinutes", "noEntryLeadMinutes"
+      "flattenLeadMinutes", "noEntryLeadMinutes", "logRetentionHours"
   };
 
   private int getInt(String key, int def) {
@@ -118,6 +162,24 @@ public final class ExternalConfig {
   /** D-92: minutes before the halt at which NEW entries stop (default 15 -> 15:45 CT); never less than flattenLeadMinutes. */
   public int noEntryLeadMinutes() { return getInt("noEntryLeadMinutes", 15); }
 
+  /**
+   * D-106: how long old diagnostic logs are kept, in hours; <b>0 (the default) keeps everything</b>. Applies to the
+   * raw tick journals of past sessions (raw.jsonl, D-75) and to the per-feature logs (logs/*_feature*.log). It never
+   * touches decisions.jsonl (the long-retention tier, D-15) or data/ (its own rolling window,
+   * {@link #dataKeepTradingDays()}). The dev machine keeps everything for research; a cloud machine sets 48 in its
+   * config/risk.local.json.
+   */
+  public int logRetentionHours() { return Math.max(0, getInt("logRetentionHours", 0)); }
+
   /** For staleness journaling (README: "traceable after the fact, not silently assumed current"). 0 = no file loaded, using pure defaults. */
   public long fileLastModifiedMs() { return fileLastModifiedMs; }
+
+  /** D-106: the known keys taken from config/risk.local.json (empty if there is no override file). Sorted. */
+  public java.util.List<String> localOverrideKeys() { return localOverrideKeys; }
+
+  /** D-106: modification time of config/risk.local.json, or 0 if there is none. */
+  public long localOverrideLastModifiedMs() { return localOverrideLastModifiedMs; }
+
+  /** D-106: why config/risk.local.json was ignored (unreadable / not valid JSON / a non-integer value), else null. */
+  public String localOverrideError() { return localOverrideError; }
 }

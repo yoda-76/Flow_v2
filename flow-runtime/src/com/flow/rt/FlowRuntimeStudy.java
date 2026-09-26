@@ -148,6 +148,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   private static final Path DATA_ROOT = com.flow.core.FlowHome.data();
   private volatile com.flow.journal.ConstructDataStore dataStore;
   private static final Path RISK_CONFIG_PATH = com.flow.core.FlowHome.riskConfig();
+  private static final Path RISK_LOCAL_CONFIG_PATH = com.flow.core.FlowHome.riskLocalConfig(); // D-106, optional, git-ignored
 
   private final int instanceId = System.identityHashCode(this);
   private final AtomicBoolean subscribed = new AtomicBoolean(false);
@@ -293,12 +294,39 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     // is NEVER touched here (D-15's own "long retention" tier, and
     // already exactly what the user called "the analysed data" -- price
     // trace, liquidity snapshots, etc. all live there, not in raw.jsonl).
-    int prunedRawLogs = com.flow.journal.LogRetention.pruneOldRawLogs(
-        LOG_ROOT, sessionStartMs, com.flow.journal.LogRetention.DEFAULT_RETENTION_MS);
+    //
+    // D-106: how long is now config (logRetentionHours, 0 = keep everything -- the dev-machine default; a cloud
+    // machine sets 48 in config/risk.local.json) and also covers the per-feature logs. The config is therefore
+    // loaded HERE, before the pruning and before any feature log is opened; it used to load after the features.
+    // D-61: hand-edited, runtime-read-only (README "External inputs and config") -- a missing risk.json falls back
+    // to ExternalConfig's own conservative defaults rather than failing the session. The optional per-machine
+    // risk.local.json is laid over it; if that file is unreadable the base applies and the fact is logged loudly
+    // (for retention that means "keep everything", never a silent deletion).
+    com.flow.core.ExternalConfig riskConfig;
+    try {
+      riskConfig = com.flow.core.ExternalConfig.loadLayered(RISK_CONFIG_PATH, RISK_LOCAL_CONFIG_PATH);
+    } catch (IOException e) {
+      riskConfig = com.flow.core.ExternalConfig.empty();
+      logLine("RISK_CONFIG_MISSING path=" + RISK_CONFIG_PATH + " -- using built-in defaults");
+    }
+    if (riskConfig.localOverrideError() != null) {
+      logLine("RISK_LOCAL_CONFIG_IGNORED path=" + RISK_LOCAL_CONFIG_PATH + " error=" + riskConfig.localOverrideError()
+          + " -- using risk.json only (log retention: keep everything)");
+    } else if (!riskConfig.localOverrideKeys().isEmpty()) {
+      logLine("RISK_LOCAL_CONFIG path=" + RISK_LOCAL_CONFIG_PATH + " overrides=" + riskConfig.localOverrideKeys());
+    }
+    final long logRetentionMs = com.flow.journal.LogRetention.retentionMsForHours(riskConfig.logRetentionHours());
+    com.flow.core.FeatureLogs.setRetentionMs(logRetentionMs);
+    int prunedRawLogs = com.flow.journal.LogRetention.pruneOldRawLogs(LOG_ROOT, sessionStartMs, logRetentionMs);
+    int prunedFeatureLogs = com.flow.journal.LogRetention.pruneFeatureLogs(LOG_ROOT, sessionStartMs, logRetentionMs);
+    logLine("LOG_RETENTION hours=" + riskConfig.logRetentionHours()
+        + (riskConfig.logRetentionHours() == 0 ? " (keep everything)" : "")
+        + " rawJsonlDeleted=" + prunedRawLogs + " featureLogsDeleted=" + prunedFeatureLogs);
     journal.writeDecision(0, Json.object()
         .field("type", "log_retention_pruned")
-        .field("retentionHours", com.flow.journal.LogRetention.DEFAULT_RETENTION_MS / 3_600_000L)
+        .field("retentionHours", riskConfig.logRetentionHours())  // 0 = keep everything (was a fixed 48 before D-106)
         .field("rawJsonlFilesDeleted", prunedRawLogs)
+        .field("featureLogFilesDeleted", prunedFeatureLogs)
         .build());
 
     int rangeTicks = getSettings().getInteger(VP_RANGE_TICKS_KEY);
@@ -323,8 +351,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     // discipline as every other construct's first pass.
     vwap = new com.flow.flow.VWAPFeature(com.flow.flow.VWAPView.FEATURE_ID, priceCodec::fromTicks);
     try {
-      vwapLog = new java.io.PrintWriter(new java.io.FileWriter(
-          com.flow.core.FlowHome.logFile("vwap_feature.log"), true));
+      vwapLog = new java.io.PrintWriter(com.flow.core.FeatureLogs.open("vwap_feature"));
       vwapLog.println("# feature start " + System.currentTimeMillis() + " id=vwap");
       vwapLog.flush();
     } catch (IOException e) {
@@ -334,8 +361,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     // Aggregate rows only, no per-order detail (deferred, see todo.md).
     liquidityMap = new com.flow.flow.LiquidityMapFeature(com.flow.flow.LiquidityMapView.FEATURE_ID);
     try {
-      domLog = new java.io.PrintWriter(new java.io.FileWriter(
-          com.flow.core.FlowHome.logFile("liquidity_map_feature.log"), true));
+      domLog = new java.io.PrintWriter(com.flow.core.FeatureLogs.open("liquidity_map_feature"));
       domLog.println("# feature start " + System.currentTimeMillis() + " id=liquidity_map");
       domLog.flush();
     } catch (IOException e) {
@@ -376,16 +402,6 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         com.flow.flow.LiquidityMapView.FEATURE_ID, liquidityMap,
         com.flow.flow.MarketStructureView.FEATURE_ID, marketStructure);
 
-    // D-61: hand-edited, runtime-read-only (README "External inputs and
-    // config") -- missing file falls back to ExternalConfig's own
-    // conservative defaults rather than failing the session.
-    com.flow.core.ExternalConfig riskConfig;
-    try {
-      riskConfig = com.flow.core.ExternalConfig.load(RISK_CONFIG_PATH);
-    } catch (IOException e) {
-      riskConfig = com.flow.core.ExternalConfig.empty();
-      logLine("RISK_CONFIG_MISSING path=" + RISK_CONFIG_PATH + " -- using built-in defaults");
-    }
     // D-62: strategy.onInit() now gets real values (fixedContracts, at
     // minimum) instead of an empty map -- StrategyConfig itself stays a
     // plain string map (README's own stated "typed accessors get added
@@ -405,6 +421,10 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         .field("lagProcessingMsThreshold", riskConfig.lagProcessingMsThreshold())
         .field("flattenLeadMinutes", riskConfig.flattenLeadMinutes())
         .field("noEntryLeadMinutes", riskConfig.noEntryLeadMinutes())
+        .field("logRetentionHours", riskConfig.logRetentionHours())
+        .field("localOverrideKeys", String.join(",", riskConfig.localOverrideKeys())) // D-106: which keys risk.local.json set
+        .field("localOverrideLastModifiedMs", riskConfig.localOverrideLastModifiedMs())
+        .field("localOverrideError", riskConfig.localOverrideError() == null ? "" : riskConfig.localOverrideError())
         .field("fileLastModifiedMs", riskConfig.fileLastModifiedMs())
         .field("sessionStartMs", sessionStartMs) // staleness: compare against fileLastModifiedMs (README "traceable... not silently assumed current")
         .build());

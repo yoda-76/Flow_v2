@@ -32,3 +32,5 @@ flow-core/fixtures/*/replay/
 __pycache__/
 
 temp.txt
+# D-106: per-machine config override (risk.local.json), e.g. a cloud machine setting logRetentionHours
+config/risk.local.json

@@ -32,6 +32,14 @@ echo "== FLOW_HOME path resolution test =="
 "$JAVA" -cp build/classes/core com.flow.core.FlowHomeTest
 echo "(FLOW_HOME test passed -- see output above)"
 
+echo "== config layering + logRetentionHours test (D-106) =="
+"$JAVA" -cp build/classes/core com.flow.core.ExternalConfigTest
+echo "(config layering test passed -- see output above)"
+
+echo "== rolling feature logs + retention pruning test (D-106) =="
+"$JAVA" -cp build/classes/core com.flow.journal.RollingLogsTest
+echo "(rolling logs test passed -- see output above)"
+
 echo "== volume profile math test (POC / value area / HVN-LVN, D-104) =="
 "$JAVA" -cp build/classes/core com.flow.flow.VolumeProfileMathTest
 echo "(volume profile math test passed -- see output above)"

@@ -42,6 +42,7 @@ public final class LogRetention {
    * Returns how many `raw.jsonl` files were actually deleted.
    */
   public static int pruneOldRawLogs(Path logRoot, long nowMs, long retentionMs) {
+    if (retentionMs <= 0) return 0; // D-106: 0 = keep everything (the dev-machine setting)
     int pruned = 0;
     try (var stream = Files.list(logRoot)) {
       for (Path dir : (Iterable<Path>) stream::iterator) {
@@ -58,6 +59,42 @@ public final class LogRetention {
       return 0; // logRoot missing or unreadable -- nothing to prune, not fatal
     }
     return pruned;
+  }
+
+  /** D-106: config hours -> ms; 0 (or negative) = keep everything. */
+  public static long retentionMsForHours(int hours) {
+    return hours <= 0 ? 0L : hours * 3_600_000L;
+  }
+
+  /**
+   * D-106: deletes per-feature diagnostic logs directly under {@code logDir} -- files named
+   * {@code <feature>_feature.log} (the old single growing file) or {@code <feature>_feature_<yyyy-MM-dd>.log} (one
+   * per trading day, RollingFileWriter) -- whose LAST modification is older than the retention window. Judged by
+   * mtime, not the name, because a file being appended to now is by definition not old. Session directories and
+   * everything else are never touched. retentionMs &lt;= 0 keeps everything. Best-effort like pruneOldRawLogs:
+   * a file that will not delete (still open/locked) is skipped. Returns how many were deleted.
+   */
+  public static int pruneFeatureLogs(Path logDir, long nowMs, long retentionMs) {
+    if (retentionMs <= 0) return 0;
+    int pruned = 0;
+    try (var stream = Files.list(logDir)) {
+      for (Path f : (Iterable<Path>) stream::iterator) {
+        if (!Files.isRegularFile(f) || !isFeatureLogName(f.getFileName().toString())) continue;
+        try {
+          if (nowMs - Files.getLastModifiedTime(f).toMillis() >= retentionMs && Files.deleteIfExists(f)) pruned++;
+        } catch (IOException ignored) {
+          // locked or vanished -- try again next time
+        }
+      }
+    } catch (IOException e) {
+      return 0;
+    }
+    return pruned;
+  }
+
+  /** "vwap_feature.log" or "vwap_feature_2026-09-26.log" -- and nothing else. */
+  static boolean isFeatureLogName(String name) {
+    return name.matches("[a-z0-9_]+_feature(_\\d{4}-\\d{2}-\\d{2})?\\.log");
   }
 
   /**

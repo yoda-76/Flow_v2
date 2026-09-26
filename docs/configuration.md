@@ -9,7 +9,7 @@ There are four places configuration lives:
 
 | Where | What it holds | Who edits | Takes effect |
 |---|---|---|---|
-| [`config/risk.json`](#1-configrisk-json) | risk limits, session-end flatten, data-recording cadence | you, by hand | next time the study is **activated** |
+| [`config/risk.json`](#1-configrisk-json) (+ optional git-ignored `config/risk.local.json` for one machine, D-106) | risk limits, session-end flatten, data-recording cadence, log retention | you, by hand | next time the study is **activated** |
 | [MotiveWave study settings](#2-motivewave-study-settings-flow-runtime) | strategy id, armed/mode, big-trade threshold, draw flags, warm-start | you, in the MotiveWave GUI | mostly at activation; a few live |
 | [Constants in code](#3-constants-in-code) | paths, retention, cadences | code change + rebuild + deploy | after deploy + re-activation |
 | `.env` | (nothing in FLOW_V2 uses it today) | **only you, never Claude** | — |
@@ -75,6 +75,48 @@ order. Holidays and early closes are **not modelled** (a decision — D-93).
 | `dataIntervalSeconds` | 1 | Write interval for footprint candles, VWAP and big trades under `data/`. Raise if storage or load demands it. |
 | `liquidityIntervalSeconds` | 1 | Liquidity-map snapshot interval, tunable separately (the heaviest: ≈ 4–5 KB/s at 1 s ≈ 3 GB per 7 trading days). |
 | `dataKeepTradingDays` | 7 | Rolling window of trading days kept under `data/`; the oldest is deleted when a new one starts. |
+
+### Log retention (D-106)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `logRetentionHours` | **0 = keep everything** | How long **old diagnostic logs** are kept, in hours. It covers (1) the raw tick journals of *past* sessions (`logs/<session>/raw.jsonl`, D-75) and (2) the per-feature logs (`logs/*_feature*.log`). It **never** touches `decisions.jsonl` (kept forever, D-15), the current session's files, or `data/` (its own window, `dataKeepTradingDays`). A negative value counts as 0. |
+
+- **Dev machine: leave it at 0** (keep the logs for research; delete by hand if the disk ever complains).
+  **Cloud machine: set 48** in `config/risk.local.json` (below).
+- Pruning runs **at activation** (raw journals + feature logs) and **whenever a feature log rolls to a new
+  trading day** (feature logs). Files are judged by their last-modified time, so anything written in the last N
+  hours stays.
+- **The per-feature logs now roll daily.** They used to be one file per feature that grew forever
+  (`vwap_feature.log`); they are now `vwap_feature_<yyyy-MM-dd>.log`, one per **trading day** (17:00 CT → 17:00 CT,
+  named by the day it ends in — the same day the report uses). Old single-file logs are left alone unless
+  retention is set, then they age out like any other. Log lines and the `# feature start` header are unchanged; the
+  header appears only in the first file of an activation.
+- **Before D-106 raw journals were deleted after a fixed 48 h on this machine too.** With the default 0 they are
+  now kept — that is the intended dev-machine behaviour, but expect `logs/` to grow (~3 MB/hour of `raw.jsonl` on
+  a quiet market; more when busy).
+
+### Per-machine overrides: `config/risk.local.json` (D-106)
+
+`config/risk.json` is tracked in git and identical everywhere. To make **one machine** differ (the cloud machine
+pruning at 48 h, say) without editing that file and fighting git on every pull, create an **optional, git-ignored**
+`config/risk.local.json` next to it, in the same flat-integer format, containing **only the keys that differ**:
+
+```json
+{ "logRetentionHours": 48 }
+```
+
+- Any known key in it **wins** over `risk.json`; every other key keeps its `risk.json` value. Works for every key
+  in this section, not only retention.
+- Read at activation, like `risk.json`. No file = nothing overridden (the normal case on the dev machine).
+- **It is journaled**: `risk_config_loaded` records `localOverrideKeys` (which keys came from it),
+  `localOverrideLastModifiedMs`, and `localOverrideError`; the MotiveWave log shows `RISK_LOCAL_CONFIG … overrides=[…]`.
+- **A broken file is not silent**: if it cannot be read (not valid JSON, a quoted or fractional number) it is
+  ignored **as a whole** — no half-applied keys — the study still starts on `risk.json` alone, and the MotiveWave log
+  says `RISK_LOCAL_CONFIG_IGNORED … error=…` (`localOverrideError` in the journal). For retention that means "keep
+  everything", so the failure mode is a full disk, never lost logs. **Check the log line after creating the file.**
+- A misspelt key is ignored without a warning, exactly like in `risk.json` (only the keys in this document are
+  read); the `overrides=[…]` line shows what was actually picked up.
 
 ### How to change it
 
@@ -149,8 +191,8 @@ newest `logs/*/decisions.jsonl` was not modified in the last minute).
 | Project root (`FLOW_HOME`) | `C:/yadvendra/trading/FLOW_V2` unless overridden — see below | `com.flow.core.FlowHome` |
 | Log directory | `<FLOW_HOME>/logs` | `FlowHome.logs()` |
 | Recorded-data directory | `<FLOW_HOME>/data` | `FlowHome.data()` |
-| Risk config path | `<FLOW_HOME>/config/risk.json` | `FlowHome.riskConfig()` |
-| Raw-log retention | 48 h (`decisions.jsonl` is kept) | `LogRetention.DEFAULT_RETENTION_MS` |
+| Risk config path | `<FLOW_HOME>/config/risk.json` (+ optional `risk.local.json` beside it) | `FlowHome.riskConfig()` / `riskLocalConfig()` |
+| Raw-log / feature-log retention | now the `logRetentionHours` config key (default 0 = keep everything; `decisions.jsonl` is always kept) | `ExternalConfig.logRetentionHours()` (D-106; was a fixed 48 h, `LogRetention.DEFAULT_RETENTION_MS`, which is no longer used by the runtime) |
 | Session rollover / reopen | 17:00 America/Chicago | `SessionBoundary.BOUNDARY` |
 | Daily halt (trading-window close) | 16:00 America/Chicago | `TradingWindow.CLOSE` |
 | Flatten retry cadence | 5 s | `Pipeline.FLATTEN_RETRY_MS` |

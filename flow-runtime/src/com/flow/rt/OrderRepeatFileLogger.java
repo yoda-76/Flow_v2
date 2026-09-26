@@ -23,8 +23,7 @@ final class OrderRepeatFileLogger implements OrderRepeatFeature.Listener {
     this.codec = codec;
     PrintWriter w;
     try {
-      w = new PrintWriter(new FileWriter(
-          com.flow.core.FlowHome.logFile("order_repeat_feature.log"), true));
+      w = new java.io.PrintWriter(com.flow.core.FeatureLogs.open("order_repeat_feature"));
       w.println("# feature start " + System.currentTimeMillis() + " id=order_repeats");
       w.flush();
     } catch (IOException e) {
