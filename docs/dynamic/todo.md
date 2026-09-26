@@ -140,8 +140,12 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
   thing the next `build.sh` ships; check the `FLOW_HOME root=…` log line at
   the next activation). (`build/*.sh` paths done as D-100, `analysis/*.py`
   defaults as D-101.)
-- **VAH/VAL/zones replay comparison** on the committed fixture (only POC,
-  totals, buckets are checked today).
+- [x] (2026-09-26, D-104) **VAH/VAL/zones replay comparison** on the committed
+  fixture — exact match on both live samples; needed the VP statistics extracted
+  into flow-core `VolumeProfileMath`. **Not deployed** (the study is running):
+  after the next deploy, glance at `logs/volume_profile_feature.log` — the lines
+  should look as before (POC/VAH/VAL/zones). Still uncovered: zone *identity*
+  (ids) and a busy tape's edge cases.
 - **Runbook draft** (Phase 4): install, MotiveWave + Rithmic setup, Sim account +
   "Sim Trade Only", auto-start, timezone, remote monitoring. Mark what only the
   user can fill in.
@@ -245,8 +249,8 @@ Two decisions only the user can make, both gate the safety work below:
   how market structure's warm-start bars become replayable (they bypass the
   journal) **[done, D-90: recorded as a `warm_start` line, plus `bars/` OHLCV and
   `market_structure/` state-change lines; not yet deployed or live-verified]**; [ ] one busier-hours take to exercise big-trade capture and
-  give a real VP-vs-footprint comparison; [ ] compare VAH/VAL/zones (only
-  POC/totals/buckets checked); [ ] delete `data_take1/` (gitignored, first
+  give a real VP-vs-footprint comparison; [x] compare VAH/VAL/zones (**done
+  2026-09-26, D-104 — exact**); [ ] delete `data_take1/` (gitignored, first
   noisy take).
 - [ ] Drop the old 10 s decisions-tier `liquidity_snapshot` (D-58) once
   `data/` is proven. Measured 2026-09-24: liquidity map ≈ 4–5 KB/s at 1 s

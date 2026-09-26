@@ -32,6 +32,10 @@ echo "== FLOW_HOME path resolution test =="
 "$JAVA" -cp build/classes/core com.flow.core.FlowHomeTest
 echo "(FLOW_HOME test passed -- see output above)"
 
+echo "== volume profile math test (POC / value area / HVN-LVN, D-104) =="
+"$JAVA" -cp build/classes/core com.flow.flow.VolumeProfileMathTest
+echo "(volume profile math test passed -- see output above)"
+
 echo "== market structure feature synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.flow.MarketStructureFeatureTest
 echo "(market structure test passed -- see output above)"

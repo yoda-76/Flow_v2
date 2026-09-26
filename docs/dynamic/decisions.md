@@ -3990,6 +3990,47 @@ readable rather than being silently rewritten.
     asserting the whole sentence. **Verified on the real journal**: the same
     closed-market session that printed `CHECK: vwap missing` now prints `data: ok`.
 
+- **D-104** (2026-09-26) — **VAH / VAL / HVN-LVN zones replayed against the
+  live recording: they match exactly** (closes the "VAH/VAL/zones not yet
+  recomputed or compared" gap in D-89). Needed one structural change first.
+  - **Why a refactor was needed**: the value-area and HVN/LVN algorithm lived
+    inside `SdkVolumeProfileFeature.recompute()`, which cannot run outside
+    MotiveWave (it needs a real `Instrument`, D-43). A test that re-implemented it
+    would only have checked the copy. The pure statistics — POC, value area (70 %,
+    ties expand upward), HVN/LVN by a rolling local average, and the contiguous-run
+    clustering — were **moved verbatim** into flow-core `com.flow.flow.
+    VolumeProfileMath` (constants included); the feature now calls it and keeps the
+    SDK-bound parts (bucket accumulation, rotation, zone-id tracking). Same shape
+    and same care as D-91's `LiveOrderTracker` extraction.
+  - **The comparison** (`RecordingReplayTest.testValueAreaAndZonesMatchLive`, on
+    the committed fixture's two live samples, 50 and 102 contracts): rebuilt (1)
+    **from the raw ticks** up to exactly the sample's contract count — **exact for
+    both samples**: POC, VAH, VAL (ticks), total delta, bucket count, and the LVN/HVN
+    zone ranges (kind + range; ids are stateful history and deliberately ignored);
+    (2) **from the 1-second footprint candles alone** — exact for the 102-contract
+    sample, which lands on a candle boundary; the 50-contract one falls inside a
+    candle (within-candle tick order is lost, D-89), so it is covered by (1). This
+    is also the regression check for the extraction: the live numbers were
+    produced by the old inline code, and the moved code reproduces them.
+  - **Also**: `VolumeProfileMathTest` (new gate, ~35 checks on hand-worked
+    profiles — POC and value-area tie rules, exact and just-either-side threshold
+    boundaries, window and minimum-bucket rules, clustering, unsorted input). 19
+    mutations of `VolumeProfileMath`, all caught after the first round left five
+    survivors that were weaknesses in *my test* (a tie case whose result didn't
+    depend on the tie, no near-boundary threshold cases, a `HashMap` that happened
+    to iterate in order) — fixed. Some are caught only by the replay test (value
+    area 68 %, window 6, HVN 1.4) and some only by the unit test, which is the
+    argument for having both.
+  - **Limits, stated so they aren't mistaken for more**: two samples, one quiet
+    5-minute window (~110 contracts) — the arithmetic is confirmed, a busy tape's
+    edge cases are not; zone **identity** (the `lvn-2` ids and their stability
+    across ticks) is not covered; the SDK-bound wiring (`SdkVolumeProfileFeature`
+    calling the math) compiles and the class is unchanged in behaviour by
+    construction, but **the change is not deployed** — it edits code that was
+    live-verified (D-44), so after the next deploy a quick live check that the
+    `volume_profile_feature.log` lines look as before is owed (a study is running
+    right now, so it was not redeployed).
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in
