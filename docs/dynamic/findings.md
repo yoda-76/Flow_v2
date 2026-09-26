@@ -16,7 +16,10 @@ Rithmic/CQG feed, the strategy lifecycle, the `onEnterNow` incident and its
 fix, etc.). Referenced from here rather than duplicated so each fact has
 exactly one home.
 
-Nothing has been built or tested in FLOW_V2 itself yet — this file is
-empty of entries until the first experiment here produces one. The open
-questions tracked in `README.md` / `decisions.md` are the current queue of
-things to test.
+This file stays empty by convention, not because nothing has been tested:
+evidence about this system now lives with the decision it supports, in
+`docs/dynamic/decisions.md` (each decision carries its own evidence rather
+than a separate entry here). `docs/dynamic/codeReview.md` holds the
+2026-09-27 code review of what's been built so far. The open questions
+tracked in `README.md` / `decisions.md` are the current queue of things
+still to test.

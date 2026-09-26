@@ -7,6 +7,15 @@ date, and link the decision/finding it produced; don't delete it.
 
 ## Roadmap to the target state (added 2026-09-24 — read this first)
 
+### CODE REVIEW (2026-09-27) — `docs/dynamic/codeReview.md`; everything not needing a decision is FIXED (D-110)
+
+Fixed off-market, **not deployed, not seen live**: A1–A10, B1, B2, B3 (partly), B4, C2, D1–D3, E1, E2 — see the
+"Fix status" table in `codeReview.md`. Full `build.sh` passes. **Waiting on the user:** B5 (what "max reversals"
+means — ⚑ `lvn_fade_test` still stops after ~10 round trips a day), B6 (GTC legs; re-submit vs flatten a lost leg),
+B8, C1, C3; E4 = check Windows time sync. **Next:** commit + push (only when the user asks), then redeploy the dev
+machine (no session running) so both machines run the fixed code; the laptop pulls the same commit. The first live
+Sim session tests all of it.
+
 ### LAPTOP TRIAL HANDOFF (2026-09-26) — if you are the Claude on the spare laptop, read this FIRST
 
 **Read order:** `CLAUDE.md` (esp. "Working on a second machine") → `docs/working-agreements.md` → this block →

@@ -117,6 +117,13 @@ def fmt_ist(ms) -> str:
     return datetime.fromtimestamp((ms + IST_OFFSET_MS) / 1000, UTC).strftime("%H:%M") + " IST"
 
 
+def fmt_ct_hm(ms) -> str:
+    """Short CT time (no date/seconds), for a summary line that aggregates several records."""
+    if ms is None:
+        return "?"
+    return ct_local(ms).strftime("%H:%M") + " CT"
+
+
 def fmt_dur(ms) -> str:
     if ms is None:
         return "?"
@@ -207,17 +214,28 @@ def load_sessions(logs_root: Path):
 # ---------------------------------------------------------------------------
 
 # log-message prefixes that need a human's attention, with a severity.
+# Ordering note: matching is by startswith() and stops at the first hit, so a longer prefix must be listed
+# before any shorter prefix it starts with. Checked for every entry below (codeReview.md A5): none of the
+# new prefixes is a prefix of, or prefixed by, an existing one.
 ATTENTION = OrderedDict([
     ("KILL_SWITCH_TRIGGERED", "ALERT"),
     ("POSITION_MISMATCH_DETECTED", "ALERT"),
     ("POSITION_MISMATCH_CORRECTED", "ALERT"),
     ("LIVE_ENTRY_CANCELLED_DISARMING", "ALERT"),
     ("LIVE_ENTRY_REJECTED_DISARMING", "ALERT"),
+    ("LIVE_ENTRY_PARTIAL_FLATTENED", "ALERT"),  # D-99: a partial entry fill flattened before it completed
+    ("LIVE_ENTRY_PARTIAL_FILL", "WARN"),        # D-99: an entry filled in slices (informational unless it never completes)
     ("REFUSE_TO_ARM", "ALERT"),
+    ("ARM_STILL_DENIED", "ALERT"),               # A6: a kill switch / order anomaly already disarmed this instance
     ("ORDER_FILL_RECORD_FAILED", "ALERT"),
+    ("ORDER_REJECTED", "ALERT"),                # any order rejection, including a bracket leg (B6)
     ("RISK_CONFIG_MISSING", "ALERT"),
+    ("RISK_LOCAL_CONFIG_IGNORED", "ALERT"),     # D-106: a malformed override silently means "no pruning"
     ("LIVE_BRACKET_SKIPPED", "ALERT"),
+    ("LIVE_BRACKET_SIZE_FROM_FILL", "WARN"),    # D-99: bracket sized from the actual fill, not the intended qty
     ("LIVE_FILL_NO_BRACKET", "WARN"),
+    ("LIVE_LEG_LOST", "ALERT"),                 # future runtime line: a protective leg cancelled/rejected/expired on its own
+    ("DOM_BACKLOG_SKIPPED", "WARN"),            # E1: the event queue fell behind and skipped intermediate DOM snapshots
     ("SESSION_FLATTEN", "NOTE"),
     ("ACTIVATE", "NOTE"),
     ("DEACTIVATE", "NOTE"),
@@ -277,9 +295,17 @@ def build_trades(recs):
                     "entry_t": r.get("lastFillTimeMs") or r["_t"], "entry_px": r.get("avgFillPrice"),
                     "point_value": r.get("pointValue"), "reason": (last_submit or {}).get("reason", "?"),
                     "cash_before": (last_submit or {}).get("cashBalance"),
+                    "order_id": r.get("orderId"),
                     "stop": None, "target": None,  # filled in by the LIVE_BRACKET_SUBMITTED line that follows this fill
                 }
                 since_entry = set()
+            elif role == "entry" and open_t is not None and r.get("orderId") == open_t.get("order_id"):
+                # A10: another slice of the SAME entry order filling further (D-99 partial fill). Update the
+                # open trade's qty/price to the cumulative figures the fill carries; the entry time stays the
+                # first slice's. A different order id while a trade is open still falls through to "orphan".
+                open_t["qty"] = r.get("filled") or r.get("quantity") or open_t["qty"]
+                open_t["entry_px"] = r.get("avgFillPrice")
+                open_t["point_value"] = r.get("pointValue") or open_t["point_value"]
             elif open_t is not None:
                 if r.get("positionAfter") == 0 or role in ("stop", "target"):
                     if role in ("stop", "target"):
@@ -351,7 +377,11 @@ def intent_analysis(recs):
 
 
 def attention_events(recs):
+    """One tuple (t, approx, severity, kind, detail) per attention-worthy record -- except lag-guard blocks
+    (C2), which are aggregated into a single WARN line for the whole session/journal rather than one per
+    block, so a slow machine doesn't flood 'Needs attention' with a line per blocked entry."""
     out = []
+    lag_blocks = []
     for r in recs:
         typ = r.get("type")
         if typ in ATTENTION_TYPES:
@@ -365,6 +395,15 @@ def attention_events(recs):
                     break
         elif typ == "heartbeat" and r.get("healthy") is False:
             out.append((r["_t"], r["_approx"], "ALERT", "unhealthy heartbeat", str(r.get("lastIntentReason"))))
+        elif typ == "risk_verdict" and r.get("allowed") is False:
+            v = next((vv for vv in r.get("verdicts", []) if not vv.get("allowed")), None)
+            if v is not None and v.get("filter") == "lag":
+                lag_blocks.append((r["_t"], r["_approx"]))
+    if lag_blocks:
+        first_t, first_ap = lag_blocks[0]
+        last_t, _ = lag_blocks[-1]
+        detail = f"lag guard blocked {len(lag_blocks)} entries (first {fmt_ct_hm(first_t)}, last {fmt_ct_hm(last_t)})"
+        out.append((first_t, first_ap, "WARN", "LAG_GUARD", detail))
     return out
 
 

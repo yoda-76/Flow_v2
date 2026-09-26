@@ -58,6 +58,12 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   private final AtomicLong clockEventCount = new AtomicLong(0);
   private final AtomicBoolean killSwitchTripped = new AtomicBoolean(false);
   private volatile Intent lastIntent;
+  // Code review B2 (drain-thread-only): whether lastIntent was BLOCKED by the risk chain, and when it was last
+  // re-evaluated. A blocked intent that the strategy keeps repeating used to be dropped forever as "unchanged".
+  private boolean lastIntentBlocked = false;
+  private long lastBlockedRetryMs = Long.MIN_VALUE;
+  /** How often a repeated, still-blocked intent is re-evaluated (silently, unless it becomes allowed). */
+  static final long BLOCKED_RETRY_MS = 1_000L;
   // D-92 (drain-thread-only): whether we are inside a flatten window, and when the flatten callback last ran in it.
   private boolean flattenWindowActive = false;
   private long lastFlattenAttemptMs = Long.MIN_VALUE;
@@ -237,19 +243,28 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     if (riskChain != null) {
       RiskChain.Context killCtx = new RiskChain.Context(
           armedSupplier.getAsBoolean(), true, marketState.lastPriceTicks(),
-          marketState.exchangeTimeMs(), 0, 0L);
+          marketState.riskClockMs(), 0, 0L); // A2: the one monotonic risk clock
       boolean breached = riskChain.dailyLossBreached(killCtx);
       if (breached) {
-        if (killSwitchTripped.compareAndSet(false, true) && killSwitch != null) {
+        if (killSwitchTripped.compareAndSet(false, true)) {
           journal.writeDecision(e.seq(), Json.object()
               .field("type", "KILL_SWITCH")
               .field("reason", "daily loss limit breached")
               .field("seq", e.seq())
               .build());
-          killSwitch.accept("daily loss limit breached");
+          // Code review B4: the kill switch closes everything, so -- exactly like the session-end flatten -- the
+          // risk chain and the strategy must stop believing in the closed position. onFlattened() books the loss at
+          // the current price and clears the position, so the breach now rests on REALIZED P&L: it stays breached
+          // (the latch holds, no re-fire) until the 17:00 CT reset, instead of clearing when price bounces and
+          // firing a second close at a flat account.
+          riskChain.onFlattened(killCtx);
+          if (healthy.get()) strategy.onFlattened("daily-loss kill switch");
+          lastIntent = Intent.none(strategy.id(), 0);
+          lastIntentBlocked = false;
+          if (killSwitch != null) killSwitch.accept("daily loss limit breached");
         }
       } else {
-        killSwitchTripped.set(false); // breach cleared (e.g. session rollover) -- allow it to fire again if it recurs
+        killSwitchTripped.set(false); // breach cleared (the 17:00 CT reset) -- allow it to fire again if it recurs
       }
     }
 
@@ -289,9 +304,23 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     if (!wake) return;
 
     Intent intent = strategy.onEvent(marketState);
-    if (!sameContent(intent, lastIntent)) {
-      lastIntent = intent; // updated regardless of what the risk chain decides, so an identical still-blocked intent doesn't re-evaluate every event
-      journal.writeDecision(e.seq(), intentChangeLine(intent, e.seq(), e.eventTimeMs()));
+    boolean changed = !sameContent(intent, lastIntent);
+    boolean retry = false;
+    if (!changed && lastIntentBlocked && riskChain != null) {
+      // Code review B2: the strategy is repeating an intent the risk chain blocked. Tell it again every time (a
+      // strategy that rolls its state back on rejection re-applies the change on each repeat, so it must be told
+      // on each repeat too), and re-evaluate at most once per BLOCKED_RETRY_MS so a block that has lifted (the
+      // dwell elapsed, the rate window moved, the 17:00 CT reset) is noticed instead of ignored forever.
+      long now = riskNowMs();
+      if (lastBlockedRetryMs != Long.MIN_VALUE && now - lastBlockedRetryMs < BLOCKED_RETRY_MS) {
+        strategy.onIntentRejected(intent, "still blocked (repeat of a blocked intent)");
+        return;
+      }
+      retry = true;
+    }
+    if (changed || retry) {
+      lastIntent = intent; // an unchanged, allowed intent is not re-evaluated (D-15 change-only journal)
+      if (changed) journal.writeDecision(e.seq(), intentChangeLine(intent, e.seq(), e.eventTimeMs()));
 
       if (riskChain == null) {
         intentSink.onIntentChanged(intent, e); // no risk chain configured -- exact prior behavior
@@ -303,14 +332,26 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           armedSupplier.getAsBoolean(),
           readinessChecker.isReady(strategy.requires()),
           marketState.lastPriceTicks(),
-          marketState.exchangeTimeMs(),
+          marketState.riskClockMs(), // A2: the one monotonic risk clock (was the mixed "exchange time")
           queueDepthSupplier.getAsInt(),
           processingMs);
       RiskChain.Result result = riskChain.evaluate(intent, ctx);
-      journal.writeDecision(e.seq(), RiskChain.resultLine(e.seq(), intent, result));
+      // A retry that is still blocked writes nothing (in DRY_RUN every entry is blocked by "armed"; one line per
+      // second per blocked intent would swamp the journal). The first verdict, and any retry that is allowed, is written.
+      if (!retry || result.allowed()) journal.writeDecision(e.seq(), RiskChain.resultLine(e.seq(), intent, result));
+      lastIntentBlocked = !result.allowed();
+      lastBlockedRetryMs = result.allowed() ? Long.MIN_VALUE : riskNowMs();
       if (result.allowed()) {
-        riskChain.recordAccepted(intent, ctx);
-        intentSink.onIntentChanged(intent, e);
+        String refused = intentSink.deliver(intent, e);
+        if (refused == null) {
+          riskChain.recordAccepted(intent, ctx);
+        } else {
+          // B3: allowed by the risk chain but the runtime did not act (an order still in flight, resting orders,
+          // a flip): exactly like a block -- not recorded, the strategy is told, a repeat is retried.
+          lastIntentBlocked = true;
+          lastBlockedRetryMs = riskNowMs();
+          strategy.onIntentRejected(intent, "runtime did not act: " + refused);
+        }
       } else {
         // Bugfix found building the first real strategy (D-62): without
         // this, a strategy that optimistically mutates its own state the
@@ -325,13 +366,21 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   }
 
   /**
+   * The clock every risk rule is judged on (dwell, rate window, trading window, daily reset, blocked-intent retry):
+   * MutableMarketState.riskClockMs(), one monotonic clock (code review A2).
+   */
+  private long riskNowMs() {
+    return marketState.riskClockMs();
+  }
+
+  /**
    * D-92: session-end flatten, checked on EVERY event (ClockEvents keep time moving when the book is quiet).
    * Runs above the healthy check for the same reason the kill switch does. On entering the window: journal it,
    * tell the risk chain and the strategy the account is flat, forget the last intent so the first entry after
    * the reopen registers as a change. Then call sessionFlatten now and every FLATTEN_RETRY_MS.
    */
   private void checkSessionFlatten(Event e) {
-    long now = e.eventTimeMs();
+    long now = riskNowMs(); // A2: same clock as the entry window (was this event's own time, a different clock)
     if (!riskChain.flattenDue(now)) {
       flattenWindowActive = false;
       return;
@@ -351,6 +400,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
         strategy.onFlattened("session-end flatten window");
       }
       lastIntent = Intent.none(strategy.id(), 0);
+      lastIntentBlocked = false;
     }
     if (sessionFlatten != null && (lastFlattenAttemptMs == Long.MIN_VALUE || now - lastFlattenAttemptMs >= FLATTEN_RETRY_MS)) {
       lastFlattenAttemptMs = now;

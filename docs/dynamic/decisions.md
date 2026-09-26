@@ -4199,6 +4199,46 @@ readable rather than being silently rewritten.
   - **Limit**: a *crash* is still `DOWN` only after 5 minutes of silence (D-96's thresholds, unchanged); a
     `DEACTIVATE` without a following `DESTROY` (e.g. MotiveWave killed mid-removal) also reads `STOPPED`.
 
+- **D-110** (2026-09-27) — **Code-review fixes that needed no decision, done off-market.** From `codeReview.md`
+  (D-109's checkpoint review). The user: "what in the review can be fixed off-market … start working on it one by one
+  … leave whatever needs my decision, complete everything else, and don't break the existing code." Work split per
+  the new `SUPER` mode (`CLAUDE.md`): the safety/order code by the main session; the report fixes (A5, A10, C2) and
+  the comment/UI/doc fixes (D1–D3, config rows) by Sonnet subagents, each diff re-read and re-tested here.
+  - **Safety and risk (main session):** A1 kill switch sends orders only in `SIM_LIVE`+Armed and never a close to a
+    flat account (`LiveOrderTracker.onKillSwitch`); B4 kill switch tells the risk chain and the strategy the account
+    is flat and latches until the 17:00 CT reset; B1 a flat intent is never blocked; A4 rate limit counts only real
+    changes; A7 P&L by signed size; B2 a blocked intent is retried at most once a second (silently while still
+    blocked), the strategy is told on every repeat, and `lvn_fade_test` rolls a blocked entry back; B3 runtime
+    refusals of an entry (in flight / resting orders / flip) come back through a new `IntentSink.deliver()` default
+    method and are treated as a block; A2 one monotonic **risk clock** (`MutableMarketState.riskClockMs()` = highest
+    ingest receipt time — the flatten already used this clock) for dwell, rate window, entry and flatten windows,
+    daily reset and retry, and DOM events no longer move `exchangeTimeMs`; A3 the session tracker only moves forward;
+    A6 a safety disarm survives re-activation (`ARM_STILL_DENIED`); A8 thread joins on shutdown; A9 bracket prices
+    on the tick grid; E1 at most 64 order-book snapshots queued (extras skipped and counted, ticks never skipped);
+    E2 past days' data files closed at the day change and pruning continues past a failed delete.
+  - **Behaviour changes to know** (all intended): with `DRY_RUN`+Armed a daily-loss breach now only disarms; after a
+    kill switch no new entry until the 17:00 CT reset **and** no re-arm until the study is re-added; the entry window
+    and the daily reset are judged on this machine's clock rather than the last tick's exchange stamp (~2.3 s apart
+    here — time sync matters, E4); in `DRY_RUN` `lvn_fade_test` now keeps looking for signals after each blocked
+    entry, so a dry-run journal shows many more (blocked) entries than before; a flat intent while not armed now
+    reaches the dry-run reconcile (one extra `reconcile_dry_run` line per exit); the study's label in MotiveWave and
+    the prefix on its log lines changed ("FLOW Runtime (Armed + SIM_LIVE places real orders)").
+  - **Not done — the user's decisions:** B5 (meaning of max reversals), B6 (GTC legs; re-submit vs flatten a lost
+    leg), B8 (bracket from fill price), C1 (account as single truth — also B3's `noop` case and B7), C3 (Sim
+    cash-balance guard). **Not doable off-market:** E3 (measure), E4 (time sync, user), E5 (a roll).
+  - **Tests:** new gate `RiskReviewFixesTest` (B1, A4, A7, B2 incl. the `lvn_fade_test` rollback through a stub
+    volume profile, A2 on the real recording — 0 backward steps, was 74 — and at the pipeline level, A3, E1, E2,
+    B3); new cases in `PipelineExceptionBoundaryTest` (B4 latch) and `LiveOrderTrackerTest` (A1, A9, B3); Python
+    suites now 57 / 25 / 37. Mutation checks: 41 mutants of the Java fixes — 40 caught after tightening five weak
+    tests (the first rounds found a test counting per-filter "allowed" lines, a flag test defeated by the kill check
+    calling the armed supplier, and two ordering accidents); **1 survivor, judged near-equivalent**: pointing the
+    kill check's clock back at exchange time only delays noticing the 17:00 CT reset by an event, because the
+    session tracker is now shared and monotonic. The subagents' Python mutants: 15/15 and 4/4 caught. Full
+    `build.sh` (all 25 Java gates, both replay tests, 3 Python suites) exits 0 against a scratch deploy folder.
+  - **Not verified:** nothing is deployed — the dev machine still runs `c3ef87f` — and nothing has run live. A6 and
+    the study wiring (kill-switch gate call site, B3 sink, E1 skip log) are compiled only. The next live Sim session
+    is the first test of all of it, on either machine.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

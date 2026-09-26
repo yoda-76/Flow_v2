@@ -36,11 +36,20 @@ import java.util.List;
  * Daily-loss PnL is tracked in integer ticks, not dollars -- sidesteps
  * needing a per-instrument dollar-per-tick multiplier as a separate
  * config value for this v1 (see ExternalConfig's own javadoc).
- * RiskChain assumes every ALLOWED intent is exactly what gets reconciled
- * (true today: OrderGateway is dry-run only, D-14) -- once real Sim
- * fills exist, this needs to sync against actual fill prices instead of
- * assuming the intent's own target took effect immediately, noted here
- * rather than fixed now.
+ *
+ * An intent to go flat is always allowed, by every filter (B1) -- blocking
+ * one used to leave this chain believing a position was still open after
+ * the real bracket had already closed it. The rate limit and churn guard
+ * only count and limit real position changes, not a strategy re-asserting
+ * the same target (A4). realizedPnlTicks/unrealized both scale with the
+ * position's own size, not just its sign (A7). Every check here reads
+ * `ctx.nowEventTimeMs()` -- the pipeline's one monotonic risk clock (A2),
+ * never wall-clock time, so evaluate()/dailyLossBreached()/flattenDue()
+ * never drift apart on which moment they're judging. The daily-loss PnL
+ * this chain tracks is still estimated from the *signal* prices the
+ * strategy/risk-chain context carried at the time, not from actual fill
+ * prices (B7/C1, open) -- once real Sim fills are reconciled against this
+ * instead of assumed, that gap can close, noted here rather than fixed now.
  */
 public final class RiskChain {
   public record Verdict(String filter, boolean allowed, String reason) {}
@@ -98,6 +107,15 @@ public final class RiskChain {
 
     List<Verdict> verdicts = new ArrayList<>();
 
+    // Code review B1: an intent to go flat reduces risk and is never blocked -- by any filter. Blocking one left
+    // this chain believing a position was still open after the real bracket had closed it (e.g. a stop hit inside
+    // the 5 s dwell), marking that phantom against every later price until it could trip the kill switch on a flat
+    // account. The session window already exempted flat intents for the same reason; now every filter does.
+    if (intent.targetPosition() == 0) {
+      verdicts.add(allow("flat"));
+      return new Result(true, verdicts);
+    }
+
     Verdict armedV = ctx.armed() ? allow("armed") : block("armed", "not armed");
     verdicts.add(armedV);
     if (!armedV.allowed()) return new Result(false, verdicts);
@@ -118,7 +136,7 @@ public final class RiskChain {
     verdicts.add(sizeV);
     if (!sizeV.allowed()) return new Result(false, verdicts);
 
-    Verdict rateV = checkRateLimit(ctx);
+    Verdict rateV = checkRateLimit(intent, ctx);
     verdicts.add(rateV);
     if (!rateV.allowed()) return new Result(false, verdicts);
 
@@ -138,13 +156,14 @@ public final class RiskChain {
     if (intent.targetPosition() != lastPosition) {
       if (lastChangeAtMs >= 0) reversalsThisSession++; // don't count the session's very first entry
       if (lastPosition != 0 && entryPriceTicks != null && ctx.currentPriceTicks() != null) {
-        realizedPnlTicks += (ctx.currentPriceTicks() - entryPriceTicks) * Integer.signum(lastPosition);
+        realizedPnlTicks += (ctx.currentPriceTicks() - entryPriceTicks) * lastPosition; // A7: signed size, not just the sign
       }
       entryPriceTicks = intent.targetPosition() != 0 ? ctx.currentPriceTicks() : null;
       lastChangeAtMs = ctx.nowEventTimeMs();
       lastPosition = intent.targetPosition();
+      // Code review A4: only a real position change uses a rate-limit slot ("holding"/"none" restatements used to).
+      recentChangeTimestamps.addLast(ctx.nowEventTimeMs());
     }
-    recentChangeTimestamps.addLast(ctx.nowEventTimeMs());
   }
 
   /**
@@ -189,7 +208,7 @@ public final class RiskChain {
    */
   public void onFlattened(Context ctx) {
     if (lastPosition != 0 && entryPriceTicks != null && ctx.currentPriceTicks() != null) {
-      realizedPnlTicks += (ctx.currentPriceTicks() - entryPriceTicks) * Integer.signum(lastPosition);
+      realizedPnlTicks += (ctx.currentPriceTicks() - entryPriceTicks) * lastPosition;
     }
     lastPosition = 0;
     entryPriceTicks = null;
@@ -209,7 +228,7 @@ public final class RiskChain {
   private Verdict checkDailyLoss(Context ctx) {
     int unrealized = 0;
     if (entryPriceTicks != null && ctx.currentPriceTicks() != null && lastPosition != 0) {
-      unrealized = (ctx.currentPriceTicks() - entryPriceTicks) * Integer.signum(lastPosition);
+      unrealized = (ctx.currentPriceTicks() - entryPriceTicks) * lastPosition; // A7: scales with size
     }
     int totalPnlTicks = realizedPnlTicks + unrealized;
     int limit = config.dailyLossLimitTicks();
@@ -227,7 +246,8 @@ public final class RiskChain {
     return allow("size_cap");
   }
 
-  private Verdict checkRateLimit(Context ctx) {
+  private Verdict checkRateLimit(Intent intent, Context ctx) {
+    if (intent.targetPosition() == lastPosition) return allow("rate_limit"); // A4: no change requested, nothing to limit
     long windowStart = ctx.nowEventTimeMs() - RATE_WINDOW_MS;
     while (!recentChangeTimestamps.isEmpty() && recentChangeTimestamps.peekFirst() < windowStart) {
       recentChangeTimestamps.pollFirst();
