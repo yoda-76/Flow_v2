@@ -16,6 +16,31 @@ B8, C1, C3; E4 = check Windows time sync. **Next:** commit + push (only when the
 machine (no session running) so both machines run the fixed code; the laptop pulls the same commit. The first live
 Sim session tests all of it.
 
+### LIVE TEST RESULTS 2026-09-28 — `docs/dynamic/liveTest-2026-09-28.md` (recorded, NOT fixed — fixes next session)
+
+Run on the **dev machine** (not the laptop), `distribution-test`, `lvn_fade_test`, `SIM_LIVE`, Sim. Most things
+verified live (order path, money semantics, max reversals, kill switch fired, A6 `ARM_STILL_DENIED`, recorders,
+tools). **Top findings: L-1 (High) the kill switch raced a bracket stop and left the account SHORT 1 unprotected
+(closed by hand); L-2 (High) `getPosition()` lags; L-14 (High) the kill switch fired late (acts on the risk chain's estimated P&L, not the account's); L-3 fills the study didn't place never reach the journal.** 18 findings in total (L-1…L-18).
+**Before the next session: reset `config/risk.local.json`** (it has `dailyLossLimitTicks: 10`, `maxReversalsPerSession: 1000`),
+set big-trade Min Size back from 1, and remove + re-add the (disarmed) study.
+
+**Next session, in order:** (1) fix L-1, L-2, L-14, L-3 first, then the Med/Low findings; the user decides B5 / B6
+/ B8 / C1 / C3 (code review) — L-14 bears on C1. (2) Then run the remaining live tests (all Sim, the user does the
+GUI steps):
+- [ ] **Instrument guard, refusal case** — study on an **ES** chart: expect `REFUSE_TO_ARM`, no orders of any kind.
+- [ ] **Refuse-to-arm with an existing position (D-24)** — 1 GC contract placed by hand on Sim, then add the study:
+  must not arm.
+- [ ] **Removal with a position open, answering "No"** in the close dialog (L-4) — does the bracket keep working, and
+  does the re-added study refuse to arm?
+- [ ] **Session-end flatten (D-92)** — from 19:50 IST with `flattenLeadMinutes` 400 / `noEntryLeadMinutes` 405 in
+  `risk.local.json`.
+- [ ] **Re-test L-1 / L-14 fixes live** with a small `dailyLossLimitTicks` (10) — kill switch at the right P&L, no
+  naked position.
+- [ ] **The same live run on the laptop** (distribution test, Phase 2).
+- [ ] **Multi-hour / multi-day soak** — memory growth, prune, the 17:00 CT day roll (needed before the cloud run).
+- [ ] Partial fills, both legs filling (1 contract), DOM backlog skip (E1) — opportunistic, can't be forced.
+
 ### LIVE TEST — PULL BRANCH `distribution-test` (2026-09-27, D-112) — read before the laptop's Phase 2
 
 The live test runs **`distribution-test`**, not `main`: it has the laptop trial (D-110), the review fixes (D-111),

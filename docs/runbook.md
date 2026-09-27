@@ -338,6 +338,7 @@ update this section.
 | Dev machine | Intel i5-11400H, 6 cores / 12 threads, 7.7 GB RAM, Windows 10 Home | [VERIFIED 2026-09-27] |
 | MotiveWave Java heap cap | **1,974 MB** — the default (≈ ¼ of RAM) because `MAX_HEAP=` is empty in `%APPDATA%\MotiveWave\startup.ini` | startup log line `Max Memory: 1974 MB` |
 | MotiveWave memory, study running, **market closed** | ~175 MB working set, **768 MB peak** | `Get-Process MotiveWave` |
+| MotiveWave memory, **live market, ~45 min trading + recording** (2026-09-28, dev machine) | **605 MB working set, 747 MB peak**, 448 s CPU over ~1 h 45 min; 0 lag blocks, heartbeat gaps ≤ 10 s; liquidity map ≈ 13 MB/h | `Get-Process MotiveWave`, `liveTest-2026-09-28.md` |
 | MotiveWave memory, **busy live market, multi-day** | **not measured** (no soak test yet) — the volume-profile rotation (E-3) was sized to keep its own peak ~150–180 MB | — |
 | Raw tick journal (`raw.jsonl`, ticks + top-of-book) | **~28 MB/hour** ≈ 0.7 GB/day | `decisions.md` (raw-tier measurement) |
 | Liquidity map recording (`data/liquidity_map/`, 1 s, ±100 ticks) | **~4–5 KB/s** ≈ **0.4 GB per trading day** — most of `data/` | D-88 measurement, 2026-09-24 |
