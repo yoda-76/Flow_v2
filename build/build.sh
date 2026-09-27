@@ -80,6 +80,10 @@ echo "== sequencer backpressure synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.SequencerTest
 echo "(sequencer test passed -- see output above)"
 
+echo "== code-review risk fixes test (B1/A4/A7/B2, 2026-09-27) =="
+"$JAVA" -cp build/classes/core com.flow.core.RiskReviewFixesTest
+echo "(risk fixes test passed -- see output above)"
+
 echo "== pipeline exception boundary / kill switch synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.PipelineExceptionBoundaryTest
 echo "(pipeline exception boundary test passed -- see output above)"

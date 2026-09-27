@@ -221,4 +221,44 @@ order: `docs/working-agreements.md` (how the user works), the **"LAPTOP TRIAL HA
   (`%APPDATA%\MotiveWave\output\`) and the journal afterwards.
 - Push/commit only when the user asks (`docs/working-agreements.md` §6).
 
+## Model mode toggle (added 2026-09-27)
+
+**CURRENT MODE: `SUPER`**   ← the switch. Change this one word (`REGULAR` or `SUPER`) to change how work is split.
+The user picks the session's own model with `/model`; this section says who does *which work*.
+
+| Mode | Who works | Rule |
+|---|---|---|
+| **`REGULAR`** | **Sonnet 5 only** | One model does everything. No delegating to other models. |
+| **`SUPER`** | **Opus 5.5 decides; Sonnet 5 does the grunt work; Haiku 4.5 does the trivial calls** | Below. |
+
+**In `SUPER` mode — the session runs on Opus 5.5, and Opus is *not* used for everything.**
+- **Opus 5.5 (the main session) keeps:** decisions and design, deciding *what* to change and why, reviewing
+  findings, anything touching safety or order handling (`RiskChain`, `Pipeline`, `LiveOrderTracker`, `OrderGateway`,
+  the kill switch, the flatten, the Sim-only guard), reading a subagent's result critically, writing decision
+  entries, and the final say before any commit.
+- **Sonnet 5 (`Agent` with `model: "sonnet"`) gets** simple code changes and other grunt work once Opus has said
+  exactly what to do: mechanical edits and renames, writing tests from a stated spec, routine doc updates,
+  running/mutation-sweeping tests and reporting results, refactors with a precise description, log/journal digging.
+- **Haiku 4.5 (`Agent` with `model: "haiku"`) gets** genuinely trivial calls: reading one file, listing or counting
+  things, a single grep, calling an MCP tool, fetching a value — anything a person would call "just look it up".
+- **Do not** hand a whole open-ended task to a cheaper model; delegate the *bounded* piece. **Do not** run
+  everything through Opus either — if a step is simple enough to describe in a sentence and check in a glance, it is
+  not Opus's job.
+
+**Guardrails that do not change with the mode**
+- **Every hard rule in this file applies to every model and every subagent, unchanged** — no orders (real or Sim)
+  as a side effect, never touch `.env`, Sim-only, strategies never import the SDK. Subagents are told these rules in
+  their prompt; a subagent never places, modifies or cancels an order, and never runs `build.sh` against the real
+  MotiveWave folder.
+- **Delegation is not a review.** A subagent starts cold and reports what it *believes* it did: Opus reads the actual
+  diff / output before relying on it, and re-runs the tests itself. Safety-critical code changes are never accepted
+  on a subagent's word.
+- **Give the subagent everything it needs** (files, the exact change, the constraint, how to verify) — it has none of
+  this conversation.
+- Commit/push only when the user asks (`docs/working-agreements.md` §6); a subagent never commits.
+- **If the mode is `SUPER` but the session is not running on Opus 5.5** (or is `REGULAR` on something other than
+  Sonnet 5), say so once at the start and carry on in the mode as far as the current model allows.
+- *Naming:* the user wrote "Sonnet 5.5"; the models available here are Sonnet 5, Opus 5.5 and Haiku 4.5, so the
+  middle tier means **Sonnet 5**.
+
 No other standing rules recorded yet.

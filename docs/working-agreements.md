@@ -16,6 +16,7 @@ When a habit here conflicts with a hard rule in `CLAUDE.md`, the hard rule wins.
   `../motivewave/docs/dynamic/findings.md` (see `CLAUDE.md`; that repo may not exist on a second machine).
 - **Standing rules → `CLAUDE.md`**, never only in a chat or in memory.
 - **How to run/set up → `docs/runbook.md`; every setting → `docs/configuration.md`.**
+- **Which model does which work → the `REGULAR` / `SUPER` toggle in `CLAUDE.md` ("Model mode toggle").**
 
 ## 2. Tone of the record: honest about what is verified
 

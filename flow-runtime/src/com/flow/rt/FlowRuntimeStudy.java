@@ -50,10 +50,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * The runtime (README "What this is"): one deployed Strategy hosting
- * interchangeable strategy plug-ins. Walking skeleton only -- registers
- * just NullStrategy, dry-run only (no order-submission code exists in
- * this class tree at all -- see OrderGateway), built to prove the
- * sequencer/journal/pipeline plumbing before any real feature.
+ * interchangeable strategy plug-ins. Registers whichever `FlowStrategy` is
+ * named by the Strategy Id setting (`StrategyRegistrations`) and runs it
+ * through the sequencer/pipeline/risk-chain/journal plumbing. `DRY_RUN`
+ * (the default) never places an order -- it only journals what would
+ * happen. With Mode `SIM_LIVE` and Armed checked, an intent the risk chain
+ * allows is placed and managed as a real order on the Simulated account
+ * via `OrderGateway`/`LiveOrderTracker` (CLAUDE.md's second exception,
+ * D-82/Q-11) -- entries, brackets, the daily-loss kill switch and the
+ * session-end flatten all go through that same path.
  *
  * HARD RULE (../../CLAUDE.md, ../../motivewave/CLAUDE.md): every
  * OrderContext-taking hook inherited from Study is explicitly overridden
@@ -71,8 +76,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
     namespace = "com.flow.rt",
     id = "FLOW_RUNTIME",
     name = "FLOW Runtime",
-    label = "FLOW Runtime (walking skeleton, dry-run only)",
-    desc = "Hosts FlowStrategy plug-ins. No order-submission code exists yet; armed has no effect.",
+    label = "FLOW Runtime (Armed + SIM_LIVE places real orders)",
+    desc = "Hosts FlowStrategy plug-ins. DRY_RUN (the default) never places an order. With Mode SIM_LIVE and Armed checked it places and closes orders automatically on the account selected in MotiveWave -- Simulated account only, with Sim Trade Only enabled.",
     menu = "FLOW",
     overlay = true,
     strategy = true,
@@ -140,13 +145,13 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // All three roots hang off com.flow.core.FlowHome (system property flow.home,
   // env FLOW_HOME, else the historic C:/yadvendra/trading/FLOW_V2).
   private static final Path LOG_ROOT = com.flow.core.FlowHome.logs();
-  // D-61: hand-edited by the user, runtime only ever reads it (README
-  // "External inputs and config") -- not a secret like .env, so it's a
-  // plain repo path, not gitignored.
   // D-88: retained per-construct data (1s footprint candles, VWAP, big
   // trades, liquidity map), rolling window of trading days, own writer thread.
   private static final Path DATA_ROOT = com.flow.core.FlowHome.data();
   private volatile com.flow.journal.ConstructDataStore dataStore;
+  // D-61: hand-edited by the user, runtime only ever reads it (README
+  // "External inputs and config") -- not a secret like .env, so it's a
+  // plain repo path, not gitignored.
   private static final Path RISK_CONFIG_PATH = com.flow.core.FlowHome.riskConfig();
   private static final Path RISK_LOCAL_CONFIG_PATH = com.flow.core.FlowHome.riskLocalConfig(); // D-106, optional, git-ignored
 
@@ -179,6 +184,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   private volatile com.flow.flow.LiquidityMapFeature liquidityMap;
   private volatile java.io.PrintWriter domLog;
   private volatile long lastDomLogTime = 0;
+  private volatile long lastReportedSkippedDom = 0; // E1
+  private volatile long lastSkippedDomLogMs = 0;    // E1
   private static final long DOM_LOG_INTERVAL_MS = 1000;
   // D-60: unreviewed rule resolutions, see docs/dynamic/marketStructureRulesTemp.md
   private volatile com.flow.flow.MarketStructureFeature marketStructure;
@@ -193,17 +200,31 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       java.util.Collections.synchronizedList(new java.util.ArrayList<>());
   private static final int MAX_ENTRY_SIGNALS = 200;
   // D-61: refuse-to-arm (D-24) overrides the raw ARMED_KEY setting --
-  // set once in onActivate, never cleared for the life of this instance
-  // (clearing the position/orders manually and reactivating creates a
-  // fresh instance anyway, per the zombie-instance discussion elsewhere).
+  // set in onActivate, either at that moment (an existing position/orders
+  // found, D-24) or carried forward from an earlier disarm this instance
+  // already suffered (A6, see disarmedBySafetyRule below) -- once true it
+  // is never cleared for the life of this instance (clearing the position/
+  // orders manually and reactivating creates a fresh instance anyway, per
+  // the zombie-instance discussion elsewhere).
   private volatile boolean armDenied = false;
+  // Code review A6: set when a SAFETY rule disarmed this session (daily-loss kill switch; an order anomaly such as a
+  // rejected/cancelled entry or a double fill). onActivate() used to clear armDenied whenever the account was flat,
+  // so deactivating and re-activating the strategy re-enabled trading the same day. Now only removing and re-adding
+  // the study (a fresh instance) clears it.
+  private volatile boolean disarmedBySafetyRule = false;
   private volatile boolean refusedAtActivation = false; // D-92: a position/orders were already there at activation -- never flatten those
   private volatile long sessionStartMs;
   // D-91: the automatic-real-order state machine (in-flight entry, pending bracket, resting legs,
   // self-cancel bookkeeping), extracted so a FakeBroker can drive it. Declared after gateway/
   // priceCodec/armDenied, which its suppliers read.
   private final LiveOrderTracker liveOrders =
-      new LiveOrderTracker(() -> gateway, () -> priceCodec, this::logLine, this::journalDecision, () -> armDenied = true);
+      new LiveOrderTracker(() -> gateway, () -> priceCodec, this::logLine, this::journalDecision, this::denyArmBySafetyRule);
+
+  /** A safety rule disarmed this session (A6): stays denied across re-activation, until the study is re-added. */
+  private void denyArmBySafetyRule() {
+    disarmedBySafetyRule = true;
+    armDenied = true;
+  }
 
   // Redraw throttling -- called from onTick, a MotiveWave-invoked
   // callback thread, never a spawned one (see VolumeProfileSnapshot's
@@ -438,18 +459,21 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     // requirement): a blunt, deliberate exception to every other real-order
     // path here being surgical (cancel by reference, close only what's
     // asked). Disarms first so no new automatic entry can race the flatten.
+    // Code review A1: the account side lives in LiveOrderTracker.onKillSwitch and only sends orders in SIM_LIVE+Armed.
     java.util.function.Consumer<String> killSwitch = reason -> {
-      armDenied = true;
-      liveOrders.resetForKillSwitch();
-      OrderGateway gw = gateway;
-      if (gw == null) {
-        logLine("KILL_SWITCH_TRIGGERED reason=" + reason + " (no gateway -- nothing to flatten)");
-        return;
-      }
-      logLine("KILL_SWITCH_TRIGGERED " + gw.cancelAllAndClose(reason));
+      denyArmBySafetyRule();
+      liveOrders.onKillSwitch(reason, isLiveModeRequested());
     };
 
-    IntentSink sink = this::onIntentChanged;
+    IntentSink sink = new IntentSink() {
+      @Override public void onIntentChanged(Intent intent, Event e) { FlowRuntimeStudy.this.onIntentChanged(intent, e); }
+      // B3: report back when live mode refused to act on an entry, so the strategy and risk chain are told.
+      @Override public String deliver(Intent intent, Event e) {
+        boolean live = isLiveModeArmed() && gateway != null;
+        FlowRuntimeStudy.this.onIntentChanged(intent, e);
+        return live ? liveOrders.lastEntryRefusal() : null;
+      }
+    };
     // D-97 (attached after the Pipeline is built, below): what to journal about arming besides the effective flag.
     java.util.function.Supplier<String> runtimeStatus = () -> Json.object()
         .field("mode", String.valueOf(getSettings().getString(MODE_KEY)))
@@ -622,9 +646,17 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     int bestAskTicks = minPriceAtOrAbove(askRows, ref);
     double bestAskSize = sizeAtMin(askRows, bestAskTicks);
     long now = System.currentTimeMillis();
-    s.publish((seq, et, rt) -> new com.flow.core.DomEvent(seq, et, rt,
+    // E1: skipped (not queued) if a backlog of order-book snapshots is already waiting -- the next one replaces it.
+    s.publishDom((seq, et, rt) -> new com.flow.core.DomEvent(seq, et, rt,
         bestBidTicks, bestBidSize, bestAskTicks, bestAskSize, bidRows, askRows), now);
     maybeLogDom(bidRows, askRows, bestBidTicks, bestAskTicks);
+    long skipped = s.skippedDomCount();
+    if (skipped > lastReportedSkippedDom && now - lastSkippedDomLogMs >= 60_000L) {
+      lastSkippedDomLogMs = now;
+      logLine("DOM_BACKLOG_SKIPPED total=" + skipped + " -- the event queue fell behind; intermediate order-book "
+          + "snapshots were skipped (the latest book is always kept)");
+      lastReportedSkippedDom = skipped;
+    }
   }
 
   /**
@@ -1258,6 +1290,12 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       armDenied = true;
       refusedAtActivation = true;
       logLine("REFUSE_TO_ARM " + refuseReason);
+    } else if (disarmedBySafetyRule) {
+      // A6: a kill switch / order anomaly earlier in this instance's life -- re-activation does not re-arm.
+      armDenied = true;
+      refusedAtActivation = false;
+      logLine("ARM_STILL_DENIED -- a safety rule (daily-loss kill switch or an order anomaly) disarmed this study "
+          + "earlier; remove and re-add the study to arm again");
     } else {
       armDenied = false;
       refusedAtActivation = false;

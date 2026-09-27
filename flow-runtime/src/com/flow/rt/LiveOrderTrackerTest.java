@@ -96,6 +96,9 @@ public final class LiveOrderTrackerTest {
     testEntryWithoutBracketPrices();
     testGatewayGoneAtFill();
     testKillSwitchResetForgetsEverything();
+    testKillSwitchAccountSide();
+    testBracketPricesAreSnappedToTheTickGrid();
+    testEntryRefusalsAreReported();
     testSessionFlattenClosesAPositionAndItsBracket();
     testSessionFlattenIsIdempotentWhenFlat();
     testSessionFlattenCancelsStrayOrdersWithoutAClose();
@@ -606,4 +609,119 @@ public final class LiveOrderTrackerTest {
     checkEq("[H] 1-lot stop", one.broker.allOrders().get(1).qty, 1);
     checkEq("[H] 1-lot target", one.broker.allOrders().get(2).qty, 1);
   }
+
+  // ---- code review A1: the kill switch's account side ------------------------------------------------------------
+
+  private static void testKillSwitchAccountSide() {
+    // DRY_RUN (or SIM_LIVE with Armed off): never an order, even with a position and a bracket on the account.
+    Rig dry = new Rig();
+    dry.openLong();
+    int callsBefore = dry.broker.calls().size();
+    dry.tracker.onKillSwitch("daily loss limit breached", false);
+    checkEq("A1: not live -> no order call of any kind", dry.broker.calls().size(), callsBefore);
+    checkEq("A1: not live -> the position is left alone", dry.broker.position(), 1);
+    check("A1: not live -> logged with the KILL_SWITCH_TRIGGERED prefix and 'no order sent'",
+        dry.log.stream().anyMatch(l -> l.startsWith("KILL_SWITCH_TRIGGERED") && l.contains("no order sent")));
+    check("A1: not live -> the tracker still forgets its legs", dry.tracker.restingStop() == null);
+
+    // Live, position open -> close then cancel everything (the existing behaviour).
+    Rig open = new Rig();
+    open.openLong();
+    open.tracker.onKillSwitch("daily loss limit breached", true);
+    checkEq("A1: live with a position -> flat", open.broker.position(), 0);
+    check("A1: live with a position -> closeAtMarket was sent", open.broker.called("closeAtMarket"));
+    check("A1: live with a position -> nothing left resting", open.broker.activeOrders().isEmpty());
+
+    // Live, flat but a stray order resting -> cancel only, never a close to a flat account.
+    Rig stray = new Rig();
+    stray.broker.restingOrder("LIMIT", "SELL", 1, 4310f);
+    stray.tracker.onKillSwitch("daily loss limit breached", true);
+    check("A1: live, flat + resting -> cancelled", stray.broker.activeOrders().isEmpty());
+    check("A1: live, flat + resting -> no closeAtMarket to a flat account", !stray.broker.called("closeAtMarket"));
+
+    // Live, flat and nothing resting -> nothing at all.
+    Rig flat = new Rig();
+    flat.tracker.onKillSwitch("daily loss limit breached", true);
+    check("A1: live, flat, nothing resting -> no order call", flat.broker.calls().isEmpty());
+
+    // Live but no gateway (study deactivated) -> no exception, nothing sent.
+    Rig none = new Rig();
+    none.openLong();
+    none.gatewayAvailable = false;
+    none.tracker.onKillSwitch("daily loss limit breached", true);
+    checkEq("A1: no gateway -> the position is untouched, no exception", none.broker.position(), 1);
+  }
+
+
+  // ---- code review A9: bracket prices on the tick grid -----------------------------------------------------------
+
+  private static void testBracketPricesAreSnappedToTheTickGrid() {
+    FakeBroker broker = new FakeBroker();
+    OrderGateway gw = new OrderGateway(broker.ctx());
+    PriceCodec noisy = new PriceCodec(0.1);
+    noisy.toTicks(4300.0004); // the anchor carries float noise, as the live SDK's does
+    List<String> log = new ArrayList<>();
+    LiveOrderTracker t = new LiveOrderTracker(() -> gw, () -> noisy, log::add, s -> {}, () -> {});
+    t.reconcileLive(new Intent("s", 1, 1, -10, 20, "test"), gw);
+    FakeBroker.FakeOrder entry = broker.allOrders().get(0);
+    broker.fill(entry);
+    t.onOrderFilled(entry.order());
+    FakeBroker.FakeOrder stop = broker.allOrders().get(1);
+    FakeBroker.FakeOrder target = broker.allOrders().get(2);
+    check("A9 precondition: the un-snapped stop price would be off the grid", (float) noisy.fromTicks(-10) != 4299.0f);
+    checkEq("A9: the stop is sent exactly on the tick grid", stop.price, 4299.0f);
+    checkEq("A9: the target is sent exactly on the tick grid", target.price, 4302.0f);
+  }
+
+
+  // ---- code review B3: refusals reported back ------------------------------------------------------------------
+
+  private static void testEntryRefusalsAreReported() {
+    Rig ok = new Rig();
+    ok.reconcile(1, -10, 20);
+    checkEq("B3: an entry that was submitted is not a refusal", ok.tracker.lastEntryRefusal(), null);
+    ok.reconcile(-1, 10, -20);
+    check("B3: a second entry while one is in flight is a refusal",
+        ok.tracker.lastEntryRefusal() != null && ok.tracker.lastEntryRefusal().contains("in flight"));
+
+    Rig standDown = new Rig();
+    standDown.reconcile(1, -10, 20);              // entry in flight, account still flat
+    standDown.reconcile(0, null, null);           // the strategy stands down before the fill
+    checkEq("B3: a flat intent while an entry is in flight is not a refusal (nothing to open)",
+        standDown.tracker.lastEntryRefusal(), null);
+
+    Rig resting = new Rig();
+    resting.broker.restingOrder("LIMIT", "SELL", 1, 4310f);
+    resting.reconcile(1, -10, 20);
+    check("B3: resting orders blocking an entry is a refusal",
+        resting.tracker.lastEntryRefusal() != null && resting.tracker.lastEntryRefusal().contains("resting"));
+
+    Rig flip = new Rig();
+    flip.broker.setPosition(1);
+    flip.reconcile(-1, 10, -20);
+    check("B3: a direct flip is a refusal", flip.tracker.lastEntryRefusal() != null);
+
+    Rig close = new Rig();
+    close.broker.setPosition(1);
+    close.reconcile(0, null, null);
+    checkEq("B3: a close left to the bracket is NOT a refusal (bracket-only by design)", close.tracker.lastEntryRefusal(), null);
+
+    Rig noop = new Rig();
+    noop.reconcile(0, null, null);
+    checkEq("B3: nothing to do is not a refusal", noop.tracker.lastEntryRefusal(), null);
+
+    Rig holding = new Rig();
+    holding.openLong();
+    holding.reconcile(1, -10, 20);
+    checkEq("B3: 'holding' the position the account already has is not a refusal", holding.tracker.lastEntryRefusal(), null);
+
+    Rig reset = new Rig();
+    reset.reconcile(1, -10, 20);
+    reset.reconcile(-1, 10, -20);                 // refusal
+    reset.broker.fill(reset.entry());
+    reset.tracker.onOrderFilled(reset.entry().order());
+    reset.reconcile(1, -10, 20);                  // holding now
+    checkEq("B3: the refusal is cleared on the next call", reset.tracker.lastEntryRefusal(), null);
+  }
+
 }

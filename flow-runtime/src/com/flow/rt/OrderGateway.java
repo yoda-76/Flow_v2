@@ -74,6 +74,18 @@ final class OrderGateway {
     return j.build();
   }
 
+  /**
+   * Code review A9: a price snapped to the instrument's tick grid, for an order about to be sent. The codec's anchor
+   * carries float noise (e.g. 4322.900098); a float cast happened to round it away on gold, but a real exchange
+   * rejects an off-tick price. Falls back to the raw price if the platform cannot round it.
+   */
+  float roundToTick(float price) {
+    com.motivewave.platform.sdk.common.Instrument inst = safe(ctx::getInstrument);
+    if (inst == null) return price;
+    Float r = safe(() -> inst.round(price));
+    return r == null ? price : r;
+  }
+
   private static <T> T safe(java.util.function.Supplier<T> s) {
     try {
       return s.get();
@@ -128,9 +140,11 @@ final class OrderGateway {
    * position and returns a journal line describing what would happen,
    * including the bracket (stop/target) that would accompany a real
    * entry (Q-06's "sizing and brackets"). This method itself never calls
-   * anything order-submitting -- reporting only. submitRealEntry()/
-   * submitRealBracket() below do the real thing, but nothing routes an
-   * automatic intent to them (see the class javadoc).
+   * anything order-submitting -- reporting only. Called from
+   * FlowRuntimeStudy.onIntentChanged() whenever the session is NOT live-armed
+   * (DRY_RUN, or Mode != SIM_LIVE); when it is, LiveOrderTracker.reconcileLive()
+   * is called instead, which does route to submitRealEntry()/submitRealBracket()
+   * below (see the class javadoc).
    */
   String reconcileDryRun(Intent intent) {
     int currentPosition = ctx.getPosition();
@@ -151,14 +165,15 @@ final class OrderGateway {
   }
 
   // ------------------------------------------------------------------
-  // Real order submission (2026-09-19). Written, but deliberately NOT
-  // called from anywhere in the automatic intent/pipeline path -- no
-  // caller exists yet. CLAUDE.md's hard rule requires the exact
-  // account/instrument/side/quantity/order-type stated and one last
-  // explicit confirmation *immediately before* submitting, which an
-  // automatic per-tick strategy loop cannot satisfy on its own once
-  // wired in. The first real call site gets added deliberately, in the
-  // same conversation turn as that final confirmation -- not before.
+  // Real order submission (2026-09-19). Called automatically now, under
+  // CLAUDE.md's second exception (D-82/Q-11: session-scoped Sim arming,
+  // no per-order confirmation) -- submitRealEntry()/submitRealBracket()
+  // are invoked from LiveOrderTracker.reconcileLive()/onOrderFilled(),
+  // which FlowRuntimeStudy.onIntentChanged() calls whenever the session
+  // is live-armed (Mode=SIM_LIVE, Armed checked, not denied). The kill
+  // switch and the session-end flatten go through cancelAllAndClose()/
+  // cancelAllOrders() below instead (LiveOrderTracker.onKillSwitch() /
+  // flattenForSessionEnd()), not through this pair.
   // ------------------------------------------------------------------
 
   /**
@@ -238,12 +253,17 @@ final class OrderGateway {
    * only rework -- reconcileLive() used to call this on every strategy-
    * detected stop/target hit, which is exactly what caused two live
    * near-misses (racing the real bracket closing the same position a
-   * different way). Kept, not deleted: it's genuine, proven-safe
-   * infrastructure for a future universal-flatten case that legitimately
-   * wants "close the position" independent of the bracket (e.g. the
-   * still-unbuilt session-end auto-flatten, D-29's stated default) --
-   * unlike cancelTrackedLegs()'s old per-position surgical cancellation,
-   * which was deleted outright since nothing else needed that shape.
+   * different way). The session-end auto-flatten that was still-unbuilt
+   * when this was written now exists (D-92, LiveOrderTracker.flattenForSessionEnd()),
+   * but it goes through cancelAllAndClose()/cancelAllOrders() below, not
+   * this method -- same "don't race a resting bracket leg" reasoning:
+   * those two also cancel whatever is still resting in the same call,
+   * which a bare closeAtMarket() does not. Kept, not deleted: it's
+   * genuine, proven-safe infrastructure (exercised by OrderGatewayTest)
+   * for a future case that legitimately wants "close the position"
+   * with nothing resting to also cancel -- unlike cancelTrackedLegs()'s
+   * old per-position surgical cancellation, which was deleted outright
+   * since nothing else needed that shape.
    */
   String closeAtMarket(String reason) {
     int positionBefore = ctx.getPosition();

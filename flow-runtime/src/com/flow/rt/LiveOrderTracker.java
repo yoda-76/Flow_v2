@@ -84,6 +84,35 @@ final class LiveOrderTracker {
   }
 
   /**
+   * The daily-loss kill switch's account side (moved here from the Study so it can be tested; code review A1).
+   * Forgets the legs and any in-flight entry, then acts on the account ONLY when this session is explicitly in
+   * live Sim mode (Mode SIM_LIVE + Armed -- the same gate as the session flatten). In DRY_RUN the risk chain can
+   * still reach the daily-loss limit on dry-run "positions" when Armed is ticked; that must never send an order
+   * (configuration.md: "DRY_RUN never touches an order"), so it is journaled and nothing is sent. Like the flatten
+   * it never sends closeAtMarket to a flat account (its behaviour there is unconfirmed): flat + orders working ->
+   * cancel only; flat + nothing -> nothing. The caller disarms first. The log line keeps the KILL_SWITCH_TRIGGERED
+   * prefix the nightly report looks for.
+   */
+  void onKillSwitch(String reason, boolean liveOrdersRequested) {
+    resetForKillSwitch();
+    if (!liveOrdersRequested) {
+      log.accept("KILL_SWITCH_TRIGGERED reason=" + reason + " -- not SIM_LIVE+Armed: disarmed, no order sent");
+      return;
+    }
+    OrderGateway gw = gateway.get();
+    if (gw == null) {
+      log.accept("KILL_SWITCH_TRIGGERED reason=" + reason + " (no gateway -- nothing to flatten)");
+      return;
+    }
+    int position = gw.currentPosition();
+    if (position == 0 && !gw.hasRestingOrders()) {
+      log.accept("KILL_SWITCH_TRIGGERED reason=" + reason + " -- account already flat, nothing resting: no order sent");
+      return;
+    }
+    log.accept("KILL_SWITCH_TRIGGERED " + (position == 0 ? gw.cancelAllOrders(reason) : gw.cancelAllAndClose(reason)));
+  }
+
+  /**
    * D-92: session-end flatten. Idempotent -- when the account is already flat with nothing resting it does
    * nothing (never sends closeAtMarket to a flat account), so Pipeline can call it every few seconds for the
    * whole window and a rejected close simply gets retried. Otherwise it is the kill switch's blunt sweep
@@ -140,8 +169,22 @@ final class LiveOrderTracker {
    * rather than let the strategy's own optimistic position belief diverge
    * from the real, still-flat account.
    */
+  /**
+   * Code review B3: why the last reconcileLive() call did NOT act on an intent that wanted to OPEN or CHANGE a
+   * position (an order still in flight, resting orders, a direct flip), or null if it acted / there was nothing to do
+   * / it was a close (closes are bracket-only by design, not a refusal). Read right after reconcileLive(), on the
+   * same thread.
+   */
+  String lastEntryRefusal() {
+    return lastEntryRefusal;
+  }
+
+  private String lastEntryRefusal = null;
+
   String reconcileLive(Intent intent, OrderGateway gw) {
+    lastEntryRefusal = null;
     if (liveOrderInFlight) {
+      if (intent.targetPosition() != gw.currentPosition()) lastEntryRefusal = "previous real order still in flight";
       return Json.object().field("type", "reconcile_live_skipped")
           .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
           .field("reason", "previous real order still in flight (unresolved fill/reject/cancel)")
@@ -157,6 +200,7 @@ final class LiveOrderTracker {
     boolean opening = currentPosition == 0 && target != 0;
     boolean closing = currentPosition != 0 && target == 0;
     if (!opening && !closing) {
+      lastEntryRefusal = "direct flip/resize not auto-handled";
       return Json.object().field("type", "reconcile_live_skipped")
           .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
           .field("reason", "direct flip/resize (from " + currentPosition + " to " + target
@@ -164,6 +208,7 @@ final class LiveOrderTracker {
           .build();
     }
     if (opening && gw.hasRestingOrders()) {
+      lastEntryRefusal = "resting orders on the account";
       return Json.object().field("type", "reconcile_live_skipped")
           .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
           .field("reason", "resting orders found on the account -- refusing to stack a new entry on them")
@@ -265,8 +310,8 @@ final class LiveOrderTracker {
         return;
       }
       boolean closingIsBuy = targetPosition < 0; // a short position closes with a BUY bracket
-      float stopPrice = (float) c.fromTicks(stopTicks);
-      float targetPrice = (float) c.fromTicks(targetTicks);
+      float stopPrice = gw.roundToTick((float) c.fromTicks(stopTicks));     // A9: on the tick grid
+      float targetPrice = gw.roundToTick((float) c.fromTicks(targetTicks));
       // D-99: size from what the entry actually filled, not what the intent asked for. Falls back to the
       // requested size only if the platform reports no fill quantity for a fill it just called us about.
       Integer filledQty = filledOf(order);

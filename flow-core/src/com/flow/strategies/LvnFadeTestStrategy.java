@@ -96,6 +96,20 @@ public final class LvnFadeTestStrategy implements FlowStrategy {
     return result;
   }
 
+  /**
+   * Code review B2: search() moves to IN_POSITION the moment it decides to enter. If the risk chain blocks that
+   * entry (not armed -- every entry in DRY_RUN --, the entry window, rate, churn, reversals, lag, ...), no order was
+   * placed, so drop the position again and keep searching. Only an ENTRY is rolled back: a blocked "holding"
+   * restatement does not mean the position went away, and flat intents are never blocked.
+   */
+  @Override
+  public void onIntentRejected(Intent intent, String reason) {
+    if (intent.targetPosition() != 0 && intent.reason().startsWith("lvn_fade ")) {
+      phase = Phase.SEARCHING;
+      positionDirection = 0;
+    }
+  }
+
   @Override
   public void onFlattened(String reason) {
     phase = Phase.SEARCHING; // D-92: the runtime closed everything -- drop the phantom position

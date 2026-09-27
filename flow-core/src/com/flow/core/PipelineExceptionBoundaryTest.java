@@ -49,6 +49,7 @@ public final class PipelineExceptionBoundaryTest {
     testExceptionBoundary_DisarmsKeepsIngestingRaw_StrategyNeverInvokedAgain();
     testKillSwitch_FiresNormally_PositiveControl();
     testKillSwitch_StillFiresAfterPipelineDisarmsForAnUnrelatedException();
+    testKillSwitch_FlattensBeliefsAndLatchesUntilTheDailyReset();
 
     if (failures > 0) {
       System.err.println(failures + " FAILURE(S)");
@@ -273,5 +274,80 @@ public final class PipelineExceptionBoundaryTest {
     boolean killSwitchJournaled = decisionLines.stream().anyMatch(l -> l.contains("\"type\":\"KILL_SWITCH\""));
     check("a KILL_SWITCH decision record was written despite the earlier disarm",
         killSwitchJournaled, true);
+  }
+
+  /** Always wants long 1; counts onFlattened calls. */
+  private static final class AlwaysLongStrategy implements FlowStrategy {
+    private final AtomicInteger seq = new AtomicInteger(0);
+    final AtomicInteger flattened = new AtomicInteger(0);
+    @Override public String id() { return "always_long"; }
+    @Override public Set<String> requires() { return Set.of(); }
+    @Override public Set<Trigger> triggers() { return Set.of(new Trigger.EveryTick()); }
+    @Override public void onInit(StrategyConfig cfg) {}
+    @Override public Intent onEvent(MarketState state) {
+      return new Intent(id(), seq.incrementAndGet(), 1, null, null, "enter");
+    }
+    @Override public void onFlattened(String reason) { flattened.incrementAndGet(); }
+  }
+
+  private static TickEvent tickAt(long seq, long timeMs, int priceTicks) {
+    return new TickEvent(seq, timeMs, timeMs, priceTicks, 1, true, priceTicks, priceTicks, 0L, 0L);
+  }
+
+  /**
+   * Code review B4: the kill switch closes everything, so the risk chain and the strategy must be told (like the
+   * session flatten). Before the fix the risk chain kept marking the closed long: a bounce cleared the "breach", the
+   * latch reset, and the next drop fired the kill switch a SECOND time at a flat account. Now the loss is booked at
+   * the kill-switch price, the day stays breached, nothing re-fires and no new entry is allowed until the 17:00 CT
+   * reset -- after which trading may resume.
+   */
+  private static void testKillSwitch_FlattensBeliefsAndLatchesUntilTheDailyReset() throws Exception {
+    Path dir = Files.createTempDirectory("flow_v2_test_killswitch_latch");
+    dir.toFile().deleteOnExit();
+    JournalWriter journal = new JournalWriter(dir);
+    journal.start();
+    RiskChain riskChain = new RiskChain(killSwitchConfig());
+    AlwaysLongStrategy strategy = new AlwaysLongStrategy();
+    AtomicInteger fires = new AtomicInteger(0);
+    Pipeline pipeline = new Pipeline(strategy, journal, (i, e) -> {}, Map.of(), ticks -> ticks,
+        riskChain, () -> true, () -> 0, r -> fires.incrementAndGet());
+    Sequencer sequencer = new Sequencer(pipeline::handle, pipeline);
+    sequencer.start();
+
+    // 1970-01-01 is a Thursday; 00:00:0x UTC = Wed 18:00 CST, inside the OPEN window. 23:00 UTC = 17:00 CST reset.
+    long reset = 23L * 3600_000L;
+    int[] prices = {1000, 949, 1100, 900};     // enter long, breach (-51), bounce (+100 unrealized), drop again
+    for (int i = 0; i < prices.length; i++) {
+      final int p = prices[i];
+      final long t = (i + 1) * 1000L;
+      sequencer.publish((seq, et, rt) -> tickAt(seq, t, p), t);
+    }
+    awaitTrue(() -> pipeline.marketState().generation() >= 4, 2000);
+    Thread.sleep(100);
+    checkEq("the kill switch fired exactly once through a bounce and a second drop", fires.get(), 1);
+    checkEq("the strategy was told the account is flat", strategy.flattened.get(), 1);
+    checkEq("the day stays breached on the booked (realized) loss -- the latch holds",
+        riskChain.dailyLossBreached(new RiskChain.Context(true, true, 1100, 5000L, 0, 0L)), true);
+
+    // After 17:00 CT the daily P&L resets: the breach clears and a new entry is allowed again.
+    sequencer.publish((seq, et, rt) -> tickAt(seq, reset + 1000L, 1000), reset + 1000L);
+    awaitTrue(() -> pipeline.marketState().generation() >= 5, 2000);
+    Thread.sleep(100);
+    sequencer.stop();
+    journal.flushAndClose();
+    checkEq("still one fire after the reset", fires.get(), 1);
+    List<String> lines = Files.readAllLines(dir.resolve("decisions.jsonl"));
+    // Top-level verdict only ("intentSeq":N,"allowed":...): a blocked line also contains per-filter "allowed":true.
+    java.util.regex.Pattern allowedTop = java.util.regex.Pattern.compile("\"intentSeq\":[0-9]+,\"allowed\":true");
+    java.util.regex.Pattern blockedTop = java.util.regex.Pattern.compile("\"intentSeq\":[0-9]+,\"allowed\":false");
+    long allowedEntries = lines.stream().filter(l -> l.contains("\"type\":\"risk_verdict\"") && allowedTop.matcher(l).find()).count();
+    long blockedByLoss = lines.stream().filter(l -> l.contains("\"type\":\"risk_verdict\"") && blockedTop.matcher(l).find()
+        && l.contains("\"filter\":\"daily_loss\",\"allowed\":false")).count();
+    checkEq("entries: the first one, and one more after the 17:00 CT reset", allowedEntries, 2L);
+    checkEq("the re-entry attempt right after the kill switch was blocked by the daily-loss filter", blockedByLoss >= 1, true);
+  }
+
+  private static void checkEq(String label, Object got, Object want) {
+    check(label + " (got " + got + ", want " + want + ")", java.util.Objects.equals(got, want), true);
   }
 }

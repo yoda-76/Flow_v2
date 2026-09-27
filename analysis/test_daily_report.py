@@ -299,6 +299,42 @@ class TestTrades(Base):
         self.assertIn("+1.0 points", text)
         self.assertIn("$100.00", text)   # gross +200 - 100 + 0
 
+    def test_partial_entry_fills_merge_into_one_trade(self):
+        # A10: a second order_fill with role=entry and the SAME orderId updates the open trade (cumulative
+        # qty and avgFillPrice) instead of becoming an orphan; entry time stays the first slice's.
+        j = self.journal()
+        t0 = ct_ms(DAY, 10)
+        j.intent(t0, 2, "lvn_fade entered=above zone=[1,2]", 10, 30)
+        j.submitted("BUY", "lvn_fade entered=above zone=[1,2]")
+        j.fill(t0 + 500, "entry", "BUY", 4300.0, 1, order_id="1", filled=1)   # first slice: 1 of 2 filled
+        j.fill(t0 + 700, "entry", "BUY", 4300.5, 2, order_id="1", filled=2)  # second slice: 2 of 2 filled
+        j.bracket(t0 + 900, "SELL", 4298.0, 4303.0)
+        j.fill(t0 + 60_000, "stop", "SELL", 4299.0, 0, order_id="2")
+        j.write()
+        m = self.model()
+        self.assertEqual(len(m["trades"]), 1)
+        self.assertEqual(len(m["orphans"]), 0, "the second slice must not become an orphan")
+        t = m["trades"][0]
+        self.assertEqual(t["qty"], 2, "qty is the LATEST cumulative filled count")
+        self.assertEqual(t["entry_px"], 4300.5, "entry price is the latest avgFillPrice")
+        self.assertEqual(t["entry_t"], t0 + 500, "entry time stays the FIRST slice's")
+
+    def test_entry_fill_with_different_order_id_while_open_is_still_orphan(self):
+        # A10 negative case: unchanged behaviour for a genuinely different order (e.g. a second signal that
+        # slipped through) arriving as an entry fill while a trade is already open.
+        j = self.journal()
+        t0 = self._entry_long(j)  # order_id defaults to "1"
+        j.fill(t0 + 700, "entry", "BUY", 4301.0, 2, order_id="99")  # a different order id while the trade is open
+        j.fill(t0 + 60_000, "stop", "SELL", 4299.0, 0, order_id="2")
+        j.write()
+        m = self.model()
+        self.assertEqual(len(m["trades"]), 1)
+        self.assertEqual(len(m["orphans"]), 1)
+        self.assertEqual(m["orphans"][0]["orderId"], "99")
+        t = m["trades"][0]
+        self.assertEqual(t["qty"], 1, "the original entry is unchanged by the unrelated order id")
+        self.assertEqual(t["entry_px"], 4300.0)
+
     def test_legacy_journal_without_fills_falls_back(self):
         j = self.journal()
         j.submitted("SELL", "old style entry")
@@ -357,6 +393,95 @@ class TestIntentsAndAttention(Base):
         text = dr.render(self.model())
         self.assertIn("REFUSE_TO_ARM", text)
         self.assertIn("Account at activation", text)
+
+    def test_new_attention_prefixes_are_flagged_with_the_right_severity(self):
+        # A5: the newest alert lines (D-99, D-106, B6's "any lost leg") must be caught, with the severities
+        # the finding asked for.
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        j.log(t, "LIVE_ENTRY_PARTIAL_FLATTENED qty=2 filled=1 -- flattening the partial before it completed")
+        j.log(t + 1, "LIVE_ENTRY_PARTIAL_FILL qty=2 filled=1 orderId=1")
+        j.log(t + 2, "LIVE_BRACKET_SIZE_FROM_FILL qty=1 filled=1")
+        j.log(t + 3, "RISK_LOCAL_CONFIG_IGNORED reason=malformed json")
+        j.log(t + 4, "ORDER_REJECTED bp.aa@1 reason=insufficient margin")
+        j.log(t + 5, "LIVE_LEG_LOST role=stop orderId=2 reason=expired unnoticed")
+        j.write()
+        att = self.model()["attention"]
+        by_kind = {a[3]: a[2] for a in att}
+        self.assertEqual(by_kind["LIVE_ENTRY_PARTIAL_FLATTENED"], "ALERT")
+        self.assertEqual(by_kind["LIVE_ENTRY_PARTIAL_FILL"], "WARN")
+        self.assertEqual(by_kind["LIVE_BRACKET_SIZE_FROM_FILL"], "WARN")
+        self.assertEqual(by_kind["RISK_LOCAL_CONFIG_IGNORED"], "ALERT")
+        self.assertEqual(by_kind["ORDER_REJECTED"], "ALERT")
+        self.assertEqual(by_kind["LIVE_LEG_LOST"], "ALERT")
+        text = dr.render(self.model())
+        for kind in ("LIVE_ENTRY_PARTIAL_FLATTENED", "LIVE_ENTRY_PARTIAL_FILL", "LIVE_BRACKET_SIZE_FROM_FILL",
+                     "RISK_LOCAL_CONFIG_IGNORED", "ORDER_REJECTED", "LIVE_LEG_LOST"):
+            self.assertIn(kind, text)
+
+    def test_arm_still_denied_and_dom_backlog_skipped_are_flagged_with_the_right_severity(self):
+        # A6 / E1: ARM_STILL_DENIED (a kill switch/order anomaly already disarmed this instance) is an ALERT;
+        # DOM_BACKLOG_SKIPPED (the event queue fell behind, intermediate DOM snapshots skipped) is only a WARN.
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        j.log(t, "ARM_STILL_DENIED -- a safety rule (daily-loss kill switch or an order anomaly) disarmed this "
+                 "study earlier; remove and re-add the study to arm again")
+        j.log(t + 1, "DOM_BACKLOG_SKIPPED total=3 -- the event queue fell behind; intermediate order-book "
+                     "snapshots were skipped (the latest book is always kept)")
+        j.write()
+        att = self.model()["attention"]
+        by_kind = {a[3]: a[2] for a in att}
+        self.assertEqual(by_kind["ARM_STILL_DENIED"], "ALERT")
+        self.assertEqual(by_kind["DOM_BACKLOG_SKIPPED"], "WARN")
+        text = dr.render(self.model())
+        self.assertIn("ARM_STILL_DENIED", text)
+        self.assertIn("DOM_BACKLOG_SKIPPED", text)
+
+    def test_order_rejected_for_a_bracket_leg_is_still_caught(self):
+        # B6's specific case: a rejected/cancelled bracket LEG, not just an entry.
+        j = self.journal()
+        j.log(ct_ms(DAY, 10), "ORDER_REJECTED bp.aa@2 role=stop reason=price through the market")
+        j.write()
+        att = self.model()["attention"]
+        self.assertTrue(any(a[3] == "ORDER_REJECTED" and a[2] == "ALERT" for a in att))
+
+    def test_lag_blocks_are_aggregated_into_one_warn_line(self):
+        # C2: several risk_verdicts blocked by the lag filter collapse into ONE WARN line per session, not
+        # one line per block.
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        j.intent(t, 1, "entry A", 1, 2, verdict="blocked", filt="lag", why="queue depth 1500 >= 1000")
+        j.intent(t + 3 * 60_000, 1, "entry B", 1, 2, verdict="blocked", filt="lag", why="queue depth 1800 >= 1000")
+        j.intent(t + 7 * 60_000, -1, "entry C", 1, 2, verdict="blocked", filt="lag", why="processing 2500ms >= 2000ms")
+        j.write()
+        att = self.model()["attention"]
+        lag_events = [a for a in att if a[3] == "LAG_GUARD"]
+        self.assertEqual(len(lag_events), 1, "one aggregated line, not one per block")
+        t_, ap, sev, kind, detail = lag_events[0]
+        self.assertEqual(sev, "WARN")
+        self.assertEqual(detail, "lag guard blocked 3 entries (first 10:00 CT, last 10:07 CT)")
+        text = dr.render(self.model())
+        self.assertIn("lag guard blocked 3 entries (first 10:00 CT, last 10:07 CT)", text)
+
+    def test_allowed_verdicts_do_not_trigger_the_lag_line(self):
+        j = self.journal()
+        j.intent(ct_ms(DAY, 10), 1, "entry ok")  # allowed, no filter blocked it
+        j.write()
+        att = self.model()["attention"]
+        self.assertFalse(any(a[3] == "LAG_GUARD" for a in att))
+
+    def test_a_block_whose_first_verdict_is_not_lag_is_not_counted_as_a_lag_block(self):
+        # The rule is specifically "the FIRST non-allowed verdict has filter lag" -- a lag verdict present
+        # later in the list, behind a different blocking filter, does not count.
+        j = self.journal()
+        j.add({"type": "intent_changed", "seq": 1, "eventTimeMs": ct_ms(DAY, 10), "strategyId": "lvn_fade_test",
+               "intentSeq": 1, "targetPosition": 1, "stopPriceTicks": 1, "targetPriceTicks": 2, "reason": "entry X"})
+        j.add({"type": "risk_verdict", "seq": 1, "strategyId": "lvn_fade_test", "intentSeq": 1, "allowed": False,
+               "verdicts": [{"filter": "churn", "allowed": False, "reason": "min dwell not elapsed"},
+                            {"filter": "lag", "allowed": False, "reason": "queue depth 1500 >= 1000"}]})
+        j.write()
+        att = self.model()["attention"]
+        self.assertFalse(any(a[3] == "LAG_GUARD" for a in att))
 
 
 class TestWindowAndSessions(Base):

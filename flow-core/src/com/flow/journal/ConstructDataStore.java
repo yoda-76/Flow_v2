@@ -48,6 +48,7 @@ public final class ConstructDataStore {
   private long pendingPruneCurrentSession = 0;
 
   private final Map<String, PrintWriter> open = new HashMap<>(); // writer thread only
+  private volatile int openCount = 0; // open.size(), published for tests (E2)
 
   public ConstructDataStore(Path root) {
     this.root = root;
@@ -122,8 +123,12 @@ public final class ConstructDataStore {
     for (Path f : files) {
       Long id = parseSessionId(f.getFileName().toString());
       if (id != null && !keep.contains(id)) {
-        Files.deleteIfExists(f);
-        deleted++;
+        // Code review E2: one file that will not delete (locked, or not a plain file) must not abort the rest.
+        try {
+          if (Files.deleteIfExists(f)) deleted++;
+        } catch (IOException ex) {
+          System.err.println("FLOW DATA: could not prune " + f + ": " + ex);
+        }
       }
     }
     return deleted;
@@ -201,6 +206,7 @@ public final class ConstructDataStore {
       pendingPruneKeep = -1;
     }
     if (keep < 0) return;
+    closeWritersBefore(current);
     try {
       pruneNow(root, keep, current);
     } catch (IOException ex) {
@@ -223,6 +229,37 @@ public final class ConstructDataStore {
     }
   }
 
+  /**
+   * Code review E2: a writer used to stay open for every (construct, trading day) until shutdown -- handles piling
+   * up over a 24/7 run, and the prune below deleting files that were still open (refused on Windows, space not
+   * freed on Linux). At each new trading day (the prune request) the previous days' writers are flushed and closed;
+   * a late line for an old day simply reopens its file in append mode.
+   */
+  private void closeWritersBefore(long currentSessionId) {
+    var it = open.entrySet().iterator();
+    while (it.hasNext()) {
+      var en = it.next();
+      String key = en.getKey();
+      long sid;
+      try {
+        sid = Long.parseLong(key.substring(key.lastIndexOf('/') + 1));
+      } catch (NumberFormatException nfe) {
+        continue;
+      }
+      if (sid < currentSessionId) {
+        en.getValue().flush();
+        en.getValue().close();
+        it.remove();
+      }
+    }
+    openCount = open.size();
+  }
+
+  /** For tests: how many construct files the writer thread has open (published after every open/close). */
+  public int openWriterCount() {
+    return openCount;
+  }
+
   private PrintWriter writerFor(String construct, long sessionId) throws IOException {
     String key = construct + "/" + sessionId;
     PrintWriter w = open.get(key);
@@ -232,6 +269,7 @@ public final class ConstructDataStore {
     w = new PrintWriter(Files.newBufferedWriter(dir.resolve(sessionId + ".jsonl"),
         java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND));
     open.put(key, w);
+    openCount = open.size();
     return w;
   }
 }

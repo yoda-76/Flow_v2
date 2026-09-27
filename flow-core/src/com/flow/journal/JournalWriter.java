@@ -105,6 +105,16 @@ public final class JournalWriter {
 
   public void flushAndClose() {
     stop();
+    // Code review A8: wait for the writer thread to finish its current line before this thread drains and closes,
+    // so the two never write to the same stream at once and nothing is written after close.
+    Thread t = writerThread;
+    if (t != null && t != Thread.currentThread()) {
+      try {
+        t.join(2000);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+      }
+    }
     // Drain whatever is left, best-effort, before closing.
     Entry e;
     while ((e = decisionsQueue.poll()) != null) decisionsOut.println(e.line());
