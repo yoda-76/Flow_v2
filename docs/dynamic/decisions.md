@@ -4199,6 +4199,49 @@ readable rather than being silently rewritten.
   - **Limit**: a *crash* is still `DOWN` only after 5 minutes of silence (D-96's thresholds, unchanged); a
     `DEACTIVATE` without a following `DESTROY` (e.g. MotiveWave killed mid-removal) also reads `STOPPED`.
 
+- **D-110** (2026-09-27) — **Laptop trial, Phase 1 (off-market): the repo is distributable — a fresh clone on a
+  second Windows machine with a different MotiveWave version built, deployed and started up cleanly.** Code: HEAD
+  `f657b7d`, no code changes. Study in `DRY_RUN`, Armed unchecked, throughout; no order was possible.
+  - **The laptop vs the dev machine**: Windows 11 Pro 10.0.26200 (dev: Windows 10 Home); user `SUBRAT` (dev: `MSI`);
+    clone at `D:\yadvendra\FLOW_V2` (not the default `C:\yadvendra\trading\FLOW_V2`); **MotiveWave 7.1.1 with
+    bundled Java 27** (dev: 7.0.28 / Java 26); no JDK installed at all; Python 3.14.6; licence `ORDER_FLOW`;
+    Rithmic already connected when the trial started (runbook §4.2 wanted "Sim Trade Only" first — the user enabled
+    it before the study was added).
+  - **What had to be done** (all now in the runbook): (1) download Temurin **26.0.2.1+1** into
+    `D:\yadvendra\motivewave\tools\jdk-26.0.2.1+1` — the default relative location, so `FLOW_JDK_BIN` was not needed;
+    (2) `setx FLOW_HOME "D:\yadvendra\FLOW_V2"` and a full MotiveWave restart — the log then said
+    `FLOW_HOME root=D:\yadvendra\FLOW_V2 source=environment variable FLOW_HOME`; (3) `MOTIVEWAVE_EXT_DIR` passed on the
+    command line (the `/c/Users/MSI/…` default does not exist there). Nothing else needed a dev-machine path.
+  - **Test sheet (runbook §13.1)** — PASS unless noted:
+    - A1 `FLOW_HOME` PASS (via the variable). A2 extensions path: set explicitly, so the "folder not found" message was
+      **not** exercised. A3 JDK PASS (`env_test.sh` all OK). **A4 PASS: classes built by JDK 26 load in MotiveWave's
+      Java 27.** **A5: 7.1.1 — first time this code has run on it**; the SDK jar compiled cleanly and
+      `SafetyHookReflectionTest` passed (15 `OrderContext` hooks, all overridden — 7.1.1 adds none). A6 full build
+      exit 0, scratch folder then real deploy. A7 Python 3.14.6, all three suites pass. A8 C: 43 GB / D: 103 GB free.
+      **A9 not answered**: MotiveWave was restarted after the deploy anyway (for `FLOW_HOME`), so whether a first deploy
+      needs a restart is still unknown; MotiveWave had already created `MotiveWave Extensions` itself (empty) by then.
+      A10 no Defender prompts reported.
+    - B1 Sim Trade Only enabled and the selector read "simulated" (user). B2 `ORDER_FLOW` PASS. **B3 (one Rithmic
+      login on two machines) still unanswered.** B4 live depth PASS (99 bid / 100 ask levels per line in
+      `liquidity_map`). **B5 FAIL, then PASS**: the study was first added to an **ESZ6** chart — the log's
+      `SUBSCRIBED_DOM symbol=ESZ6` and the journal's `tickSize 0.25` showed it; moved to `@GC` (tick 0.1). That mix-up
+      exposed findings **F-1** (see below). B6 `ACTIVATE pos=0 cash=100000.0`. B7 checked by the user. B8 clock within
+      1 s of internet time.
+    - C1 all §5 lines in order, incl. the first live sighting of **`LOG_RETENTION hours=0 (keep everything)`**; no
+      `RISK_CONFIG_MISSING`/`_IGNORED`, no exception. C2 `session_header`, `risk_config_loaded` (with
+      `logRetentionHours`, `localOverrideKeys`), `price_anchor`, `arming_state`, heartbeats with `armed`/`runtime`,
+      weekend `SESSION_FLATTEN_DUE`. C3 first live sighting of the **daily feature logs** (`*_feature_2026-09-27.log`).
+      C4 `status.py` `ALIVE … armed: no DRY_RUN … data: ok` exit 0; `daily_report.py --no-file` exit 0. **C5 PASS on a
+      real removal**: `DEACTIVATE` → `DESTROY`, and `status.py` on that journal printed `STOPPED`, exit 1 (D-109 live).
+  - **Chart bar size**: the user then set the `@GC` chart to **20 seconds** (to test everything with more bars);
+    market-structure warm-start confirmed 100 bars 20 s apart. The dev machine and the runbook use 1 minute, so
+    market-structure output is not comparable between the machines until the bar sizes match.
+  - **Finding F-1** (`findings.md`, flagged, not fixed): recorded data files are keyed by trading day only, so the ES
+    session and the gold session were appended to the same `data/<construct>/20722.jsonl`.
+  - **Not verified by this phase** (unchanged): everything that needs ticks or orders — Phase 2.
+  - **Rule change the same day**: the user ended the 2026-09-24 sprint authorization ("continue in regular mode");
+    `CLAUDE.md`'s third exception is marked ended and the second exception's per-session statement applies again.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

@@ -51,6 +51,12 @@ probably newer — the dev machine has 7.1.1's release notes downloaded and the 
 version has never been tried with this code**), and whether one Rithmic login may be used from two machines at once
 (a second login may disconnect the first — **do not run both simultaneously until checked**).
 
+**UPDATE 2026-09-27: Phase 1 is DONE on the laptop — PASS (D-110).** The laptop is `D:\yadvendra\FLOW_V2`,
+running MotiveWave 7.1.1 / Java 27 with `FLOW_HOME` set. The `@GC` chart is on **20-second** bars (the dev machine
+uses 1 minute). Still open before Phase 2: **B3** (don't run both machines on one Rithmic login until answered),
+the laptop's power and sleep settings (D6), and findings F-1. The sprint authorization has **ended**
+(`CLAUDE.md`), so Phase 2 needs the per-session bounds statement again.
+
 #### Phase 1 — off-market checklist (no orders possible: `DRY_RUN`, Armed unchecked)
 1. **Before adding any study:** MotiveWave → *Configure → Settings → General → Simulated Account tab* → **Enabled**
    and **Sim Trade Only** checked (runbook §4.2). Confirm out loud/in writing; the account selector must read
@@ -269,6 +275,9 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
   and the `STOPPED` state never fired. Now either as the last log line = `STOPPED` (exit 1); an `ACTIVATE` after it
   = running again. 5 regression tests, 7/7 mutations caught, verified on the real 2026-09-26 removal
   (`DOWN` → `STOPPED`). Not a deploy matter — it is an offline script.
+- [ ] **Recorded data files are keyed by trading day only, not instrument (findings F-1, 2026-09-27).**
+  An ES session and a gold session on the same day were appended to the same `data/<construct>/20722.jsonl`.
+  Flagged, not fixed — decide: symbol in the path or in the `header`, and what the readers do with old files.
 - [ ] **Second-machine (spare laptop) trial** — the user's own next step, after
   all off-market work is done (it is now); script = `docs/runbook.md` §13.
   **Push first** (commits are local only). Pre-checked from here with a fresh

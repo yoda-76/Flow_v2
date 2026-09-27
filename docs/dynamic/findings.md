@@ -20,3 +20,30 @@ Nothing has been built or tested in FLOW_V2 itself yet — this file is
 empty of entries until the first experiment here produces one. The open
 questions tracked in `README.md` / `decisions.md` are the current queue of
 things to test.
+
+## Entries
+
+### F-1 (2026-09-27, laptop trial Phase 1) — `[LIVE]` Recorded data files are keyed by trading day only, not by instrument: two instruments on one day land in the same file
+
+**Seen:** on the spare laptop (MotiveWave 7.1.1), the FLOW Runtime study was first added by mistake to an
+**ESZ6** chart (22:18 IST), removed (22:21, `DEACTIVATE` → `DESTROY`), then added to an **`@GC`** chart (22:22).
+Both sessions wrote to the **same** files:
+
+- `data/liquidity_map/20722.jsonl` — lines 1-171 are ES (bid ~7805.75), a second `header` line at 172, gold
+  from 173 on (bid 4312.1). No field on the data lines says which instrument they are.
+- `data/market_structure/20722.jsonl` — ES `header` + `warm_start` (lines 1-2), then gold `header` +
+  `warm_start` (lines 3-4).
+
+**Why (from the code):** `DataRecorder.write()` names the file `data/<construct>/<sessionId>.jsonl`, and
+`sessionId` is `SessionBoundary.sessionIdFor(eventTimeMs)` — the trading-day number only. The symbol is in the
+session's journal (`session_header.symbol`), but not in the file name, the `header` line, or the data lines.
+The second session wrote its own `header` because `headerWritten` is per study instance.
+
+**Consequence:** anything that reads a day's data file (replay, `trade_view.py`, the report's "Recorded data"
+table) sees the two instruments' prices interleaved as if they were one market. With one instrument per machine
+all day this never happens. It does happen whenever the chart's instrument changes during a trading day — a
+wrong chart, a contract roll to a new explicit contract, or a later second strategy on another instrument.
+
+**Status:** flagged, **not fixed** (working agreements §3 — awaiting the user's go). Open question for the fix:
+put the symbol in the path (`data/<construct>/<symbol>/<sessionId>.jsonl`) or in the `header` line, and whether
+the readers must handle the old layout. `todo.md` has the checkbox. Today's mixed files were left as they are.

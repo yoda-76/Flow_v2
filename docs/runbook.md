@@ -14,9 +14,9 @@ It is a how-to, not a decision record: *why* things are the way they are lives i
 | **[UNKNOWN]** | Nobody has checked. Do not assume — test it before relying on it. |
 | **[YOU]** | Only you can decide or supply this (credentials, provider, alert channel…). Left blank on purpose. |
 
-**Not yet done by anyone: a full setup on a second machine.** Every "install"
-step below is reconstructed from this machine and the scripts; the first real
-cloud setup is the test of this runbook, so expect to correct it.
+**Done once on a second machine: the spare laptop, Phase 1, 2026-09-27 (D-110).** It went from a fresh clone to
+a verified start-up. The corrections it produced are folded in below and marked *(laptop, D-110)*. The cloud
+machine is still untested, so expect more corrections.
 
 ---
 
@@ -64,9 +64,9 @@ Order matters; each step says what to check.
    re-verify — §1). Enable the **Order Flow** edition on the licence **[YOU:
    licence — whether it can be moved to the cloud machine, and any per-machine
    limit, is unknown]**. Start it once so it creates its own folders.
-   **[UNKNOWN]:** whether it creates `%USERPROFILE%\MotiveWave Extensions`
-   by itself; `build.sh` refuses to run if that folder is missing, and says so
-   before compiling anything (D-100).
+   It creates `%USERPROFILE%\MotiveWave Extensions` by itself (empty) **[VERIFIED, laptop, D-110]**;
+   `build.sh` refuses to run if that folder is missing, and says so before compiling
+   anything (D-100).
 2. **Get the code**: clone the FLOW_V2 repo. `config/risk.json` and
    `docs/configuration.md` come with it; `logs/`, `data/`, `reports/` are
    git-ignored and start empty.
@@ -74,6 +74,11 @@ Order matters; each step says what to check.
    `../motivewave/tools/jdk-26.0.2.1+1` (this machine's layout) **or** put it
    anywhere and set `FLOW_JDK_BIN` to its `bin` folder (§3). Check:
    `<bin>/java -version` says 26.
+   A fresh machine has **no** JDK. What worked *(laptop, D-110)*, in Git Bash, from the folder that holds the
+   clone:
+   `mkdir -p motivewave/tools && cd motivewave/tools && curl -sSL -o jdk26.zip "https://api.adoptium.net/v3/binary/version/jdk-26.0.2.1%2B1/windows/x64/jdk/hotspot/normal/eclipse" && unzip -q jdk26.zip && rm jdk26.zip`
+   This puts the JDK in the default location next to the clone, so no variable is needed. A JDK
+   **older** than MotiveWave's bundled Java is fine: JDK 26 classes load in 7.1.1's Java 27 **[VERIFIED, laptop]**.
 4. **Git Bash and Python 3** on `PATH`. Check `python --version`.
 5. **Tell the scripts where MotiveWave is**, only if it isn't in the default
    places: `MWAVE_SDK_JAR`, `MOTIVEWAVE_EXT_DIR` (§3).
@@ -97,7 +102,7 @@ Order matters; each step says what to check.
 
 | Variable | Read by | Default | Details |
 |---|---|---|---|
-| `FLOW_HOME` | the runtime (JVM) and the Python tools | runtime: `C:/yadvendra/trading/FLOW_V2`; tools: the current directory | project root: `logs/`, `data/`, `config/risk.json`, `reports/`. Runtime reads it **once at MotiveWave start** — restart MotiveWave to change it, and set an environment variable *before* MotiveWave launches. (`-Dflow.home=…` on MotiveWave's JVM also works; how to pass JVM options to MotiveWave is **[UNKNOWN]**, so prefer the environment variable.) |
+| `FLOW_HOME` | the runtime (JVM) and the Python tools | runtime: `C:/yadvendra/trading/FLOW_V2`; tools: the current directory | project root: `logs/`, `data/`, `config/risk.json`, `reports/`. Runtime reads it **once at MotiveWave start** — restart MotiveWave to change it, and set an environment variable *before* MotiveWave launches. What worked *(laptop, D-110)*: `setx FLOW_HOME "D:\yadvendra\FLOW_V2"` (PowerShell or cmd), then **quit MotiveWave completely and start it again from the Start menu**. The log then says `source=environment variable FLOW_HOME`. (`-Dflow.home=…` on MotiveWave's JVM also works; how to pass JVM options to MotiveWave is **[UNKNOWN]**, so prefer the environment variable.) |
 | *(file)* `config/risk.local.json` | the runtime | none — optional, git-ignored | **per-machine override** of any `risk.json` key. On the **cloud machine create it with `{ "logRetentionHours": 48 }`**; on the dev machine leave it out (keep all logs). Details and failure behaviour: `configuration.md` ("Log retention", "Per-machine overrides"). |
 | `FLOW_JDK_BIN` | `build/*.sh` | `../motivewave/tools/jdk-26.0.2.1+1/bin`, then `PATH` | set-but-wrong is an error, never a silent fall-back |
 | `MWAVE_SDK_JAR` | `build.sh` | `C:/Program Files (x86)/MotiveWave/lib/mwave_sdk.jar` | |
@@ -143,6 +148,11 @@ seen working are marked.
 3. **Open an `@GC` (continuous gold) 1-minute chart.** The market-structure feature
    warm-starts from **100 historical bars** of that chart at activation
    (`FLOW_MS_WARMSTART_BARS`), so the chart must have loaded at least that many.
+   **The study runs on whatever chart it is added to — nothing checks the instrument.** After activating,
+   check that the log says `SUBSCRIBED_DOM symbol=@GC` (not `ESZ6` or anything else). On the laptop it was first
+   added to an ES chart by mistake, and that session's data went into the same day files as gold's
+   (findings F-1). The bar size also matters: market structure is built on the chart's bars, so a different bar
+   size is not comparable with the dev machine (1 minute).
 4. **Add the study**: on the chart, **FLOW menu → FLOW Runtime**; open its
    **Runtime** tab. Settings and what each does: `configuration.md` §2.
    For a first start: Strategy Id `level_zone_observer`, **Mode `DRY_RUN`,
@@ -163,7 +173,7 @@ seen working are marked.
 
 Verified on this machine 2026-09-26 (market closed — the order book and the clock
 still flow, so start-up is testable without ticks; D-102). After activating, the
-newest file in `C:\Users\MSI\AppData\Roaming\MotiveWave\output\` (`output (<date time>).txt`)
+newest file in `%APPDATA%\MotiveWave\output\` (`output (<date time>).txt`)
 must show, in order:
 
 ```
@@ -366,6 +376,10 @@ safe by construction (`DRY_RUN`, Armed unchecked), Phase 2 is the only time an o
 
 **What a pass looks like:** the scratch build exits 0; (with MotiveWave) the §5 lines appear and
 `status.py` prints `ALIVE … data: ok`; nothing needed a path or file that only exists on this machine.
+
+**Result — Phase 1 on the laptop, 2026-09-27: PASS** (D-110 has the filled-in sheet). Still open after it: A9
+(whether a first deploy needs a MotiveWave restart), **B3 (one Rithmic login on two machines)**, all of section D
+(Phase 2), and findings F-1 (data files keyed by day only).
 
 ### 13.1 Doubts and needs this trial must answer (the test sheet)
 
