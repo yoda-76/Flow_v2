@@ -4244,7 +4244,9 @@ readable rather than being silently rewritten.
     deployed files untouched.
   - **D6 (power) FAIL at first check**: plugged-in sleep was 5 min (battery 3 min); after the user changed it, plugged-in
     sleep was **45 min** — still not "never", so an idle overnight session would still be cut. The battery reads 4 %
-    while on the charger. Lid-close action could not be read with `powercfg`. Must be fixed before Phase 2.
+    while on the charger. Lid-close action could not be read with `powercfg`. **Not a blocker for the planned
+    Phase 2:** the user will run a watched 10–15-minute test in market hours, not a whole day. It must be
+    "never" before any long or unattended run.
   - **Not verified by this phase** (unchanged): everything that needs ticks or orders — Phase 2.
   - **Rule change the same day**: the user ended the 2026-09-24 sprint authorization ("continue in regular mode");
     `CLAUDE.md`'s third exception is marked ended and the second exception's per-session statement applies again.

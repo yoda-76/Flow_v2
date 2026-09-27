@@ -54,8 +54,9 @@ version has never been tried with this code**), and whether one Rithmic login ma
 **UPDATE 2026-09-27: Phase 1 is DONE on the laptop — PASS (D-110).** The laptop is `D:\yadvendra\FLOW_V2`,
 running MotiveWave 7.1.1 / Java 27 with `FLOW_HOME` set. The `@GC` chart is on **20-second** bars (the dev machine
 uses 1 minute). **B3 answered: one Rithmic login cannot run on two machines at once** (the dev machine's MotiveWave had
-to be closed). Still open before Phase 2: the laptop's plugged-in sleep must be **never** (it was 45 min at the last
-check — D6), and findings F-1. The sprint authorization has **ended**
+to be closed). **Phase 2 plan (user, 2026-09-27): a watched 10–15-minute test in market hours, not a whole-day run.** The
+laptop's plugged-in sleep (45 min — D6) is fine for that. It must be "never" before any long or unattended run.
+Still open: findings F-1. The sprint authorization has **ended**
 (`CLAUDE.md`), so Phase 2 needs the per-session bounds statement again.
 
 #### Phase 1 — off-market checklist (no orders possible: `DRY_RUN`, Armed unchecked)
