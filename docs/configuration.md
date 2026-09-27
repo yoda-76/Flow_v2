@@ -79,7 +79,7 @@ order. Holidays and early closes are **not modelled** (a decision — D-93).
 |---|---|---|
 | `dataIntervalSeconds` | 1 | Write interval for footprint candles, VWAP and big trades under `data/`. Raise if storage or load demands it. |
 | `liquidityIntervalSeconds` | 1 | Liquidity-map snapshot interval, tunable separately (the heaviest: ≈ 4–5 KB/s at 1 s ≈ 3 GB per 7 trading days). |
-| `dataKeepTradingDays` | 7 | Rolling window of trading days kept under `data/`; the oldest is deleted when a new one starts. |
+| `dataKeepTradingDays` | 7 | Rolling window of trading days kept under `data/`; the oldest is deleted when a new one starts. About 0.45 GB per trading day (mostly the liquidity map) — disk per retention in `docs/runbook.md` §11a. |
 
 ### Log retention (D-106)
 

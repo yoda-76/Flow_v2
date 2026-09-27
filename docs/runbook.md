@@ -303,11 +303,93 @@ Nothing in this section has been tried. Do not rely on any of it until it has be
 - **Not in git, yours:** MotiveWave's own settings and workspace
   (`%APPDATA%\MotiveWave\`), the Rithmic credentials, the licence. **[YOU]**
 
+## 11a. Cloud machine sizing — system requirements (worked out 2026-09-27)
+
+Written so the numbers don't have to be re-derived. **Measured** figures are from the dev machine; everything else is
+an estimate and says so. Re-measure during the first live sessions (see "How to get the real numbers" below) and
+update this section.
+
+### Measured on the dev machine
+
+| What | Value | Source |
+|---|---|---|
+| Dev machine | Intel i5-11400H, 6 cores / 12 threads, 7.7 GB RAM, Windows 10 Home | [VERIFIED 2026-09-27] |
+| MotiveWave Java heap cap | **1,974 MB** — the default (≈ ¼ of RAM) because `MAX_HEAP=` is empty in `%APPDATA%\MotiveWave\startup.ini` | startup log line `Max Memory: 1974 MB` |
+| MotiveWave memory, study running, **market closed** | ~175 MB working set, **768 MB peak** | `Get-Process MotiveWave` |
+| MotiveWave memory, **busy live market, multi-day** | **not measured** (no soak test yet) — the volume-profile rotation (E-3) was sized to keep its own peak ~150–180 MB | — |
+| Raw tick journal (`raw.jsonl`, ticks + top-of-book) | **~28 MB/hour** ≈ 0.7 GB/day | `decisions.md` (raw-tier measurement) |
+| Liquidity map recording (`data/liquidity_map/`, 1 s, ±100 ticks) | **~4–5 KB/s** ≈ **0.4 GB per trading day** — most of `data/` | D-88 measurement, 2026-09-24 |
+| Other recorded constructs (footprint, VWAP, big trades, bars, market structure) | small next to the liquidity map | D-88 |
+| `decisions.jsonl` (kept forever) | up to **~20 MB** for a long busy session (mostly the old 10 s `liquidity_snapshot`) | §10 |
+| Full per-order DOM (NOT recorded, for reference) | ~31.5 GB/hour raw | D-35 — why it is not stored |
+
+### Recommendation
+
+| | Minimum | **Recommended for 24/7 recording + forward testing** |
+|---|---|---|
+| CPU | 2 vCPU | **4 vCPU** |
+| RAM | 8 GB | **16 GB**, and set `MAX_HEAP=4096` in MotiveWave's `startup.ini` (restart MotiveWave after) |
+| Disk | 60 GB SSD | **250 GB SSD** (see the retention table) |
+| OS | Windows with a desktop | **Windows Server 2022 (Desktop Experience) or Windows 11 Pro** — not Home (forced update restarts). Whether MotiveWave behaves on a *server* OS is **[UNKNOWN]**. |
+| Region | any | **US Central (Chicago)** — closest to Rithmic / CME |
+| GPU | not needed | not needed — MotiveWave would fall back to software rendering on a GPU-less VM **[UNKNOWN] how well** |
+| Network | stable broadband | the full-depth feed is ~33 updates/s of the whole book — probably a few Mbps, **not measured** |
+
+### Disk for research (how long to keep recorded data)
+
+`data/` keeps **7 trading days** by default (`dataKeepTradingDays`). To build a large research dataset on the cloud
+machine, raise it in that machine's git-ignored `config/risk.local.json`. At ≈ 0.45 GB per trading day:
+
+| Keep `data/` for | `dataKeepTradingDays` | Disk for `data/` |
+|---|---|---|
+| 1 week (default) | 7 | ~3 GB |
+| 1 month | ~21 | ~10 GB |
+| 6 months | ~126 | ~60 GB |
+| 1 year | ~252 | ~115 GB |
+
+Plus: Windows + MotiveWave + its history (~30–40 GB), `logs/` (with `logRetentionHours: 48` raw journals stay ~1.5 GB;
+`decisions.jsonl` grows ~0.5 GB/month), headroom. **250 GB ≈ a year of recordings with room to spare.** Back `data/`
+up off the machine (e.g. a nightly copy to cloud storage) — a disk failure would otherwise take the research data
+with it.
+
+Example cloud `config/risk.local.json` for research + 24/7:
+
+```json
+{ "logRetentionHours": 48, "dataKeepTradingDays": 252 }
+```
+
+### Settings for an unattended machine
+
+- **Turn chart drawing off** in the study's settings (heatmap, footprint, market structure, big trades, entry
+  arrows): nobody watches the chart, and drawing runs on MotiveWave's tick thread every second (codeReview.md E3).
+  Recording and trading do not depend on drawing.
+- **Keep Windows time sync on.** Since D-110 every risk rule (entry window, flatten, daily reset, dwell) runs on the
+  machine's own clock; the dev machine's clock was ~2.3 s off the exchange (codeReview.md E4).
+- Power/updates/auto-login: §9.
+
+### How to get the real numbers (do this in the first live sessions)
+
+Every hour or so during a live session, in PowerShell:
+
+```powershell
+Get-Process MotiveWave | Select @{n='MB';e={[int]($_.WorkingSet64/1MB)}}, @{n='PeakMB';e={[int]($_.PeakWorkingSet64/1MB)}}, CPU
+```
+
+and at the end of a trading day: `du -sh data/* logs` (Git Bash). Write the results into the "Measured" table above
+with the date. If the peak approaches the heap cap (1,974 MB by default), raise `MAX_HEAP` before going 24/7.
+
+### Still unknown (check before paying for a long rental)
+
+- Memory and CPU on a busy market over several days (soak test, todo Phase 3).
+- MotiveWave on Windows Server and on a GPU-less VM.
+- Whether the MotiveWave licence and the Rithmic login may run on a cloud machine (and on two machines at once).
+- The feed's real bandwidth.
+
 ## 12. Left for you to fill in
 
 | Decision / value | Your answer |
 |---|---|
-| Cloud provider and machine size (RAM matters: MotiveWave + a 24/7 study) | |
+| Cloud provider and machine size | Sizing worked out in **§11a** (recommended: 4 vCPU, 16 GB RAM, 250 GB SSD, US Central). Provider: |
 | OS of the cloud machine (the whole repo has only run on Windows 10) | |
 | How you reach it (remote desktop / VPN / …) | |
 | How the desktop session stays logged in and MotiveWave auto-starts | |
