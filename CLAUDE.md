@@ -121,11 +121,7 @@ the architecture in README.md (strategies emit `Intent`, never hold an
     confirmation) still governs everything else: one-shot tests, any
     non-Sim order, and anything before the risk chain is actually
     enforcing these bounds in code.
-- **Third exception — ENDED 2026-09-27 (user: "we will continue this chat in
-  regular mode"; switched back on the laptop-trial machine). Not in force.**
-  The second exception's per-session bounds statement and confirmation apply
-  again, as written above. Kept below for the record only.
-  **Third exception — cloud-run sprint authorization** (added 2026-09-24,
+- **Third exception — cloud-run sprint authorization** (added 2026-09-24,
   explicit instruction from the user: "anything related to sim account is
   allowed and real account is not allowed strictly ... consent given", and
   no consent warnings until the sprint is done). For the duration of the
@@ -167,8 +163,8 @@ the architecture in README.md (strategies emit `Intent`, never hold an
   work on this project until a decision explicitly says otherwise. Confirm
   the selected account, out loud, at every activation — a past
   confirmation does not carry forward, since the GUI's account selection
-  can change between sessions. (During the 2026-09-24 sprint — ended
-  2026-09-27 — the spoken confirmation was suspended — see the third exception — but the
+  can change between sessions. (During the 2026-09-24 sprint the spoken
+  confirmation is suspended — see the third exception — but the
   stop-if-not-Simulated check is not.)
 
 ## Hard rule — strategies never import the SDK

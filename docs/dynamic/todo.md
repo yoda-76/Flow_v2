@@ -56,8 +56,9 @@ running MotiveWave 7.1.1 / Java 27 with `FLOW_HOME` set. The `@GC` chart is on *
 uses 1 minute). **B3 answered: one Rithmic login cannot run on two machines at once** (the dev machine's MotiveWave had
 to be closed). **Phase 2 plan (user, 2026-09-27): a watched 10–15-minute test in market hours, not a whole-day run.** The
 laptop's plugged-in sleep (45 min — D6) is fine for that. It must be "never" before any long or unattended run.
-Still open: findings F-1. The sprint authorization has **ended**
-(`CLAUDE.md`), so Phase 2 needs the per-session bounds statement again.
+Still open: findings F-1. **The Sim pre-authorization (the sprint, `CLAUDE.md` third exception) is STILL IN FORCE**
+— the laptop session had marked it ended by misreading "regular mode"; the user corrected this on 2026-09-27: it
+stays on until the user says so. Real account: still strictly forbidden.
 
 #### Phase 1 — off-market checklist (no orders possible: `DRY_RUN`, Armed unchecked)
 1. **Before adding any study:** MotiveWave → *Configure → Settings → General → Simulated Account tab* → **Enabled**

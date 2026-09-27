@@ -4250,6 +4250,11 @@ readable rather than being silently rewritten.
   - **Not verified by this phase** (unchanged): everything that needs ticks or orders — Phase 2.
   - **Rule change the same day**: the user ended the 2026-09-24 sprint authorization ("continue in regular mode");
     `CLAUDE.md`'s third exception is marked ended and the second exception's per-session statement applies again.
+    **Corrected 2026-09-27 (user, on the dev machine): this was a misreading — the sprint authorization was NOT
+    ended.** "Regular mode" referred to the model-mode toggle (`REGULAR`/`SUPER`, added on the `code-review-fixes`
+    branch, which the laptop's `main` did not have), not to the Sim pre-authorization. The user: "sim
+    pre-authorisation is still on until I say so". `CLAUDE.md`'s third exception is restored to in force; the real
+    account stays strictly forbidden.
 
 ## Open questions (not yet decisions)
 
