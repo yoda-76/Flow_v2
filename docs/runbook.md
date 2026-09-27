@@ -378,8 +378,10 @@ safe by construction (`DRY_RUN`, Armed unchecked), Phase 2 is the only time an o
 `status.py` prints `ALIVE … data: ok`; nothing needed a path or file that only exists on this machine.
 
 **Result — Phase 1 on the laptop, 2026-09-27: PASS** (D-110 has the filled-in sheet). Still open after it: A9
-(whether a first deploy needs a MotiveWave restart), **B3 (one Rithmic login on two machines)**, all of section D
-(Phase 2), and findings F-1 (data files keyed by day only).
+(whether a first deploy needs a MotiveWave restart), all of section D (Phase 2), and findings F-1 (data files
+keyed by day only). **B3 answered: one Rithmic login cannot be used on two machines at once** — exit MotiveWave on
+one before starting the other. **D6**: check the power plan with `powercfg /q SCHEME_CURRENT SUB_SLEEP STANDBYIDLE`;
+the plugged-in value must be `0x00000000` (never). The laptop's first setting was 5 min, and the next was 45 min.
 
 ### 13.1 Doubts and needs this trial must answer (the test sheet)
 

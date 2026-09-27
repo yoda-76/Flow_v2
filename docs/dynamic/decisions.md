@@ -4221,8 +4221,9 @@ readable rather than being silently rewritten.
       **A9 not answered**: MotiveWave was restarted after the deploy anyway (for `FLOW_HOME`), so whether a first deploy
       needs a restart is still unknown; MotiveWave had already created `MotiveWave Extensions` itself (empty) by then.
       A10 no Defender prompts reported.
-    - B1 Sim Trade Only enabled and the selector read "simulated" (user). B2 `ORDER_FLOW` PASS. **B3 (one Rithmic
-      login on two machines) still unanswered.** B4 live depth PASS (99 bid / 100 ask levels per line in
+    - B1 Sim Trade Only enabled and the selector read "simulated" (user). B2 `ORDER_FLOW` PASS. **B3 answered: NO — one Rithmic
+      login cannot run on two machines at once; the user had to exit MotiveWave on the dev machine.** Only one
+      machine runs a session at a time. B4 live depth PASS (99 bid / 100 ask levels per line in
       `liquidity_map`). **B5 FAIL, then PASS**: the study was first added to an **ESZ6** chart — the log's
       `SUBSCRIBED_DOM symbol=ESZ6` and the journal's `tickSize 0.25` showed it; moved to `@GC` (tick 0.1). That mix-up
       exposed findings **F-1** (see below). B6 `ACTIVATE pos=0 cash=100000.0`. B7 checked by the user. B8 clock within
@@ -4238,6 +4239,12 @@ readable rather than being silently rewritten.
     market-structure output is not comparable between the machines until the bar sizes match.
   - **Finding F-1** (`findings.md`, flagged, not fixed): recorded data files are keyed by trading day only, so the ES
     session and the gold session were appended to the same `data/<construct>/20722.jsonl`.
+  - **A2 PASS** (checked afterwards): plain `bash build/build.sh` with the `MSI` default stopped before compiling —
+    `MotiveWave extensions folder not found at '/c/Users/MSI/MotiveWave Extensions'; set MOTIVEWAVE_EXT_DIR`, exit 2,
+    deployed files untouched.
+  - **D6 (power) FAIL at first check**: plugged-in sleep was 5 min (battery 3 min); after the user changed it, plugged-in
+    sleep was **45 min** — still not "never", so an idle overnight session would still be cut. The battery reads 4 %
+    while on the charger. Lid-close action could not be read with `powercfg`. Must be fixed before Phase 2.
   - **Not verified by this phase** (unchanged): everything that needs ticks or orders — Phase 2.
   - **Rule change the same day**: the user ended the 2026-09-24 sprint authorization ("continue in regular mode");
     `CLAUDE.md`'s third exception is marked ended and the second exception's per-session statement applies again.
