@@ -397,6 +397,33 @@ class TestData(Base):
         self.assertIn("data: n/a (no data dir)", self.line()[0])
 
 
+class TestPerInstrumentDataLayout(Base):
+    """F-1: status reads the running session's instrument folder, data/<construct>/<symbol>/<sid>.jsonl."""
+
+    def _touch(self, rel, ago_s):
+        f = self.data / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("{}\n", encoding="utf-8")
+        m = (NOW - ago_s * 1000) / 1000
+        os.utime(f, (m, m))
+
+    def test_fresh_files_in_the_symbol_folder_are_ok(self):
+        j = self.journal()
+        j.heartbeat(NOW - 2000)
+        self.write(j)
+        sid = dr.session_id_for_day(t.DAY)
+        self._touch(f"liquidity_map/GC/{sid}.jsonl", 3)
+        self.assertIn("data: ok", self.line()[0])
+
+    def test_another_instruments_fresh_file_does_not_count(self):
+        j = self.journal()
+        j.heartbeat(NOW - 2000)
+        self.write(j)
+        sid = dr.session_id_for_day(t.DAY)
+        self._touch(f"liquidity_map/ESZ6/{sid}.jsonl", 3)
+        self.assertIn("data: CHECK: liquidity_map missing", self.line()[0])
+
+
 class TestCli(Base):
     def test_exit_codes(self):
         j = self.journal()

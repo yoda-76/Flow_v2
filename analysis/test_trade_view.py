@@ -289,6 +289,28 @@ class TestRendering(Base):
         self.assertIn("**Exit:** still open", p)
 
 
+class TestPerInstrumentDataLayout(Base):
+    """F-1: the viewer reads the trade's instrument folder, and still reads pre-F-1 flat files."""
+
+    def _write(self, rel, lines):
+        f = self.data / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("\n".join(json.dumps(x, separators=(",", ":")) for x in lines) + "\n", encoding="utf-8")
+
+    def test_symbol_folder_is_read(self):
+        self._write(f"vwap/GC/{SID}.jsonl", [{"t": E0 + 1000, "vwap": 4300.5, "vol": 3}])
+        self._write(f"vwap/ESZ6/{SID}.jsonl", [{"t": E0 + 1000, "vwap": 7800.0, "vol": 9}])
+        lines, found = tv.load_construct(self.data, "vwap", E0, E0 + 5000, "@GC")
+        self.assertTrue(found)
+        self.assertEqual([x["vwap"] for x in lines], [4300.5], "gold's folder only")
+
+    def test_flat_file_still_read(self):
+        self._write(f"vwap/{SID}.jsonl", [{"t": E0 + 1000, "vwap": 4301.0, "vol": 2}])
+        lines, found = tv.load_construct(self.data, "vwap", E0, E0 + 5000, "@GC")
+        self.assertTrue(found)
+        self.assertEqual([x["vwap"] for x in lines], [4301.0])
+
+
 class TestCli(Base):
     def _run(self, *args):
         return tv.main(["--logs", str(self.logs), "--data", str(self.data), *args])

@@ -120,39 +120,51 @@ default, with `RISK_CONFIG_MISSING` in MotiveWave's log.)
 I cannot drive the MotiveWave GUI; these are things **you** do. Items already
 seen working are marked.
 
-1. **Connect Rithmic** **[YOU]** — credentials live in MotiveWave's own connection
-   settings. They never go in this repo, in `.env` (nothing in FLOW_V2 reads
-   `.env`), in a chat, or in a doc. Never paste them anywhere Claude can read.
-   MotiveWave's startup log shows a Rithmic alert
-   `get_order_book … permission denied` for the contract's *historical* order book.
-   That is MotiveWave's own backfill, is harmless, and does not affect live depth
-   **[VERIFIED — the live DOM subscription and liquidity-map recording worked
-   alongside it, 2026-09-26; see the motivewave sibling repo's findings]**. Whether
-   your data tier on the new machine has depth permissions is **[UNKNOWN]**.
-2. **Enable the Simulated Account and "Sim Trade Only"** — *Configure → Settings →
+> **Do these in this order on every new machine — the order is the safety guard** *(reordered 2026-09-27 after
+> the laptop trial connected Rithmic before enabling Sim Trade Only)*:
+> 1. Install and start MotiveWave **without** connecting Rithmic.
+> 2. **Enable the Simulated Account and "Sim Trade Only"** (step 1 below) and check the account selector reads
+>    "simulated".
+> 3. Only then connect Rithmic (step 2), open the `@GC` chart (step 3) and add the study (step 4).
+>
+> **"Sim Trade Only" stays enabled at all times, on every machine, until the user explicitly says otherwise**
+> (user, 2026-09-27). It is never switched off for a test, a check or a restart.
+
+1. **Enable the Simulated Account and "Sim Trade Only"** — *Configure → Settings →
    General → Simulated Account tab → Enabled*, and the **Sim Trade Only**
    checkbox on that same panel **[FROM MOTIVEWAVE DOCS; seen enabled and confirmed
-   via the account selector reading "simulated", 2026-09-12]**. This is the
+   via the account selector reading "simulated", 2026-09-12; again on the laptop, 2026-09-27]**. This is the
    platform-wide guarantee that no order can reach a real account
    (`CLAUDE.md`, README "Safety"). **Confirm it on every new machine and every
    activation**; a past confirmation does not carry over. If the account shown is
    anything other than the Simulated one, **stop** — that is a safety stop, not a
    preference.
-   **On a fresh install, do this FIRST — before connecting Rithmic and before adding
-   the study.** The setting is **per installation**; a new machine must be assumed to
-   have it **OFF**. **There is no code-level backstop:** the runtime cannot tell which
+   The setting is **per installation**; a new machine must be assumed to
+   have it **OFF**. **There is no code-level backstop for the account:** the runtime cannot tell which
    account is active (the SDK has an `Account` type with `getName()` but nothing in
    the SDK hands one out — searched 2026-09-26), so this checkbox plus a human reading
    the selector is the *entire* guard against a real-account order. Do not arm anything
    until both are confirmed on that machine.
-3. **Open an `@GC` (continuous gold) 1-minute chart.** The market-structure feature
+2. **Connect Rithmic** **[YOU]** — credentials live in MotiveWave's own connection
+   settings. They never go in this repo, in `.env` (nothing in FLOW_V2 reads
+   `.env`), in a chat, or in a doc. Never paste them anywhere Claude can read.
+   **One Rithmic login runs on one machine at a time** — exit MotiveWave on the other machine first
+   **[VERIFIED, laptop, D-110]**.
+   MotiveWave's startup log shows a Rithmic alert
+   `get_order_book … permission denied` for the contract's *historical* order book.
+   That is MotiveWave's own backfill, is harmless, and does not affect live depth
+   **[VERIFIED — the live DOM subscription and liquidity-map recording worked
+   alongside it, 2026-09-26 and on the laptop 2026-09-27]**.
+3. **Open an `@GC` (continuous gold) chart with 20-second bars.** *(2026-09-27, user: 20-second bars while the
+   plumbing is being tested — more bars, faster. Use the same bar size on every machine so their market-structure
+   output is comparable; the dev machine's older sessions used 1 minute.)* The market-structure feature
    warm-starts from **100 historical bars** of that chart at activation
-   (`FLOW_MS_WARMSTART_BARS`), so the chart must have loaded at least that many.
-   **The study runs on whatever chart it is added to — nothing checks the instrument.** After activating,
-   check that the log says `SUBSCRIBED_DOM symbol=@GC` (not `ESZ6` or anything else). On the laptop it was first
-   added to an ES chart by mistake, and that session's data went into the same day files as gold's
-   (findings F-1). The bar size also matters: market structure is built on the chart's bars, so a different bar
-   size is not comparable with the dev machine (1 minute).
+   (`FLOW_MS_WARMSTART_BARS`) — about 33 minutes at 20 s — so the chart must have loaded at least that many.
+   **Only gold may be traded** *(2026-09-27, user: "for now only GC is allowed")*: on any other chart the runtime
+   logs `REFUSE_TO_ARM instrument … is not allowed` and never arms or sends an order, even if *Armed* is ticked
+   (`InstrumentPolicy`; `@GC` and explicit gold contracts such as `GCZ6` are allowed). It still records, into that
+   instrument's own data folder (`data/<construct>/<symbol>/…`, findings F-1). After activating, check the log says
+   `SUBSCRIBED_DOM symbol=@GC` and has no `REFUSE_TO_ARM`.
 4. **Add the study**: on the chart, **FLOW menu → FLOW Runtime**; open its
    **Runtime** tab. Settings and what each does: `configuration.md` §2.
    For a first start: Strategy Id `level_zone_observer`, **Mode `DRY_RUN`,
@@ -180,7 +192,7 @@ must show, in order:
 FLOW_HOME root=<your path> source=<built-in default | environment variable FLOW_HOME | system property flow.home>
 [RISK_LOCAL_CONFIG path=… overrides=[…]]          <- only if config/risk.local.json exists
 LOG_RETENTION hours=<0 = keep everything | 48> rawJsonlDeleted=<n> featureLogsDeleted=<n>
-DATA_RECORDER_ON root=<…>\data dataIntervalSec=1 liquidityIntervalSec=1 keepTradingDays=7
+DATA_RECORDER_ON root=<…>\data symbolDir=GC dataIntervalSec=1 liquidityIntervalSec=1 keepTradingDays=7
 SUBSCRIBED_DOM symbol=@GC
 SESSION_START strategyId=level_zone_observer symbol=@GC
 ACTIVATE pos=0 cash=<balance> -- CONFIRM: is this the Simulated account? …

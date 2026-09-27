@@ -4295,6 +4295,39 @@ readable rather than being silently rewritten.
     the study wiring (kill-switch gate call site, B3 sink, E1 skip log) are compiled only. The next live Sim session
     is the first test of all of it, on either machine.
 
+- **D-112** (2026-09-27) — **Before the live test: only gold may be traded, recorded data gets a per-instrument
+  folder (F-1), 20-second bars for the plumbing test, and the live test runs branch `distribution-test`.** The
+  user's answers after the laptop trial (D-110): "for now only GC is allowed"; "put symbol in path"; "20 sec bars
+  for testing plumbing"; "we will push all the fixes in this new branch and pull the same branch on the other
+  laptop for the live test"; "change the mode to regular"; "sim trade only should be enabled all the time"; and the
+  Sim pre-authorization "is still on until I say so" (the laptop had misread "regular mode" — corrected on the branch).
+  - **Branch:** `distribution-test` = `main` + the laptop trial's three commits (re-authored to the user) + a
+    correction that the Sim pre-authorization is in force + the merged `code-review-fixes` (the review fixes are
+    **D-111**, renumbered from D-110 so the laptop trial keeps D-110) + this entry. `main` is untouched.
+  - **Instrument guard (`InstrumentPolicy`, flow-core):** tradable = root `GC` (`@GC`, or a contract like `GCZ6` /
+    `GCG27`) with tick 0.1. Anything else: `REFUSE_TO_ARM instrument … is not allowed` in the log (the report already
+    ALERTs on `REFUSE_TO_ARM`); the armed flag, live mode and the flatten/kill-switch gate all read false, so **no
+    order of any kind** is sent from that chart; recording still runs into the symbol's own folder.
+    `instrumentAllowed` is journaled in `session_header` and the arming `runtime` detail. Micro gold (`MGC`) is refused
+    on purpose — a different contract.
+  - **F-1 fixed — symbol in the path:** `data/<construct>/<symbol>/<sessionId>.jsonl` (`@GC` → `GC`; the rule is
+    `InstrumentPolicy.symbolDir`, mirrored by `analysis/daily_report.py symbol_dir`), the header line carries
+    `symbol`, `DATA_RECORDER_ON` logs `symbolDir=`, pruning looks one folder deeper. Readers (`status.py`,
+    `daily_report.py`, `trade_view.py`) take the instrument from the session's journal and read the symbol folder
+    first, the old flat file second — so pre-2026-09-27 recordings and the committed replay fixture still work
+    (replay and its tests keep the old layout by design).
+  - **Docs:** runbook §4 reordered (Sim Trade Only **before** Rithmic, as a boxed first step; "stays enabled at all
+    times until the user says otherwise"; one Rithmic login per machine; `@GC` **20-second** chart; only gold);
+    `CLAUDE.md` mode set to **`REGULAR`** with a line that the toggle only picks models and never changes what is
+    authorized, plus the gold-only and Sim-Trade-Only-always rules; `configuration.md` (data layout, instrument);
+    `findings.md` F-1 marked fixed.
+  - **Tests:** new gate `InstrumentAndDataLayoutTest` (policy incl. ES, MGC, silver, wrong tick, contracts;
+    folder names; two instruments on one day in separate files; old flat layout unchanged; pruning inside symbol
+    folders; the header's symbol) and 8 Python tests across the three suites (61 / 27 / 39). Mutation: 9/9 Java and
+    7/7 Python mutants caught. Full `build.sh` passes. The runtime wiring (`FlowRuntimeStudy` gates) is compiled
+    only.
+  - **Not verified live**: all of it, and everything in D-111. The laptop's live test is the first run.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

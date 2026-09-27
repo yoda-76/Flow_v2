@@ -16,6 +16,18 @@ B8, C1, C3; E4 = check Windows time sync. **Next:** commit + push (only when the
 machine (no session running) so both machines run the fixed code; the laptop pulls the same commit. The first live
 Sim session tests all of it.
 
+### LIVE TEST — PULL BRANCH `distribution-test` (2026-09-27, D-112) — read before the laptop's Phase 2
+
+The live test runs **`distribution-test`**, not `main`: it has the laptop trial (D-110), the review fixes (D-111),
+the gold-only guard and the per-instrument data folders (D-112). On the laptop, with **no session running**:
+`git fetch origin && git switch distribution-test && git pull`, then `bash build/build.sh` (with
+`MOTIVEWAVE_EXT_DIR` set as before), then **remove and re-add** the study. Expect in MotiveWave's log:
+`FLOW_HOME …`, `LOG_RETENTION …`, `DATA_RECORDER_ON … symbolDir=GC …`, `SUBSCRIBED_DOM symbol=@GC`, and **no**
+`REFUSE_TO_ARM`. The study label is now "FLOW Runtime (Armed + SIM_LIVE places real orders)". Chart: `@GC`,
+**20-second bars**. **Sim Trade Only on at all times; only one machine on the Rithmic login** (close MotiveWave on
+the dev machine). The Sim pre-authorization (`CLAUDE.md` third exception) is **in force**. Things that behave
+differently from `main` because of D-111 — read D-111's "Behaviour changes to know" before judging a result.
+
 ### LAPTOP TRIAL HANDOFF (2026-09-26) — if you are the Claude on the spare laptop, read this FIRST
 
 **Read order:** `CLAUDE.md` (esp. "Working on a second machine") → `docs/working-agreements.md` → this block →
@@ -287,7 +299,7 @@ stop and tell the user if `ACTIVATE` shows a non-Simulated account).
   and the `STOPPED` state never fired. Now either as the last log line = `STOPPED` (exit 1); an `ACTIVATE` after it
   = running again. 5 regression tests, 7/7 mutations caught, verified on the real 2026-09-26 removal
   (`DOWN` → `STOPPED`). Not a deploy matter — it is an offline script.
-- [ ] **Recorded data files are keyed by trading day only, not instrument (findings F-1, 2026-09-27).**
+- [x] (2026-09-27, D-112) **FIXED — symbol in the path.** Was: recorded data files keyed by trading day only, not instrument (findings F-1, 2026-09-27).
   An ES session and a gold session on the same day were appended to the same `data/<construct>/20722.jsonl`.
   Flagged, not fixed — decide: symbol in the path or in the `header`, and what the readers do with old files.
 - [ ] **Second-machine (spare laptop) trial** — the user's own next step, after

@@ -79,7 +79,7 @@ order. Holidays and early closes are **not modelled** (a decision — D-93).
 |---|---|---|
 | `dataIntervalSeconds` | 1 | Write interval for footprint candles, VWAP and big trades under `data/`. Raise if storage or load demands it. |
 | `liquidityIntervalSeconds` | 1 | Liquidity-map snapshot interval, tunable separately (the heaviest: ≈ 4–5 KB/s at 1 s ≈ 3 GB per 7 trading days). |
-| `dataKeepTradingDays` | 7 | Rolling window of trading days kept under `data/`; the oldest is deleted when a new one starts. About 0.45 GB per trading day (mostly the liquidity map) — disk per retention in `docs/runbook.md` §11a. |
+| `dataKeepTradingDays` | 7 | Files are `data/<construct>/<symbol>/<sessionId>.jsonl` (the symbol folder since findings F-1, e.g. `GC` for `@GC`; recordings made before 2026-09-27 are flat `data/<construct>/<sessionId>.jsonl`, still read by the tools). Rolling window of trading days kept under `data/`; the oldest is deleted when a new one starts. About 0.45 GB per trading day (mostly the liquidity map) — disk per retention in `docs/runbook.md` §11a. |
 
 ### Log retention (D-106)
 
@@ -147,6 +147,12 @@ so to pick up a new default, change the value in the study or remove and
 re-add it.
 
 ### Strategy and trading
+
+**Instrument:** only gold (`@GC` or a `GC` contract, tick 0.1) may be traded, for now (user, 2026-09-27). On any
+other chart the study logs `REFUSE_TO_ARM instrument … is not allowed` and never arms or sends an order, whatever
+*Armed* and *Mode* say; it still records into that instrument's own data folder. Journaled as
+`instrumentAllowed` in `session_header` and in the heartbeat/arming `runtime` detail. Not a setting — widening
+it is a code change (`InstrumentPolicy.ALLOWED_ROOTS`), with the strategies and limits re-checked.
 
 | Setting (key) | Default | Read | Meaning |
 |---|---|---|---|

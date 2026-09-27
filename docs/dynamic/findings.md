@@ -46,6 +46,10 @@ table) sees the two instruments' prices interleaved as if they were one market. 
 all day this never happens. It does happen whenever the chart's instrument changes during a trading day — a
 wrong chart, a contract roll to a new explicit contract, or a later second strategy on another instrument.
 
-**Status:** flagged, **not fixed** (working agreements §3 — awaiting the user's go). Open question for the fix:
+**Status: FIXED 2026-09-27 (D-112)** — the user chose the symbol in the path: files are now
+`data/<construct>/<symbol>/<sessionId>.jsonl` (`@GC` → `GC`), the header line names the symbol, pruning reaches
+the symbol folders, and the three analysis tools read the new layout first and the old flat files as a fallback.
+Also, only gold may now be traded (`InstrumentPolicy`), so a wrong chart can no longer be armed.
+*Original status:* flagged, **not fixed** (working agreements §3 — awaiting the user's go). Open question for the fix:
 put the symbol in the path (`data/<construct>/<symbol>/<sessionId>.jsonl`) or in the `header` line, and whether
 the readers must handle the old layout. `todo.md` has the checkbox. Today's mixed files were left as they are.

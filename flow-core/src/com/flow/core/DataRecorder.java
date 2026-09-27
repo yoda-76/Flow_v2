@@ -280,6 +280,7 @@ public final class DataRecorder {
           .field("construct", construct)
           .field("sessionId", sessionId)
           .field("unit", priceDecoder == null ? "ticks" : "price");
+      if (store.symbolDir() != null) h.field("symbol", store.symbolDir()); // F-1: which instrument this file is
       if (construct.equals(BARS)) {
         h.field("trigger", "bar_close");
       } else if (construct.equals(MARKET_STRUCTURE)) {

@@ -100,6 +100,40 @@ def trading_day_window(day: date):
     return ct_to_utc_ms(day - timedelta(days=1), 17), ct_to_utc_ms(day, 17)
 
 
+DEFAULT_SYMBOL = "@GC"  # the only instrument allowed to trade for now (InstrumentPolicy); used when no journal says
+
+
+def symbol_dir(symbol) -> str:
+    """The folder name for a symbol under data/<construct>/ (findings F-1). Mirrors Java's
+    InstrumentPolicy.symbolDir(): "@GC" -> "GC", unsafe characters -> "_", empty -> "unknown"."""
+    if symbol is None:
+        return "unknown"
+    s = str(symbol).strip()
+    if s.startswith("@"):
+        s = s[1:]
+    s = re.sub(r"[^A-Za-z0-9._-]", "_", s)
+    return s or "unknown"
+
+
+def data_file(data_root: Path, construct: str, sid: int, symbol=None) -> Path:
+    """A construct's day file. Since F-1 (2026-09-27) the runtime writes data/<construct>/<symbol>/<sid>.jsonl;
+    recordings made before that (and the committed replay fixture) use data/<construct>/<sid>.jsonl. The symbol
+    folder wins when it exists; otherwise the old flat path is returned (which may not exist either)."""
+    new = data_root / construct / symbol_dir(symbol or DEFAULT_SYMBOL) / f"{sid}.jsonl"
+    if new.exists():
+        return new
+    return data_root / construct / f"{sid}.jsonl"
+
+
+def session_symbol(sessions):
+    """The instrument of the newest session that has a header, else DEFAULT_SYMBOL."""
+    for s in reversed(sessions):
+        sym = s.header.get("symbol")
+        if sym:
+            return sym
+    return DEFAULT_SYMBOL
+
+
 def session_id_for_day(day: date) -> int:
     """data/<construct>/<sessionId>.jsonl: the epoch-day of the 17:00 CT START of the session."""
     return (day - timedelta(days=1) - date(1970, 1, 1)).days
@@ -477,13 +511,13 @@ DENSE = {"vwap": 1, "liquidity_map": 1}
 EVENT_DRIVEN = ("footprint", "vwap", "big_trades", "bars")
 
 
-def data_health(data_root: Path, day: date):
+def data_health(data_root: Path, day: date, symbol=None):
     sid = session_id_for_day(day)
     rows = []
     if not data_root.exists():
         return sid, rows
     for d in sorted(p for p in data_root.iterdir() if p.is_dir()):
-        f = d / f"{sid}.jsonl"
+        f = data_file(data_root, d.name, sid, symbol)
         if not f.exists():
             rows.append({"construct": d.name, "present": False})
             continue
@@ -536,8 +570,9 @@ def build_model(sessions, day, data_root):
         intent_totals["blocked_entries_listed"] += ia["blocked_entries_listed"]
     all_trades.sort(key=lambda t: t["entry_t"] or 0)
     all_attention.sort(key=lambda a: a[0] or 0)
-    sid, data_rows = data_health(data_root, day)
-    return {"day": day, "window": window, "sessions": per_session, "trades": all_trades, "orphans": all_orphans,
+    symbol = session_symbol([s for s, _, _ in per_session]) if per_session else DEFAULT_SYMBOL
+    sid, data_rows = data_health(data_root, day, symbol)
+    return {"day": day, "data_symbol": symbol, "window": window, "sessions": per_session, "trades": all_trades, "orphans": all_orphans,
             "attention": all_attention, "legacy_entries": all_legacy, "intents": intent_totals, "arming": arming,
             "data_session_id": sid, "data": data_rows}
 
@@ -753,7 +788,7 @@ def render(model) -> str:
         L.append("")
 
     # ---- data health
-    L.append(f"## Recorded data (data/*/{model['data_session_id']}.jsonl)")
+    L.append(f"## Recorded data (data/*/{symbol_dir(model.get('data_symbol'))}/{model['data_session_id']}.jsonl)")
     L.append("")
     if model["data"]:
         L.append("| construct | file | lines | size | first → last (CT) | longest gap |")

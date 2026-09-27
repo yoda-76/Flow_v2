@@ -17,7 +17,9 @@ import java.util.stream.Stream;
 
 /**
  * Retained per-construct data (D-88): one JSONL file per construct per
- * trading day at {@code <root>/<construct>/<sessionId>.jsonl}, kept for a
+ * trading day at {@code <root>/<construct>/<symbol>/<sessionId>.jsonl} (the symbol folder since findings F-1,
+ * 2026-09-27 -- two instruments on one day used to share a file; the one-argument constructor keeps the old
+ * {@code <root>/<construct>/<sessionId>.jsonl} layout, used by replay tests and older recordings), kept for a
  * rolling window of trading days, oldest day deleted when a new one starts.
  * sessionId is SessionBoundary.sessionIdFor()'s epoch-day of the session's
  * 17:00 CT start, so "N trading days" skips weekends by construction (only
@@ -49,9 +51,25 @@ public final class ConstructDataStore {
 
   private final Map<String, PrintWriter> open = new HashMap<>(); // writer thread only
   private volatile int openCount = 0; // open.size(), published for tests (E2)
+  private final String symbolDir; // F-1: the instrument's folder under each construct; null = old flat layout
 
+  /** Old flat layout {@code <root>/<construct>/<sessionId>.jsonl} (replay, tests). */
   public ConstructDataStore(Path root) {
+    this(root, null);
+  }
+
+  /**
+   * F-1: {@code <root>/<construct>/<symbolDir>/<sessionId>.jsonl}. symbolDir comes from
+   * InstrumentPolicy.symbolDir(instrument symbol), e.g. "GC" for "@GC".
+   */
+  public ConstructDataStore(Path root, String symbolDir) {
     this.root = root;
+    this.symbolDir = symbolDir;
+  }
+
+  /** The instrument folder this store writes into, or null for the old flat layout. */
+  public String symbolDir() {
+    return symbolDir;
   }
 
   public Path root() {
@@ -103,15 +121,7 @@ public final class ConstructDataStore {
     List<Path> files = new ArrayList<>();
     try (Stream<Path> dirs = Files.list(root)) {
       for (Path dir : (Iterable<Path>) dirs.filter(Files::isDirectory)::iterator) {
-        try (Stream<Path> fs = Files.list(dir)) {
-          for (Path f : (Iterable<Path>) fs::iterator) {
-            Long id = parseSessionId(f.getFileName().toString());
-            if (id != null) {
-              ids.add(id);
-              files.add(f);
-            }
-          }
-        }
+        collectDayFiles(dir, 2, ids, files); // F-1: <construct>/<sessionId>.jsonl and <construct>/<symbol>/<sessionId>.jsonl
       }
     }
     TreeSet<Long> keep = new TreeSet<>();
@@ -132,6 +142,21 @@ public final class ConstructDataStore {
       }
     }
     return deleted;
+  }
+
+  /** Day files under dir, looking into sub-folders (the F-1 symbol folders) up to `depth` levels. */
+  private static void collectDayFiles(Path dir, int depth, TreeSet<Long> ids, List<Path> files) throws IOException {
+    try (Stream<Path> fs = Files.list(dir)) {
+      for (Path f : (Iterable<Path>) fs::iterator) {
+        Long id = parseSessionId(f.getFileName().toString());
+        if (id != null) {
+          ids.add(id);
+          files.add(f);
+        } else if (depth > 1 && Files.isDirectory(f)) {
+          collectDayFiles(f, depth - 1, ids, files);
+        }
+      }
+    }
   }
 
   static Long parseSessionId(String fileName) {
@@ -264,7 +289,7 @@ public final class ConstructDataStore {
     String key = construct + "/" + sessionId;
     PrintWriter w = open.get(key);
     if (w != null) return w;
-    Path dir = root.resolve(construct);
+    Path dir = symbolDir == null ? root.resolve(construct) : root.resolve(construct).resolve(symbolDir);
     Files.createDirectories(dir);
     w = new PrintWriter(Files.newBufferedWriter(dir.resolve(sessionId + ".jsonl"),
         java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND));

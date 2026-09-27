@@ -215,6 +215,10 @@ order: `docs/working-agreements.md` (how the user works), the **"LAPTOP TRIAL HA
   a real-account order. On any new machine it must be enabled **before the study is added**, and confirmed at every
   activation. If anything indicates a non-Simulated account, **stop and tell the user** (safety stop, not a
   consent request).
+- **Only gold (`@GC` / a `GC` contract) may be traded, for now** (user, 2026-09-27). The runtime enforces it
+  (`InstrumentPolicy`: `REFUSE_TO_ARM` on any other chart, and no order of any kind there).
+- **"Sim Trade Only" stays enabled at all times, on every machine, until the user explicitly says otherwise**
+  (user, 2026-09-27) — enable it before Rithmic is connected (`docs/runbook.md` §4).
 - **Per-machine differences go in `config/risk.local.json`** (git-ignored, optional; D-106), never in the tracked
   `config/risk.json`. For an "identical to the first machine" trial, leave it absent.
 - **Claude cannot drive MotiveWave's GUI.** The user adds/removes/activates the study; Claude reads MotiveWave's log
@@ -223,8 +227,12 @@ order: `docs/working-agreements.md` (how the user works), the **"LAPTOP TRIAL HA
 
 ## Model mode toggle (added 2026-09-27)
 
-**CURRENT MODE: `SUPER`**   ← the switch. Change this one word (`REGULAR` or `SUPER`) to change how work is split.
+**CURRENT MODE: `REGULAR`**   ← the switch. Change this one word (`REGULAR` or `SUPER`) to change how work is split.
 The user picks the session's own model with `/model`; this section says who does *which work*.
+**The toggle only chooses models. It never changes what is authorized** — the Sim pre-authorization (third
+exception) and every hard rule stay exactly as written, whatever the mode. "Regular mode" / "super mode" in
+the user's words means this toggle *(2026-09-27: a session on the laptop misread "regular mode" as ending the
+sprint authorization; it did not)*.
 
 | Mode | Who works | Rule |
 |---|---|---|

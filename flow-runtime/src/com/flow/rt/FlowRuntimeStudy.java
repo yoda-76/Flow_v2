@@ -212,6 +212,11 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // so deactivating and re-activating the strategy re-enabled trading the same day. Now only removing and re-adding
   // the study (a fresh instance) clears it.
   private volatile boolean disarmedBySafetyRule = false;
+  // 2026-09-27 (user: "for now only GC is allowed"): the study runs on whatever chart it is added to -- the laptop
+  // trial first added it to an ES chart by mistake. Non-null = this chart's instrument may not be traded
+  // (InstrumentPolicy): the runtime never arms and never sends an order (not even a flatten or kill switch).
+  // Recording still runs, into that symbol's own data folder (F-1). Set once per session, never cleared.
+  private volatile String instrumentRefusal = null;
   private volatile boolean refusedAtActivation = false; // D-92: a position/orders were already there at activation -- never flatten those
   private volatile long sessionStartMs;
   // D-91: the automatic-real-order state machine (in-flight entry, pending bracket, resting legs,
@@ -274,6 +279,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   private void startSession(DataContext ctx) {
     instrument = ctx.getInstrument();
     priceCodec = new PriceCodec(instrument.getTickSize());
+    instrumentRefusal = com.flow.core.InstrumentPolicy.refuseReason(instrument.getSymbol(), instrument.getTickSize());
 
     String strategyId = getSettings().getString(STRATEGY_ID_KEY);
     StrategyRegistry registry = StrategyRegistrations.buildDefault();
@@ -290,6 +296,9 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     }
     journal.start();
     logLine("FLOW_HOME root=" + com.flow.core.FlowHome.root() + " source=" + com.flow.core.FlowHome.source());
+    if (instrumentRefusal != null) {
+      logLine("REFUSE_TO_ARM " + instrumentRefusal); // the nightly report flags REFUSE_TO_ARM as an ALERT
+    }
     final JournalWriter anchorJournal = journal;
     final double anchorTickSize = instrument.getTickSize();
     priceCodec.onAnchor(a -> anchorJournal.writeDecision(0, Json.object()
@@ -308,6 +317,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         // The live values, and every change, are journaled by Pipeline as arming_state / on each heartbeat.
         .field("mode", String.valueOf(getSettings().getString(MODE_KEY)))
         .field("armedSetting", getSettings().getBoolean(ARMED_KEY))
+        .field("instrumentAllowed", instrumentRefusal == null)
         .build());
 
     // D-75: raw-log retention (com.flow.journal.LogRetention, flow-core
@@ -450,7 +460,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         .field("sessionStartMs", sessionStartMs) // staleness: compare against fileLastModifiedMs (README "traceable... not silently assumed current")
         .build());
     com.flow.core.RiskChain riskChain = new com.flow.core.RiskChain(riskConfig);
-    java.util.function.BooleanSupplier armedSupplier = () -> getSettings().getBoolean(ARMED_KEY) && !armDenied;
+    java.util.function.BooleanSupplier armedSupplier =
+        () -> getSettings().getBoolean(ARMED_KEY) && !armDenied && instrumentRefusal == null;
     java.util.function.IntSupplier queueDepthSupplier = () -> {
       Sequencer s = sequencer;
       return s == null ? 0 : s.queueDepth();
@@ -480,6 +491,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         .field("armedSetting", getSettings().getBoolean(ARMED_KEY))
         .field("armDenied", armDenied)
         .field("refusedAtActivation", refusedAtActivation)
+        .field("instrumentAllowed", instrumentRefusal == null)
         .build();
     // D-92 session-end flatten: only when this session is explicitly armed for live Sim trading, and never
     // for a position that was already there at activation (D-24 -- not ours to close). armDenied is
@@ -491,7 +503,9 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks,
         riskChain, armedSupplier, queueDepthSupplier, killSwitch, sessionFlatten);
     pipeline.attachRuntimeStatus(runtimeStatus);
-    com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT);
+    // F-1: one folder per instrument, so a session on another chart never shares a day file with gold's.
+    com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT,
+        com.flow.core.InstrumentPolicy.symbolDir(instrument.getSymbol()));
     ds.start();
     dataStore = ds;
     com.flow.core.DataRecorder dataRecorder = new com.flow.core.DataRecorder(ds, features, priceCodec::fromTicks,
@@ -501,7 +515,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     // just now (after warm-start), so warm-up itself is not written as state changes.
     dataRecorder.recordMarketStructureWarmStart(warmBars, System.currentTimeMillis());
     pipeline.attachDataRecorder(dataRecorder);
-    logLine("DATA_RECORDER_ON root=" + DATA_ROOT + " dataIntervalSec=" + riskConfig.dataIntervalSeconds()
+    logLine("DATA_RECORDER_ON root=" + DATA_ROOT + " symbolDir=" + ds.symbolDir()
+        + " dataIntervalSec=" + riskConfig.dataIntervalSeconds()
         + " liquidityIntervalSec=" + riskConfig.liquidityIntervalSeconds()
         + " keepTradingDays=" + riskConfig.dataKeepTradingDays());
 
@@ -557,12 +572,13 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
    * rate-limit/churn/lag all passed for this intent.
    */
   private boolean isLiveModeRequested() {
-    return "SIM_LIVE".equals(getSettings().getString(MODE_KEY)) && getSettings().getBoolean(ARMED_KEY);
+    return "SIM_LIVE".equals(getSettings().getString(MODE_KEY)) && getSettings().getBoolean(ARMED_KEY)
+        && instrumentRefusal == null; // a non-gold chart never gets an order of any kind, not even a flatten
   }
 
   private boolean isLiveModeArmed() {
     return "SIM_LIVE".equals(getSettings().getString(MODE_KEY))
-        && getSettings().getBoolean(ARMED_KEY) && !armDenied;
+        && getSettings().getBoolean(ARMED_KEY) && !armDenied && instrumentRefusal == null;
   }
 
   /**

@@ -722,6 +722,49 @@ class TestDataHealth(Base):
         self.assertIn("No data directory found", dr.render(self.model()))
 
 
+class TestPerInstrumentDataLayout(Base):
+    """Findings F-1 (2026-09-27): the runtime writes data/<construct>/<symbol>/<sid>.jsonl; older files are flat."""
+
+    def _day_file(self, rel, n=3):
+        f = self.data / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        base = ct_ms(DAY, 10)
+        lines = [json.dumps({"type": "header", "construct": rel.split("/")[0], "intervalSeconds": 1, "t": base})]
+        lines += [json.dumps({"t": base + i * 1000, "v": 1}) for i in range(n)]
+        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_symbol_dir_mirrors_the_java_rule(self):
+        self.assertEqual(dr.symbol_dir("@GC"), "GC")
+        self.assertEqual(dr.symbol_dir("GCZ6"), "GCZ6")
+        self.assertEqual(dr.symbol_dir("A/B:C"), "A_B_C")
+        self.assertEqual(dr.symbol_dir(None), "unknown")
+        self.assertEqual(dr.symbol_dir("@"), "unknown")
+
+    def test_data_file_prefers_the_symbol_folder_and_falls_back_to_the_flat_file(self):
+        sid = dr.session_id_for_day(DAY)
+        self.assertEqual(dr.data_file(self.data, "vwap", sid, "@GC"), self.data / "vwap" / f"{sid}.jsonl",
+                         "nothing exists yet: the old flat path is returned")
+        self._day_file(f"vwap/GC/{sid}.jsonl")
+        self.assertEqual(dr.data_file(self.data, "vwap", sid, "@GC"), self.data / "vwap" / "GC" / f"{sid}.jsonl")
+        self.assertEqual(dr.data_file(self.data, "vwap", sid), self.data / "vwap" / "GC" / f"{sid}.jsonl",
+                         "no symbol given: the default (gold) folder")
+
+    def test_report_reads_the_sessions_instrument_folder_not_another_instruments(self):
+        sid = dr.session_id_for_day(DAY)
+        self._day_file(f"vwap/GC/{sid}.jsonl", n=4)
+        self._day_file(f"vwap/ESZ6/{sid}.jsonl", n=9)         # another instrument, same day
+        self.journal().heartbeat(ct_ms(DAY, 10)).write()      # the journal's session_header says @GC
+        text = dr.render(self.model())
+        self.assertIn("| vwap | ok | 4 |", text, "gold's own file (4 lines), not ES's (9)")
+        self.assertIn(f"data/*/GC/{sid}.jsonl", text)
+
+    def test_old_flat_files_still_read(self):
+        sid = dr.session_id_for_day(DAY)
+        self._day_file(f"vwap/{sid}.jsonl", n=2)
+        self.journal().heartbeat(ct_ms(DAY, 10)).write()
+        self.assertIn("| vwap | ok | 2 |", dr.render(self.model()))
+
+
 class TestCli(Base):
     def test_end_to_end_writes_a_file(self):
         j = self.journal()
