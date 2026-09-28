@@ -56,6 +56,8 @@ Friday 16:00 CT → Sunday 17:00 CT.
 |---|---|---|
 | `flattenLeadMinutes` | 5 | Minutes before the 16:00 CT halt at which any open position is flattened → **15:55 CT**. On Fridays the flatten window lasts all weekend. **0 (or negative) switches session-end flatten *and* the entry block off entirely.** Clamped to 600. |
 | `noEntryLeadMinutes` | 15 | Minutes before the halt at which **new entries stop** → **15:45 CT**. Never less than `flattenLeadMinutes` (raised to it if so). Clamped to 600. |
+| `feedStaleSeconds` | 20 | **Feed watchdog (F-19, 2026-09-28).** Seconds without a tick, inside the trading window, after which market data counts as stale: a `FEED_STALE` ALERT is journaled and **new entries are blocked** (risk filter `feed`). Silent during the daily halt and the weekend, and before the first tick of a session. `0` switches the watchdog off. |
+| `feedSettleSeconds` | 10 | After ticks resume (a `data_gap` record is journaled and an open bracket is judged against where price jumped to — see runbook), seconds of continuous data required before entries are allowed again (`feed_live`). |
 
 The flatten only sends orders when the study is **Mode `SIM_LIVE` and Armed**
 and did not refuse to arm at activation; in `DRY_RUN` it never touches an

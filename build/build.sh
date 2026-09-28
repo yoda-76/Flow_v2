@@ -92,6 +92,14 @@ echo "== account-truth daily loss + pipeline suspend/resume + account watch test
 "$JAVA" -cp build/classes/core com.flow.core.AccountTruthTest
 echo "(account-truth test passed -- see output above)"
 
+echo "== simulated-account-only classifier test (2026-09-28) =="
+"$JAVA" -cp build/classes/core com.flow.core.AccountPolicyTest
+echo "(account policy test passed -- see output above)"
+
+echo "== feed watchdog test (F-19, 2026-09-28) =="
+"$JAVA" -cp build/classes/core com.flow.core.FeedWatchdogTest
+echo "(feed watchdog test passed -- see output above)"
+
 echo "== pipeline exception boundary / kill switch synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.PipelineExceptionBoundaryTest
 echo "(pipeline exception boundary test passed -- see output above)"

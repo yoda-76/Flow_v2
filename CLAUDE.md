@@ -208,6 +208,10 @@ order: `docs/working-agreements.md` (how the user works), the **"LAPTOP TRIAL HA
   session.** Claude reads logs and journals, runs the `analysis/` scripts, builds and tests — it does **not** check
   *Armed*, switch *Mode* to `SIM_LIVE`, or place any order on its own initiative there. The Simulated-account-only /
   real-account-forbidden line is identical everywhere.
+- **Update 2026-09-28 (D-115): there is now a second, code-level layer.** Every order/fill carries `getAccountId()`
+  (always `"simulated"` on Sim); an order or fill naming any other account is refused/ignored, disarms the runtime and
+  locks all order sending. The statement below that there is *no code-level check* is therefore no longer the whole
+  story — but the checkbox and the human check still stand, and the layer fails open on a missing id.
 - **"Sim Trade Only" is a per-installation MotiveWave setting and a fresh install must be assumed to have it OFF**
   (it was off on the first machine's fresh install). **There is no code-level check that the active account is the
   Simulated one** — the SDK exposes an `Account` type but no accessor to it (searched 2026-09-26) — so this single

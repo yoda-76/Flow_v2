@@ -90,6 +90,7 @@ final class FakeBroker {
   private Integer strategyPositionReported;  // null = report the real position
   private Integer accountPositionReported;   // null = report the real position
   private float accountAvgEntry;             // price of the last position-opening fill
+  private String accountId = "simulated";    // what every order's getAccountId() reports (changeable mid-test)
   private double cash = 50_000;
   private float marketPrice = 4300f; // fill price used by fill(o) for a MARKET order
   private int nextId = 1;
@@ -123,6 +124,9 @@ final class FakeBroker {
 
   /** Script a stale getAccountPosition(): report p instead of the real position; null = real. */
   void reportAccountPosition(Integer p) { accountPositionReported = p; }
+
+  /** Script the account id every order reports (default "simulated", what MotiveWave's Sim account reports); null = none. */
+  void setAccountId(String id) { accountId = id; }
 
   /** Arrange the account's average entry price the fake reports. */
   void setAccountAvgEntry(float p) { accountAvgEntry = p; }
@@ -300,7 +304,7 @@ final class FakeBroker {
     public Object invoke(Object proxy, Method m, Object[] args) {
       switch (m.getName()) {
         case "getOrderId": return o.id;
-        case "getAccountId": return "fake-sim-account";
+        case "getAccountId": return accountId;
         case "getQuantity": return o.qty;
         case "getFilled": return o.filled;
         case "getAvgFillPrice":

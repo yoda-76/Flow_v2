@@ -124,7 +124,7 @@ public final class LvnFadeTestStrategy implements FlowStrategy {
       return new Intent(id(), intentSeq.incrementAndGet(), 0, null, null, stopHit ? "stop_hit" : "target_hit");
     }
     // Still holding -- honest restatement of "still want this," a no-op at reconciliation (README).
-    return new Intent(id(), intentSeq.incrementAndGet(), positionDirection, positionStopTicks, positionTargetTicks, "holding");
+    return new Intent(id(), intentSeq.incrementAndGet(), positionDirection, positionStopTicks, positionTargetTicks, "holding", true);
   }
 
   private Intent search(MarketState state, int price) {
@@ -154,7 +154,8 @@ public final class LvnFadeTestStrategy implements FlowStrategy {
 
       String reason = "lvn_fade entered=" + (enteredFromBelow ? "below" : "above")
           + " zone=[" + z.lowPriceTicks() + "," + z.highPriceTicks() + "]";
-      return new Intent(id(), intentSeq.incrementAndGet(), direction, stopTicks, targetTicks, reason);
+      // F-7: SL_TP_TICKS either side of the SIGNAL price -> the runtime re-anchors the real bracket to the fill.
+      return new Intent(id(), intentSeq.incrementAndGet(), direction, stopTicks, targetTicks, reason, true);
     }
     return Intent.none(id(), intentSeq.incrementAndGet());
   }

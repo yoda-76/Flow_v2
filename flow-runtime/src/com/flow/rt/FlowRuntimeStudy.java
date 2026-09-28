@@ -224,9 +224,12 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // priceCodec/armDenied, which its suppliers read.
   private final LiveOrderTracker liveOrders =
       new LiveOrderTracker(() -> gateway, () -> priceCodec, this::logLine, this::journalDecision, this::denyArmBySafetyRule);
+  // 2026-09-28: set the moment an order/fill on a non-simulated account is seen; shared with every OrderGateway.
+  private final java.util.concurrent.atomic.AtomicBoolean orderLock = new java.util.concurrent.atomic.AtomicBoolean(false);
   {
     liveOrders.setAfterFillHook(this::onFillCallbackSeen);
     liveOrders.setScheduler(this::scheduleSafetyTask);
+    liveOrders.setLockAction(() -> orderLock.set(true));
   }
 
   // F-1 (2026-09-28): the ACCOUNT's numbers for the risk chain's daily-loss check (RiskChain.AccountTruth). Written on
@@ -593,6 +596,15 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         riskChain, armedSupplier, queueDepthSupplier, killSwitch, sessionFlatten);
     pipeline.attachRuntimeStatus(runtimeStatus);
     pipeline.attachAccountWatch(this::watchAccount); // F-3
+    // F-19: market data is back after an outage -> the tracker judges an open bracket against where price jumped to.
+    pipeline.attachFeedListener(gap -> {
+      logLine("FEED_RESUMED after " + (gap.durationMs() / 1000) + "s: price " + gap.priceBeforeTicks() + " -> "
+          + gap.priceAfterTicks() + " ticks");
+      liveOrders.onFeedResumed(gap.priceAfterTicks(), () -> {
+        Pipeline p = pipeline;
+        return p == null ? null : p.marketState().lastPriceTicks();
+      });
+    });
     // F-1: one folder per instrument, so a session on another chart never shares a day file with gold's.
     com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT,
         com.flow.core.InstrumentPolicy.symbolDir(instrument.getSymbol()));
@@ -648,8 +660,23 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
           .build());
       return;
     }
-    String line = isLiveModeArmed() ? liveOrders.reconcileLive(intent, gw) : gw.reconcileDryRun(intent);
+    String line = isLiveModeArmed() ? liveOrders.reconcileLive(intent, gw, signalOf(triggeringEvent)) : gw.reconcileDryRun(intent);
     journal.writeDecision(triggeringEvent.seq(), line);
+  }
+
+  /**
+   * F-7/F-11: what the tick that fired this intent looked like. A TickEvent carries last, bid and ask; any other
+   * trigger falls back to the pipeline's last traded price (bid/ask left null). Runs on the drain thread.
+   */
+  private LiveOrderTracker.SignalInfo signalOf(Event e) {
+    long nowLocal = System.currentTimeMillis();
+    if (e instanceof com.flow.core.TickEvent t) {
+      return new LiveOrderTracker.SignalInfo(t.priceTicks(), t.bidPriceTicks(), t.askPriceTicks(), t.eventTimeMs(), nowLocal);
+    }
+    Pipeline p = pipeline;
+    Integer last = Event.priceOf(e);
+    if (last == null && p != null) last = p.marketState().lastPriceTicks();
+    return new LiveOrderTracker.SignalInfo(last, null, null, e.eventTimeMs(), nowLocal);
   }
 
   /**
@@ -1393,7 +1420,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
 
   @Override
   public void onActivate(OrderContext ctx) {
-    gateway = new OrderGateway(ctx);
+    gateway = new OrderGateway(ctx, orderLock);
     logLine("ACTIVATE pos=" + ctx.getPosition() + " accountPos=" + ctx.getAccountPosition() + " cash=" + ctx.getCashBalance()
         + " -- CONFIRM: is this the Simulated account? (Sim Trade Only must stay enabled)");
     lastAccountPosition = ctx.getAccountPosition(); // F-3: the baseline; only changes after this are journaled

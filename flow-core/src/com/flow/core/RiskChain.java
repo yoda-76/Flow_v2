@@ -159,6 +159,14 @@ public final class RiskChain {
     verdicts.add(readyV);
     if (!readyV.allowed()) return new Result(false, verdicts);
 
+    // F-19: no new entries while market data is stale or still settling after an outage. Journaled only when it
+    // blocks (an "ok" entry would change every allowed verdict list).
+    String feedReason = feedBlockReason;
+    if (feedReason != null) {
+      verdicts.add(block("feed", feedReason));
+      return new Result(false, verdicts);
+    }
+
     Verdict lossV = checkDailyLoss(ctx);
     verdicts.add(lossV);
     if (!lossV.allowed()) return new Result(false, verdicts);
@@ -180,6 +188,25 @@ public final class RiskChain {
     if (!lagV.allowed()) return new Result(false, verdicts);
 
     return new Result(true, verdicts);
+  }
+
+  // F-19: set by Pipeline's feed watchdog (drain thread); null = market data is live.
+  private volatile String feedBlockReason = null;
+
+  /** F-19: block (reason) or unblock (null) new entries because of the state of the market-data feed. */
+  public void setFeedBlock(String reason) { this.feedBlockReason = reason; }
+
+  public long feedStaleMs() { return config.feedStaleSeconds() * 1000L; }
+
+  public long feedSettleMs() { return config.feedSettleSeconds() * 1000L; }
+
+  /**
+   * F-19: whether ticks are EXPECTED now (the entry window or the no-new-entries lead-in). During the daily halt and
+   * the weekend a silent feed is normal and must not raise an alert.
+   */
+  public boolean marketExpectedOpen(long nowEventTimeMs) {
+    TradingWindow.Phase p = phaseAt(nowEventTimeMs);
+    return p != TradingWindow.Phase.FLATTEN;
   }
 
   /** Only call when evaluate() returned allowed=true for this same intent/ctx. */

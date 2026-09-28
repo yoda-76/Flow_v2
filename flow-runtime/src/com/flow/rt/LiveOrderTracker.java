@@ -38,6 +38,15 @@ final class LiveOrderTracker {
   private volatile Integer pendingBracketStopTicks = null;
   private volatile Integer pendingBracketTargetTicks = null;
   private volatile String pendingBracketReason = null;
+  // F-7 / F-11 (2026-09-28): what the runtime knew when the entry was submitted -- the signal tick (price, bid, ask,
+  // times) and whether the strategy wants its stop/target distances re-anchored to the FILL. Used at the entry fill to
+  // place the real bracket and to journal one `entry_execution` cost record per trade.
+  private volatile boolean pendingAnchorToFill = false;
+  private volatile SignalInfo pendingSignal = null;
+  private volatile long pendingSubmitLocalMs = 0;
+
+  /** The tick that fired an entry intent, as the runtime saw it. Any field may be null (a non-tick trigger). */
+  record SignalInfo(Integer priceTicks, Integer bidTicks, Integer askTicks, long eventTimeMs, long receivedLocalMs) {}
   // 2026-09-21: a bracket leg belongs to the position that created it and
   // must never outlive it -- tracked by reference here rather than assumed
   // to self-cancel via broker-side OCO, which OrderContext's own method
@@ -86,6 +95,41 @@ final class LiveOrderTracker {
   static final long[] VERIFY_DELAYS_MS = {1_500L, 3_000L, 5_000L};
 
   private enum Act { NONE, CLOSE, HOLD }
+
+  // ---- 2026-09-28 (user: "only simulated trades will affect anything related to the system") -------------------
+  // Every order and fill carries getAccountId(); every Sim fill so far reported "simulated". An order or fill naming
+  // any OTHER account is never processed: the runtime disarms, locks all order sending (OrderGateway's shared lock),
+  // journals it and raises an ALERT. It does NOT try to flatten that account -- orders on a non-simulated account are
+  // exactly what is forbidden.
+  private volatile Runnable lockAction;
+  void setLockAction(Runnable lockAction) { this.lockAction = lockAction; }
+  private volatile boolean unknownAccountLogged = false;
+
+  private boolean nonSimulatedEvent(Order order, String what) {
+    String id;
+    try { id = order.getAccountId(); } catch (RuntimeException e) { id = null; }
+    com.flow.core.AccountPolicy.Kind kind = com.flow.core.AccountPolicy.classify(id);
+    if (kind == com.flow.core.AccountPolicy.Kind.SIMULATED) return false;
+    if (kind == com.flow.core.AccountPolicy.Kind.UNKNOWN) {
+      if (!unknownAccountLogged) {
+        unknownAccountLogged = true;
+        log.accept("ACCOUNT_ID_UNKNOWN the platform reported no account id on a " + what + " -- allowed (a Sim fill always carries one; watch for this)");
+      }
+      return false;
+    }
+    denyArm.run();
+    Runnable la = lockAction;
+    if (la != null) la.run();
+    log.accept("NON_SIM_ACCOUNT_EVENT " + what + " on account '" + id + "', order " + order
+        + " -- disarmed and ALL order sending locked; this event was NOT processed. Only the simulated account may be traded.");
+    try {
+      record.accept(Json.object().field("type", "non_sim_account_event").field("t", System.currentTimeMillis())
+          .field("what", what).field("accountId", String.valueOf(id)).field("orderId", String.valueOf(order.getOrderId())).build());
+    } catch (RuntimeException e) {
+      log.accept("NON_SIM_RECORD_FAILED " + e);
+    }
+    return true;
+  }
 
   /**
    * Whether a flatten should send a close, from the STUDY's position (getPosition) AND the ACCOUNT's
@@ -299,6 +343,10 @@ final class LiveOrderTracker {
   private String lastEntryRefusal = null;
 
   String reconcileLive(Intent intent, OrderGateway gw) {
+    return reconcileLive(intent, gw, null);
+  }
+
+  String reconcileLive(Intent intent, OrderGateway gw, SignalInfo signal) {
     lastEntryRefusal = null;
     if (liveOrderInFlight) {
       if (intent.targetPosition() != gw.currentPosition()) lastEntryRefusal = "previous real order still in flight";
@@ -368,7 +416,23 @@ final class LiveOrderTracker {
     pendingBracketStopTicks = intent.stopPriceTicks();
     pendingBracketTargetTicks = intent.targetPriceTicks();
     pendingBracketReason = intent.reason();
-    return gw.submitRealEntry(delta > 0, Math.abs(delta), intent.reason());
+    pendingAnchorToFill = intent.anchorToFill();
+    pendingSignal = signal;
+    pendingSubmitLocalMs = System.currentTimeMillis();
+    try {
+      return gw.submitRealEntry(delta > 0, Math.abs(delta), intent.reason(), signal, pendingSubmitLocalMs);
+    } catch (IllegalStateException refused) {
+      // The gateway refused (an order on a non-simulated account, or the order lock): nothing was sent.
+      clearPendingLiveOrder();
+      denyArm.run();
+      Runnable la = lockAction;
+      if (la != null) la.run();
+      lastEntryRefusal = "order refused: " + refused.getMessage();
+      log.accept("NON_SIM_ACCOUNT_EVENT entry refused before sending -- " + refused.getMessage() + " -- disarmed, order sending locked");
+      return Json.object().field("type", "reconcile_live_skipped")
+          .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
+          .field("reason", "entry refused: " + refused.getMessage()).build();
+    }
   }
 
   /** Clears in-flight/pending-bracket state -- shared by onOrderRejected/onOrderCancelled below. */
@@ -378,6 +442,9 @@ final class LiveOrderTracker {
     pendingBracketStopTicks = null;
     pendingBracketTargetTicks = null;
     pendingBracketReason = null;
+    pendingAnchorToFill = false;
+    pendingSignal = null;
+    pendingSubmitLocalMs = 0;
   }
 
   /**
@@ -407,6 +474,7 @@ final class LiveOrderTracker {
    */
   void onOrderFilled(Order order) {
     log.accept("ORDER_FILLED " + order);
+    if (nonSimulatedEvent(order, "fill")) return;
     recordFill(order);
     Runnable hook = afterFillHook;
     if (hook != null) {
@@ -431,19 +499,49 @@ final class LiveOrderTracker {
       Integer stopTicks = pendingBracketStopTicks;
       Integer targetTicks = pendingBracketTargetTicks;
       String reason = pendingBracketReason;
+      boolean anchorToFill = pendingAnchorToFill;
+      SignalInfo signal = pendingSignal;
+      long submitLocalMs = pendingSubmitLocalMs;
       clearPendingLiveOrder();
+      PriceCodec c = codec.get();
+      OrderGateway gw = gateway.get();
+      Integer fillTicks = null;
+      if (c != null && c.hasAnchor()) {
+        Float fp = avgFillPriceOf(order);
+        if (fp != null && fp != 0f && !fp.isNaN()) fillTicks = c.toTicks(fp);
+      }
+      journalEntryExecution(order, targetPosition, signal, fillTicks, submitLocalMs);
       if (targetPosition == 0 || stopTicks == null || targetTicks == null) {
         log.accept("LIVE_FILL_NO_BRACKET targetPosition=" + targetPosition
             + " stopTicks=" + stopTicks + " targetTicks=" + targetTicks);
         return;
       }
-      PriceCodec c = codec.get();
-      OrderGateway gw = gateway.get();
       if (c == null || gw == null) {
         log.accept("LIVE_BRACKET_SKIPPED reason=codec_or_gateway_unavailable");
         return;
       }
       boolean closingIsBuy = targetPosition < 0; // a short position closes with a BUY bracket
+      // F-7: keep the strategy's intended distances from where we actually got in, not from the signal tick.
+      if (anchorToFill && signal != null && signal.priceTicks() != null && fillTicks != null) {
+        int intendedStop = stopTicks, intendedTarget = targetTicks;
+        stopTicks = fillTicks + (stopTicks - signal.priceTicks());
+        targetTicks = fillTicks + (targetTicks - signal.priceTicks());
+        log.accept("LIVE_BRACKET_ANCHORED_TO_FILL signal=" + signal.priceTicks() + " fill=" + fillTicks
+            + " stop " + intendedStop + "->" + stopTicks + " target " + intendedTarget + "->" + targetTicks + " (ticks)");
+      }
+      // F-21: a leg on the wrong side of the fill (a long's target at/below its fill, a stop at/above it) would be
+      // marketable the moment it is submitted. Never send one as-is: clamp it one tick to the correct side.
+      if (fillTicks != null) {
+        boolean isLong = targetPosition > 0;
+        int fixedStop = isLong ? Math.min(stopTicks, fillTicks - 1) : Math.max(stopTicks, fillTicks + 1);
+        int fixedTarget = isLong ? Math.max(targetTicks, fillTicks + 1) : Math.min(targetTicks, fillTicks - 1);
+        if (fixedStop != stopTicks || fixedTarget != targetTicks) {
+          log.accept("LIVE_BRACKET_ADJUSTED fill=" + fillTicks + " stop " + stopTicks + "->" + fixedStop
+              + " target " + targetTicks + "->" + fixedTarget + " -- a leg was on the wrong side of the fill");
+          stopTicks = fixedStop;
+          targetTicks = fixedTarget;
+        }
+      }
       float stopPrice = gw.roundToTick((float) c.fromTicks(stopTicks));     // A9: on the tick grid
       float targetPrice = gw.roundToTick((float) c.fromTicks(targetTicks));
       // D-99: size from what the entry actually filled, not what the intent asked for. Falls back to the
@@ -453,8 +551,16 @@ final class LiveOrderTracker {
       if (bracketQty != Math.abs(targetPosition)) {
         log.accept("LIVE_BRACKET_SIZE_FROM_FILL requested=" + Math.abs(targetPosition) + " filled=" + bracketQty);
       }
-      OrderGateway.BracketOrders bracket =
-          gw.submitRealBracket(closingIsBuy, bracketQty, stopPrice, targetPrice, reason);
+      OrderGateway.BracketOrders bracket;
+      try {
+        bracket = gw.submitRealBracket(closingIsBuy, bracketQty, stopPrice, targetPrice, reason);
+      } catch (IllegalStateException refused) {
+        denyArm.run();
+        Runnable la = lockAction;
+        if (la != null) la.run();
+        log.accept("NON_SIM_ACCOUNT_EVENT bracket refused before sending -- " + refused.getMessage() + " -- disarmed, order sending locked");
+        return;
+      }
       restingStopOrder = bracket.stop();
       restingTargetOrder = bracket.target();
       log.accept("LIVE_BRACKET_SUBMITTED " + bracket.journalLine());
@@ -501,6 +607,44 @@ final class LiveOrderTracker {
             "double-fill correction: expected flat, was " + posAfter));
         scheduleFlatVerification("DOUBLE_FILL_CORRECTION", 0); // F-1: the correction is itself a position-relative close
       }
+    }
+  }
+
+  private static Float avgFillPriceOf(Order order) {
+    try { return order.getAvgFillPrice(); } catch (RuntimeException e) { return null; }
+  }
+
+  /**
+   * F-11: one `entry_execution` record per entry fill -- what the signal saw (last, bid, ask), where we got filled,
+   * and how long it took (local clock: submit -> fill callback, and signal received -> submit). Slippage is signed
+   * "positive = worse for us". Purely diagnostic and failure-proof: nothing here may throw into the order callback.
+   */
+  private void journalEntryExecution(Order order, int targetPosition, SignalInfo sig, Integer fillTicks, long submitLocalMs) {
+    try {
+      long now = System.currentTimeMillis();
+      int dir = targetPosition > 0 ? 1 : -1;
+      Json j = Json.object()
+          .field("type", "entry_execution")
+          .field("t", now)
+          .field("orderId", String.valueOf(order.getOrderId()))
+          .field("side", targetPosition > 0 ? "BUY" : "SELL")
+          .fieldOrNull("fillPriceTicks", fillTicks)
+          .fieldOrNull("signalPriceTicks", sig == null ? null : sig.priceTicks())
+          .fieldOrNull("signalBidTicks", sig == null ? null : sig.bidTicks())
+          .fieldOrNull("signalAskTicks", sig == null ? null : sig.askTicks());
+      if (fillTicks != null && sig != null && sig.priceTicks() != null) {
+        j.field("slippageVsLastTicks", (fillTicks - sig.priceTicks()) * dir);
+      }
+      if (fillTicks != null && sig != null) {
+        Integer touch = dir > 0 ? sig.askTicks() : sig.bidTicks();
+        if (touch != null) j.field("slippageVsTouchTicks", (fillTicks - touch) * dir);
+        if (sig.askTicks() != null && sig.bidTicks() != null) j.field("spreadTicks", sig.askTicks() - sig.bidTicks());
+      }
+      if (submitLocalMs > 0) j.field("submitToFillMs", now - submitLocalMs);
+      if (sig != null && submitLocalMs > 0) j.field("signalToSubmitMs", submitLocalMs - sig.receivedLocalMs());
+      record.accept(j.build());
+    } catch (RuntimeException e) {
+      log.accept("ENTRY_EXECUTION_RECORD_FAILED " + e);
     }
   }
 
@@ -585,6 +729,7 @@ final class LiveOrderTracker {
    */
   void onOrderCancelled(Order order) {
     log.accept("ORDER_CANCELLED " + order);
+    if (nonSimulatedEvent(order, "cancel")) return;
     String id = order.getOrderId();
     if (id != null && selfCancelledOrderIds.remove(id)) {
       return;
@@ -603,6 +748,7 @@ final class LiveOrderTracker {
   /** D-82/Q-11: same reasoning as onOrderCancelled() above. */
   void onOrderRejected(Order order) {
     log.accept("ORDER_REJECTED " + order);
+    if (nonSimulatedEvent(order, "rejection")) return;
     if (liveOrderInFlight) {
       clearPendingLiveOrder();
       denyArm.run();
@@ -612,6 +758,84 @@ final class LiveOrderTracker {
       return;
     }
     noteLegEnded(order, "rejected");
+  }
+
+  // ---- F-19 (2026-09-28): market data is back after an outage -------------------------------------------------
+  //
+  // The user's rule: with a position open, if the price has CROSSED OR REACHED the stop or the target while we could not
+  // see it -> flatten; if it is still strictly between them -> leave the orders working. "Crossed" is judged on both the
+  // first price after the gap (which is where it jumped to, even if it has since come back) and the price now. The
+  // check runs one settle interval after the first tick, so a leg the platform itself fills on that first tick is
+  // already resolved (the tracker has forgotten it) and is not raced by our own close (the L-1 lesson).
+  // (A finer rule -- fetch the bars of the gap and see whether the range touched a level and came back -- is a todo.)
+
+  void onFeedResumed(Integer firstPriceAfterTicks, java.util.function.Supplier<Integer> currentPriceTicks) {
+    java.util.function.BiConsumer<Runnable, Long> s = scheduler;
+    if (s == null) return;
+    s.accept(() -> feedResumeCheck(firstPriceAfterTicks, currentPriceTicks), VERIFY_DELAYS_MS[0]);
+  }
+
+  void feedResumeCheck(Integer firstPriceAfterTicks, java.util.function.Supplier<Integer> currentPriceTicks) {
+    try {
+      Order stop = restingStopOrder;
+      Order target = restingTargetOrder;
+      OrderGateway gw = gateway.get();
+      PriceCodec c = codec.get();
+      if (gw == null || c == null) return;
+      int strat = gw.currentPosition();
+      int acct = gw.accountPosition();
+      if (stop == null || target == null) {
+        if (strat != 0 || acct != 0) {
+          log.accept("FEED_RESUME_UNPROTECTED_POSITION study=" + strat + " account=" + acct
+              + " -- the market-data outage ended with a position and no tracked bracket: CHECK THE ACCOUNT");
+        } else {
+          log.accept("FEED_RESUME_NOTHING_OPEN the outage ended with no position and no bracket");
+        }
+        return;
+      }
+      if (strat == 0 && acct == 0) {
+        log.accept("FEED_RESUME_NOTHING_OPEN the position closed during the outage (both readings flat)");
+        return;
+      }
+      Float stopPx = stop.getStopPrice();
+      Float targetPx = target.getLimitPrice();
+      Integer nowTicks = currentPriceTicks == null ? null : currentPriceTicks.get();
+      if (stopPx == null || targetPx == null || (firstPriceAfterTicks == null && nowTicks == null)) {
+        log.accept("FEED_RESUME_UNCHECKABLE stop=" + stopPx + " target=" + targetPx + " -- levels or prices unavailable, orders left as they are");
+        return;
+      }
+      boolean isLong = stop.isSell(); // a long is protected by a SELL stop
+      double eps = 1e-6;
+      boolean crossed = false;
+      String why = "";
+      for (Integer p : new Integer[] {firstPriceAfterTicks, nowTicks}) {
+        if (p == null) continue;
+        double px = c.fromTicks(p);
+        boolean hitStop = isLong ? px <= stopPx + eps : px >= stopPx - eps;
+        boolean hitTarget = isLong ? px >= targetPx - eps : px <= targetPx + eps;
+        if (hitStop || hitTarget) {
+          crossed = true;
+          why = (hitStop ? "stop " : "target ") + (hitStop ? stopPx : targetPx) + " reached/crossed at " + px;
+          break;
+        }
+      }
+      if (!crossed) {
+        log.accept("FEED_RESUME_KEEP price is still between the stop " + stopPx + " and the target " + targetPx
+            + " (first " + firstPriceAfterTicks + " now " + nowTicks + " ticks) -- orders left working");
+        return;
+      }
+      Act act = decide(gw, false, "FEED_RESUME");
+      if (act == Act.CLOSE) {
+        resetForKillSwitch();
+        log.accept("FEED_RESUME_FLATTEN " + why + " -- " + gw.cancelAllAndClose("market-data outage: " + why));
+        scheduleFlatVerification("FEED_RESUME", 0);
+      } else {
+        log.accept("FEED_RESUME_FLATTEN_HELD " + why + " -- no close sent (readings disagree or flat); verifying");
+        scheduleFlatVerification("FEED_RESUME", 0);
+      }
+    } catch (RuntimeException e) {
+      log.accept("FEED_RESUME_CHECK_FAILED " + e);
+    }
   }
 
   // ---- F-5 / B6 (2026-09-28, the user chose "flatten + disarm") -------------------------------------------------

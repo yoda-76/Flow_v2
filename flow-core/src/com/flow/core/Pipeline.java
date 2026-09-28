@@ -87,6 +87,33 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   // the ACCOUNT's position for changes the study did not cause (a manual close, the platform's own close dialog).
   private volatile Runnable accountWatch;
 
+  // F-19 (2026-09-28, the 21:53 IST Rithmic disconnect): a feed watchdog. If no tick arrives for feedStaleSeconds
+  // during the trading window the feed is STALE (ALERT, new entries blocked by the risk chain's "feed" filter); the
+  // first tick after that journals a `data_gap`, tells the listener (the runtime decides what to do with an open
+  // bracket) and starts SETTLING; feedSettleSeconds of continuous ticks later it is LIVE and entries are allowed again.
+  private enum FeedState { LIVE, STALE, SETTLING }
+  private FeedState feedState = FeedState.LIVE;        // drain-thread-only
+  private long lastTickLocalMs = Long.MIN_VALUE;       // local clock of the last tick handled
+  private Integer lastTickPriceTicks = null;
+  private long staleSinceLocalMs = 0;
+  private Integer priceBeforeGap = null;
+  private long settleUntilLocalMs = 0;
+  private volatile FeedListener feedListener;
+
+  /** A stretch of missing market data, as seen when the first tick after it arrives. */
+  public record FeedGap(long startLocalMs, long endLocalMs, Integer priceBeforeTicks, Integer priceAfterTicks) {
+    public long durationMs() { return endLocalMs - startLocalMs; }
+  }
+
+  /** The runtime's hook for "market data is back after an outage" (called on the drain thread, guarded). */
+  public interface FeedListener {
+    void onFeedResumed(FeedGap gap);
+  }
+
+  public void attachFeedListener(FeedListener l) {
+    this.feedListener = l;
+  }
+
   /**
    * features is required explicitly (an empty Map.of() is fine, but
    * callers must say so) rather than defaulted, so "this Pipeline has no
@@ -251,6 +278,8 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
       if (count % HEARTBEAT_EVERY_CLOCK_EVENTS == 0) heartbeat(e);
       if (count % DOM_SNAPSHOT_EVERY_CLOCK_EVENTS == 0) maybeDomSnapshot(e);
     }
+
+    if (riskChain != null) checkFeed(e);
 
     DataRecorder rec = dataRecorder;
     if (rec != null) {
@@ -423,6 +452,68 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     return marketState.riskClockMs();
   }
 
+  /**
+   * F-19: the feed watchdog, run on every event (ClockEvents keep time moving when no tick arrives). Uses the LOCAL
+   * clock only (marketState.localTimeMs(), advanced by ClockEvents): exchange time freezes with the feed.
+   */
+  private void checkFeed(Event e) {
+    long staleMs = riskChain.feedStaleMs();
+    if (staleMs <= 0) return; // watchdog switched off
+    long now = marketState.localTimeMs();
+    if (e instanceof TickEvent te) {
+      if (feedState == FeedState.STALE) {
+        FeedGap gap = new FeedGap(staleSinceLocalMs, now, priceBeforeGap, te.priceTicks());
+        feedState = FeedState.SETTLING;
+        settleUntilLocalMs = now + riskChain.feedSettleMs();
+        journal.writeDecision(e.seq(), Json.object()
+            .field("type", "data_gap")
+            .field("seq", e.seq())
+            .field("startLocalMs", gap.startLocalMs())
+            .field("endLocalMs", gap.endLocalMs())
+            .field("durationMs", gap.durationMs())
+            .fieldOrNull("priceBeforeTicks", gap.priceBeforeTicks())
+            .fieldOrNull("priceAfterTicks", gap.priceAfterTicks())
+            .fieldOrNull("jumpTicks", gap.priceBeforeTicks() == null ? null : gap.priceAfterTicks() - gap.priceBeforeTicks())
+            .build());
+        riskChain.setFeedBlock("market data resumed after " + (gap.durationMs() / 1000) + "s; settling before new entries");
+        FeedListener l = feedListener;
+        if (l != null) {
+          try {
+            l.onFeedResumed(gap);
+          } catch (RuntimeException ex) {
+            journal.writeDecision(e.seq(), Json.object().field("type", "feed_listener_failed")
+                .field("reason", String.valueOf(ex)).field("seq", e.seq()).build());
+          }
+        }
+      }
+      lastTickLocalMs = now;
+      lastTickPriceTicks = te.priceTicks();
+      return;
+    }
+    if (!(e instanceof ClockEvent) || lastTickLocalMs == Long.MIN_VALUE) return;
+    long age = now - lastTickLocalMs;
+    if (feedState != FeedState.STALE && age > staleMs && riskChain.marketExpectedOpen(riskNowMs())) {
+      if (feedState == FeedState.LIVE) { // (a relapse while SETTLING keeps the original gap's start)
+        staleSinceLocalMs = lastTickLocalMs;
+        priceBeforeGap = lastTickPriceTicks;
+      }
+      feedState = FeedState.STALE;
+      journal.writeDecision(e.seq(), Json.object()
+          .field("type", "FEED_STALE")
+          .field("reason", "no market data for " + (age / 1000) + "s during the trading window")
+          .field("seq", e.seq())
+          .field("lastTickAgeMs", age)
+          .fieldOrNull("lastPriceTicks", lastTickPriceTicks)
+          .build());
+      riskChain.setFeedBlock("no market data for " + (age / 1000) + "s");
+    } else if (feedState == FeedState.SETTLING && now >= settleUntilLocalMs) {
+      feedState = FeedState.LIVE;
+      riskChain.setFeedBlock(null);
+      journal.writeDecision(e.seq(), Json.object().field("type", "feed_live")
+          .field("reason", "market data continuous for the settle period; entries allowed again").field("seq", e.seq()).build());
+    }
+  }
+
   /** F-4: drain-thread half of resumeTrading() -- forget every belief held across the deactivated gap. */
   private void resyncAfterReactivation(Event e) {
     journal.writeDecision(e.seq(), Json.object()
@@ -488,6 +579,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
         && a.targetPosition() == b.targetPosition()
         && Objects.equals(a.stopPriceTicks(), b.stopPriceTicks())
         && Objects.equals(a.targetPriceTicks(), b.targetPriceTicks())
+        && a.anchorToFill() == b.anchorToFill()
         && Objects.equals(a.reason(), b.reason());
   }
 
@@ -590,6 +682,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     if (riskChain != null && armedSupplier != null) {
       // D-97: absent (not false) when there is no risk chain, so replay/observer journals keep their old shape.
       j.field("armed", armedSupplier.getAsBoolean()).fieldRaw("runtime", runtimeJson());
+      j.field("feedState", feedState.name()); // F-19
     }
     journal.writeDecision(e.seq(), j.build());
   }

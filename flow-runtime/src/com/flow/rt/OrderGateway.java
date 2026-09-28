@@ -26,9 +26,44 @@ import com.motivewave.platform.sdk.order_mgmt.OrderContext;
  */
 final class OrderGateway {
   private final OrderContext ctx;
+  // 2026-09-28 (user: "only simulated trades will affect anything related to the system"): set the moment an order
+  // or fill on a NON-simulated account is seen. Shared across gateways (the Study builds a new one at each
+  // activation), and once set NOTHING is sent: entries, brackets, closes and cancels all refuse. There is no
+  // un-lock -- remove and re-add the study, and fix the account, first.
+  private final java.util.concurrent.atomic.AtomicBoolean orderLock;
 
   OrderGateway(OrderContext ctx) {
+    this(ctx, new java.util.concurrent.atomic.AtomicBoolean(false));
+  }
+
+  OrderGateway(OrderContext ctx, java.util.concurrent.atomic.AtomicBoolean orderLock) {
     this.ctx = ctx;
+    this.orderLock = orderLock;
+  }
+
+  boolean locked() { return orderLock.get(); }
+
+  void lockOrders() { orderLock.set(true); }
+
+  /**
+   * The Simulated-only rule at the point of sending: refuses (throws) if the lock is set, or if any of these
+   * not-yet-submitted orders already names an account other than the simulated one. An order that names no account
+   * yet is let through (AccountPolicy: UNKNOWN); the fill callback re-checks with the account the platform reports.
+   */
+  private void requireSimulated(Order... orders) {
+    if (orderLock.get()) throw new IllegalStateException("order lock: a non-simulated account was seen -- no orders are sent");
+    for (Order o : orders) {
+      String id = safe(o::getAccountId);
+      if (com.flow.core.AccountPolicy.classify(id) == com.flow.core.AccountPolicy.Kind.OTHER) {
+        orderLock.set(true);
+        throw new IllegalStateException("REFUSING to submit: the order's account is '" + id + "', not the simulated account");
+      }
+    }
+  }
+
+  private static String refusedLine(String what) {
+    return Json.object().field("type", "order_refused").field("what", what)
+        .field("reason", "order lock: a non-simulated account was seen").build();
   }
 
   /**
@@ -227,10 +262,20 @@ final class OrderGateway {
    * submitted from it (below) filled/cancelled correctly as an OCO pair.
    */
   String submitRealEntry(boolean isBuy, int qty, String reason) {
+    return submitRealEntry(isBuy, qty, reason, null, 0L);
+  }
+
+  /**
+   * F-11 (2026-09-28): the same submission, with the journal record now carrying WHEN it was sent (local clock) and
+   * what the signal tick looked like (last, bid, ask, exchange time) -- without these, entry latency and slippage
+   * could only be inferred afterwards. submitLocalMs is read by the caller just before this call.
+   */
+  String submitRealEntry(boolean isBuy, int qty, String reason, LiveOrderTracker.SignalInfo signal, long submitLocalMs) {
     int positionBefore = ctx.getPosition();
     Order entry = OrderAdapter.marketOrder(ctx, isBuy, qty);
+    requireSimulated(entry);
     ctx.submitOrders(entry);
-    return Json.object()
+    Json j = Json.object()
         .field("type", "real_order_submitted")
         .field("orderType", "MARKET")
         .field("instrument", ctx.getInstrument().getSymbol())
@@ -238,8 +283,16 @@ final class OrderGateway {
         .field("qty", qty)
         .field("positionBefore", positionBefore)
         .field("cashBalance", ctx.getCashBalance())
-        .field("reason", reason)
-        .build();
+        .field("reason", reason);
+    if (submitLocalMs > 0) j.field("t", submitLocalMs);
+    if (signal != null) {
+      j.fieldOrNull("signalPriceTicks", signal.priceTicks())
+          .fieldOrNull("signalBidTicks", signal.bidTicks())
+          .fieldOrNull("signalAskTicks", signal.askTicks())
+          .field("signalEventTimeMs", signal.eventTimeMs())
+          .field("signalReceivedLocalMs", signal.receivedLocalMs());
+    }
+    return j.build();
   }
 
   /**
@@ -266,6 +319,7 @@ final class OrderGateway {
   BracketOrders submitRealBracket(boolean closingIsBuy, int qty, float stopPrice, float targetPrice, String reason) {
     Order stop = OrderAdapter.stopOrder(ctx, closingIsBuy, qty, stopPrice);
     Order target = OrderAdapter.limitOrder(ctx, closingIsBuy, qty, targetPrice);
+    requireSimulated(stop, target);
     ctx.submitOrders(stop, target);
     String line = Json.object()
         .field("type", "real_bracket_submitted")
@@ -303,6 +357,7 @@ final class OrderGateway {
    * since nothing else needed that shape.
    */
   String closeAtMarket(String reason) {
+    if (orderLock.get()) return refusedLine("closeAtMarket");
     int positionBefore = ctx.getPosition();
     ctx.closeAtMarket();
     return Json.object()
@@ -325,6 +380,7 @@ final class OrderGateway {
     if (order == null || !order.isActive()) {
       return null;
     }
+    if (orderLock.get()) return refusedLine("cancel " + legName);
     ctx.cancelOrders(order);
     return Json.object()
         .field("type", "real_leg_cancelled")
@@ -339,6 +395,7 @@ final class OrderGateway {
    * sending closeAtMarket() to a flat account, whose behaviour there is unconfirmed.
    */
   String cancelAllOrders(String reason) {
+    if (orderLock.get()) return refusedLine("cancelAllOrders");
     ctx.cancelOrders();
     return Json.object()
         .field("type", "session_orders_cancelled")
@@ -358,6 +415,7 @@ final class OrderGateway {
    * FlowRuntimeStudy's kill-switch callback).
    */
   String cancelAllAndClose(String reason) {
+    if (orderLock.get()) return refusedLine("cancelAllAndClose");
     int positionBefore = ctx.getPosition();
     ctx.closeAtMarket();
     ctx.cancelOrders();

@@ -37,7 +37,7 @@ State when this was written: dev machine's MotiveWave closed, `risk.local.json` 
   and write the answer into the runbook.
 
 ### P1 — execution quality / correctness
-- [ ] **F-7 · Bracket anchored on the signal, entries fill ~1.6 ticks worse (N-1 = B8 = L-6, ⚑).** Measured on 94 trades: the
+- [x] **F-7 · Bracket anchored on the signal, entries fill ~1.6 ticks worse (N-1 = B8 = L-6, ⚑).** *(2026-09-28, D-114: `Intent.anchorToFill`; the runtime places the stop/target the strategy's distances from the FILL. Built + tested, NOT live. `lvn_fade_test` uses it; the structural strategy keeps absolute levels. Original wording below.)* Measured on 94 trades: the
   "5/5" bracket is really 7 stop / 3 target from the fill; avg win +3.7 vs avg loss −6.8; needs ~66 % wins to break even
   (observed 25–42 %). ⚑ user decides: offset from the fill price / marketable-limit entry / widen. Also feeds L-5 (the
   strategy's virtual `target_hit` vs the real target that didn't fill).
@@ -49,7 +49,7 @@ State when this was written: dev machine's MotiveWave closed, `risk.local.json` 
   the strategy is to be judged, not the plumbing.
 
 ### P2 — records, tools, housekeeping
-- [ ] **F-11 · `real_order_submitted` has no timestamp / signal price (N-6).** Add `t` + intent price so latency and slippage
+- [x] **F-11 · `real_order_submitted` has no timestamp / signal price (N-6).** *(2026-09-28, D-114: it now has both, plus an `entry_execution` cost record per entry and an 'Execution cost' table in the report.)* Add `t` + intent price so latency and slippage
   are read from the journal, not inferred.
 - [ ] **F-12 · Log volume for long runs (N-3).** `raw.jsonl` ≈ 33 MB/h, `logs/` 438 MB, retention 0. Choose a `logRetentionHours`
   for the cloud run and watch one real prune.
@@ -65,6 +65,22 @@ State when this was written: dev machine's MotiveWave closed, `risk.local.json` 
 - [ ] **F-17 · C3 real-account guard** (one checkbox is the only guard, D-107) — ⚑ the cash-balance/second-layer idea is still open.
 - [ ] **F-18 · Housekeeping before the next session:** decide `risk.local.json` values per machine; set big-trade Min Size back
   from 1; remove + re-add the study after every deploy.
+
+- [x] **F-19 · Dead feed with a position open (N-10a/c/d, logAnalysis addendum 21:53 IST).** *(2026-09-28, D-114: watchdog + `feed` filter + `data_gap` + settle; the user's open-position rule = flatten if a stop/target was reached or crossed, keep orders if still between. Built + tested, NOT live. Recorder back-fill and re-warm are F-22. Original wording below.)* Detect "no tick for N s while a position/orders are open" (a gold market ticks every second; N ≈ 15–30 s), raise an ALERT, block new entries until data has flowed again for a settle period, and journal a `data_gap` record (start/end/price jump) so recorders and reports can mark the hole. ⚑ Decide the action: alert-only vs. flatten as soon as the trading connection is back.
+- [x] **F-20 · Flag Sim fill artifacts (N-10b).** *(2026-09-28, D-114: built + tested, NOT live.)* In `daily_report.py`/`trade_view.py` mark a fill more than a few ticks through its own limit/stop price (`fill vs order price`) and show P&L with and without it, so an outage-gap fill like +$820 doesn't pass as strategy performance.
+- [x] **F-21 · Bracket already through the market (part of F-7).** *(2026-09-28, D-114: legs on the wrong side of the fill are clamped one tick and logged.)* The 21:53 target sat 1 tick below the long's fill: a marketable limit. Whatever F-7 decides, a leg on the wrong side of the fill should never be submitted as-is.
+
+- [ ] **F-22 · Advanced gap handling (user, 2026-09-28 — later).** After a market-data gap, fetch the **historical bars** for it (MotiveWave has them: it loaded 7,296 ticks itself after the 21:56 reconnect) and see whether the price **crossed or reached the stop/target and then came back between them**; if so flatten. Today's rule (D-114) only looks at the first price after the gap and the price now, so a spike that touched a level and returned inside the 1.5 s settle window is missed. Same source could back-fill the recorders and re-warm the features so the hole in the footprint/VWAP/volume profile/market structure is closed rather than marked.
+- [ ] **F-23 · Entry slippage cap (deferred from D-114).** Marketable limit at the touch + 2–3 ticks instead of a bare market order; unfilled → cancel, journal `entry_missed`. Matters on a real account (Sim slippage is just the spread, max 6 ticks).
+
+### BEFORE THE 24/7 RUN (assessed 2026-09-28 — the user asked "what else is left")
+**A. Prove the new code live (nothing from D-113/D-114 has run yet)** — deploy, then on Sim: (1) `dailyLossLimitTicks` 10 → kill switch, watch the verified flatten; (2) a **deliberate network drop** (~40 s, ideally with a position open) → `FEED_STALE`, `data_gap`, the resume rule; (3) deactivate → re-activate on a quiet chart (`REACTIVATED`, `pipeline_resync`); (4) the anchored bracket's real prices; (5) refuse-to-arm over a position, ES refusal, session-end flatten (`flattenLeadMinutes` 400).
+**B. Decided 2026-09-28:** the reversal cap, rate limit and daily loss limit stay at their `risk.json` defaults (all configurable; per machine in `risk.local.json`) — F-8/F-9 closed as "defaults"; the account guard is built (D-115, C3/F-17 done); the strategy and order-flow rules will be changed by the user before the run; Telegram alerts by the user (`.examples.env`); memory measured after day one. **Still open:** C1 (one position truth).
+**C. Never tried live:** the 16:00–17:00 CT halt (flatten 15:55, reopen 17:00), the 17:00 CT **day roll** (risk re-base, VWAP reset, new data file, retention prune), Friday → Sunday, holidays/early closes (not modelled), the **December contract roll** (`GCZ6` expires; `@GC` vs explicit contract), and Rithmic's own daily disconnect/relogin.
+**D. Machine:** no sleep/hibernate (D6), no forced Windows-update reboots, **clock sync** (F-13 — laptop was 3 s off, this one ~1–2 s), a persistent desktop session, MotiveWave auto-update pinned (7.0.28 vs 7.1.1), and a **restart policy** — after any MotiveWave/PC restart the study must be re-added by hand today (runbook §9).
+**E. Soak & disk:** memory over days is unmeasured (605 MB after 1 h 45 min); `raw.jsonl` ≈ 33 MB/h → set `logRetentionHours` (e.g. 48) and watch one real prune; `data/` is bounded (7 days ≈ 3 GB).
+**F. Watching it:** nothing pushes an alert when it disarms, trips the kill switch, goes `FEED_STALE` or the disk fills — a delivery channel (phone push/Telegram/email; credentials go in `.env` by the user) + a small watcher over `status.py`; and a way to look at the machine remotely.
+**G. Housekeeping:** big-trade Min Size back from 1; `risk.local.json` per machine (git-ignored); decide what the 24/7 strategy is — `lvn_fade_test` is a plumbing stress test (≈ −2 ticks a trade on Sim even with the fixes), fine as a soak, not as a result.
 
 ### Live tests still owed (unchanged from below, all Sim, user does the GUI): ES-chart refusal · refuse-to-arm with an existing
 position (D-24) · removal-with-position "No" (F-6) · session-end flatten (D-92) · re-test F-1 with a 10-tick limit · same run on

@@ -106,7 +106,8 @@ public final class ExternalConfig {
       "fixedContracts", "maxContracts", "dailyLossLimitTicks", "rateLimitPerMinute",
       "minDwellMs", "maxReversalsPerSession", "lagQueueDepthThreshold", "lagProcessingMsThreshold",
       "dataIntervalSeconds", "liquidityIntervalSeconds", "dataKeepTradingDays",
-      "flattenLeadMinutes", "noEntryLeadMinutes", "logRetentionHours"
+      "flattenLeadMinutes", "noEntryLeadMinutes", "logRetentionHours",
+      "feedStaleSeconds", "feedSettleSeconds"
   };
 
   private int getInt(String key, int def) {
@@ -170,6 +171,15 @@ public final class ExternalConfig {
    * config/risk.local.json.
    */
   public int logRetentionHours() { return Math.max(0, getInt("logRetentionHours", 0)); }
+
+  /**
+   * F-19 (2026-09-28): seconds without a tick, during the trading window, after which market data is treated as
+   * stale (default 20; gold ticks every second or so). 0 switches the feed watchdog off.
+   */
+  public int feedStaleSeconds() { return Math.max(0, getInt("feedStaleSeconds", 20)); }
+
+  /** F-19: after ticks resume, seconds of continuous data required before new entries are allowed again (default 10). */
+  public int feedSettleSeconds() { return Math.max(0, getInt("feedSettleSeconds", 10)); }
 
   /** For staleness journaling (README: "traceable after the fact, not silently assumed current"). 0 = no file loaded, using pure defaults. */
   public long fileLastModifiedMs() { return fileLastModifiedMs; }

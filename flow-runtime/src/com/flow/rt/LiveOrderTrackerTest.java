@@ -55,16 +55,20 @@ public final class LiveOrderTrackerTest {
     final LiveOrderTracker tracker;
     int seq = 0;
 
+    final List<String> executions = new ArrayList<>();  // F-11: entry_execution cost records
     final List<Runnable> scheduled = new ArrayList<>(); // F-1: post-flatten verifications, run by hand
     final List<Long> scheduledDelays = new ArrayList<>();
     int afterFillCalls = 0;
 
     Rig() {
       codec.toTicks(4300.0); // first price seen becomes the anchor: tick 0 == 4300.0
-      tracker = new LiveOrderTracker(() -> gatewayAvailable ? gw : null, () -> codec, log::add, records::add,
+      // entry_execution (F-11) records are kept apart so the order_fill counts the older tests check stay meaningful.
+      tracker = new LiveOrderTracker(() -> gatewayAvailable ? gw : null, () -> codec, log::add,
+          line -> { if (line.contains("\"type\":\"entry_execution\"")) executions.add(line); else records.add(line); },
           () -> armDenied = true);
       tracker.setScheduler((task, delay) -> { scheduled.add(task); scheduledDelays.add(delay); });
       tracker.setAfterFillHook(() -> afterFillCalls++);
+      tracker.setLockAction(gw::lockOrders);
     }
 
     /** Runs the oldest queued verification (it may queue the next one). */
@@ -133,6 +137,14 @@ public final class LiveOrderTrackerTest {
     testLostLegFlattensAndDisarms();
     testPlatformSiblingCancelIsBenign();
     testLostLegWithDisagreeingPositionsSendsNoClose();
+    testBracketAnchoredToTheFill();
+    testAbsoluteBracketUnchangedAndWrongSideLegsAreClamped();
+    testEntryExecutionCostRecord();
+    testFeedResumeFlattensOnlyWhenALevelWasReached();
+    testFeedResumeOtherCases();
+    testNonSimulatedAccountIsNeverActedOn();
+    testEntryOnANonSimulatedAccountIsRefusedBeforeSending();
+    testUnknownAccountIdIsAllowedButLogged();
 
     if (failures > 0) {
       System.err.println(failures + " FAILURE(S)");
@@ -751,6 +763,270 @@ public final class LiveOrderTrackerTest {
     check("readings disagree: no close (it would open a short if the account is really flat)", !r.broker.called("closeAtMarket"));
     check("the remaining target leg is left working", r.broker.activeOrders().size() == 1);
     check("logged", r.loggedContaining("LEG_LOST_FLATTEN no close sent") && r.loggedContaining("POSITION_SOURCES_DISAGREE LEG_LOST"));
+  }
+
+  // ---- F-7 / F-11 / F-21: bracket anchored to the fill, cost record, wrong-side legs -----------------------------
+
+  private static LiveOrderTracker.SignalInfo signal(int last, int bid, int ask) {
+    return new LiveOrderTracker.SignalInfo(last, bid, ask, 1_790_000_000_000L, System.currentTimeMillis());
+  }
+
+  private static boolean near(float a, float b) { return Math.abs(a - b) < 1e-3f; }
+
+  /** The strategy asked for 5 ticks either side of the signal (10); the market order filled at 12 -> 7 / 17. */
+  private static void testBracketAnchoredToTheFill() {
+    Rig r = new Rig();
+    r.broker.setMarketPrice(4301.2f); // tick 12
+    r.tracker.reconcileLive(new Intent("s", ++r.seq, 1, 5, 15, "test", true), r.gw, signal(10, 9, 11));
+    r.broker.fill(r.entry());
+    r.tracker.onOrderFilled(r.entry().order());
+    FakeBroker.FakeOrder stop = r.broker.allOrders().get(1);
+    FakeBroker.FakeOrder target = r.broker.allOrders().get(2);
+    check("anchored: stop is 5 ticks below the FILL (4300.7), not below the signal (4300.5)", near(stop.price, 4300.7f));
+    check("anchored: target is 5 ticks above the FILL (4301.7)", near(target.price, 4301.7f));
+    check("the re-anchoring is logged", r.loggedContaining("LIVE_BRACKET_ANCHORED_TO_FILL signal=10 fill=12 stop 5->7 target 15->17"));
+
+    Rig s = new Rig();
+    s.broker.setMarketPrice(4300.8f); // tick 8: a SHORT filled 2 ticks below the signal (10)
+    s.tracker.reconcileLive(new Intent("s", ++s.seq, -1, 15, 5, "test", true), s.gw, signal(10, 9, 11));
+    s.broker.fill(s.entry());
+    s.tracker.onOrderFilled(s.entry().order());
+    check("short: stop 5 above the fill (13 -> 4301.3), target 5 below (3 -> 4300.3)",
+        near(s.broker.allOrders().get(1).price, 4301.3f) && near(s.broker.allOrders().get(2).price, 4300.3f));
+
+    Rig n = new Rig();
+    n.broker.setMarketPrice(4301.2f);
+    n.tracker.reconcileLive(new Intent("s", ++n.seq, 1, 5, 15, "test", true), n.gw, null);
+    n.broker.fill(n.entry());
+    n.tracker.onOrderFilled(n.entry().order());
+    check("no signal info -> falls back to the absolute levels (5 / 15 -> 4300.5 / 4301.5)",
+        near(n.broker.allOrders().get(1).price, 4300.5f) && near(n.broker.allOrders().get(2).price, 4301.5f));
+  }
+
+  private static void testAbsoluteBracketUnchangedAndWrongSideLegsAreClamped() {
+    Rig a = new Rig();
+    a.broker.setMarketPrice(4301.2f);
+    a.tracker.reconcileLive(new Intent("s", ++a.seq, 1, 5, 15, "test", false), a.gw, signal(10, 9, 11));
+    a.broker.fill(a.entry());
+    a.tracker.onOrderFilled(a.entry().order());
+    check("anchorToFill=false: the strategy's absolute levels are used exactly as given",
+        near(a.broker.allOrders().get(1).price, 4300.5f) && near(a.broker.allOrders().get(2).price, 4301.5f)
+            && !a.loggedContaining("LIVE_BRACKET_ANCHORED_TO_FILL"));
+
+    // F-21 (the 21:53 case): a long filled at tick 12 whose target sits at 11 would be marketable at once.
+    Rig w = new Rig();
+    w.broker.setMarketPrice(4301.2f);
+    w.tracker.reconcileLive(new Intent("s", ++w.seq, 1, 6, 11, "test", false), w.gw, signal(10, 9, 11));
+    w.broker.fill(w.entry());
+    w.tracker.onOrderFilled(w.entry().order());
+    check("a long's target at/below its fill is clamped one tick above it (13 -> 4301.3)", near(w.broker.allOrders().get(2).price, 4301.3f));
+    check("...the adjustment is logged", w.loggedContaining("LIVE_BRACKET_ADJUSTED fill=12"));
+    check("...and the bracket was still placed (never left unprotected)", w.broker.allOrders().size() == 3);
+
+    Rig ws = new Rig();
+    ws.broker.setMarketPrice(4301.2f);
+    ws.tracker.reconcileLive(new Intent("s", ++ws.seq, -1, 12, 8, "test", false), ws.gw, signal(10, 9, 11));
+    ws.broker.fill(ws.entry());
+    ws.tracker.onOrderFilled(ws.entry().order());
+    check("a short's stop at/below its fill is clamped one tick above it (13 -> 4301.3)", near(ws.broker.allOrders().get(1).price, 4301.3f));
+    check("a normal target on the right side is untouched (8 -> 4300.8)", near(ws.broker.allOrders().get(2).price, 4300.8f));
+  }
+
+  private static void testEntryExecutionCostRecord() {
+    Rig r = new Rig();
+    r.broker.setMarketPrice(4301.2f); // fill 12, signal 10 (bid 9 / ask 11): a BUY
+    String line = r.tracker.reconcileLive(new Intent("s", ++r.seq, 1, 5, 15, "test", true), r.gw, signal(10, 9, 11));
+    check("real_order_submitted now carries its own time and the signal tick", line.contains("\"t\":")
+        && line.contains("\"signalPriceTicks\":10") && line.contains("\"signalBidTicks\":9") && line.contains("\"signalAskTicks\":11"));
+    r.broker.fill(r.entry());
+    r.tracker.onOrderFilled(r.entry().order());
+    checkEq("one entry_execution record", r.executions.size(), 1);
+    String e = r.executions.get(0);
+    check("fill 12 vs signal 10 = +2 ticks worse", e.contains("\"fillPriceTicks\":12") && e.contains("\"slippageVsLastTicks\":2"));
+    check("vs the ask (11) = +1 tick worse, spread 2", e.contains("\"slippageVsTouchTicks\":1") && e.contains("\"spreadTicks\":2"));
+    check("submit -> fill and signal -> submit times are journaled", e.contains("\"submitToFillMs\":") && e.contains("\"signalToSubmitMs\":"));
+    check("side and order id present", e.contains("\"side\":\"BUY\"") && e.contains("\"orderId\":"));
+
+    Rig s = new Rig();
+    s.broker.setMarketPrice(4300.7f); // tick 7: a SELL filled 2 below the signal bid (9)... better than the touch? no: 9-7 = 2 worse
+    s.tracker.reconcileLive(new Intent("s", ++s.seq, -1, 15, 5, "test", true), s.gw, signal(10, 9, 11));
+    s.broker.fill(s.entry());
+    s.tracker.onOrderFilled(s.entry().order());
+    String se = s.executions.get(0);
+    check("a SELL is measured the other way: signal 10 -> fill 7 = +3 worse; vs bid 9 = +2 worse",
+        se.contains("\"slippageVsLastTicks\":3") && se.contains("\"slippageVsTouchTicks\":2") && se.contains("\"side\":\"SELL\""));
+    Rig better = new Rig();
+    better.broker.setMarketPrice(4300.8f); // a BUY filled at 8 vs ask 11: 3 ticks BETTER than the touch
+    better.tracker.reconcileLive(new Intent("s", ++better.seq, 1, 5, 15, "test", true), better.gw, signal(10, 9, 11));
+    better.broker.fill(better.entry());
+    better.tracker.onOrderFilled(better.entry().order());
+    check("price improvement is negative slippage", better.executions.get(0).contains("\"slippageVsTouchTicks\":-3"));
+  }
+
+  // ---- F-19: the feed came back -------------------------------------------------------------------------------
+
+  /** openLong: long 1 with stop 4299.0 (-10 ticks) and target 4302.0 (+20 ticks). */
+  private static Rig feedRig(boolean shortSide) {
+    Rig r = new Rig();
+    if (shortSide) {
+      r.reconcile(-1, 10, -20); // short: stop (BUY) 4301.0, target (BUY limit) 4298.0
+      r.broker.fill(r.entry());
+      r.tracker.onOrderFilled(r.entry().order());
+    } else {
+      r.openLong();
+    }
+    return r;
+  }
+
+  private static void resumeWith(Rig r, Integer first, Integer now) {
+    r.tracker.onFeedResumed(first, () -> now);
+    r.runNextVerification();
+  }
+
+  private static void testFeedResumeFlattensOnlyWhenALevelWasReached() {
+    Rig keep = feedRig(false);
+    resumeWith(keep, 5, 6);
+    check("long, price still between stop and target: orders left working", !keep.broker.called("closeAtMarket")
+        && keep.broker.activeOrders().size() == 2 && keep.loggedContaining("FEED_RESUME_KEEP"));
+
+    Rig tgt = feedRig(false);
+    resumeWith(tgt, 25, 25);
+    check("long, price jumped through the target (4302.5): flatten", tgt.broker.called("closeAtMarket positionBefore=1")
+        && tgt.loggedContaining("FEED_RESUME_FLATTEN target"));
+    check("...legs swept, account flat, and a verification queued", tgt.broker.activeOrders().isEmpty()
+        && tgt.broker.position() == 0 && tgt.scheduled.size() == 1);
+
+    Rig reach = feedRig(false);
+    resumeWith(reach, 20, 20); // exactly the target 4302.0: REACHED counts
+    check("price exactly AT the target counts as reached: flatten", reach.broker.called("closeAtMarket"));
+
+    Rig stop = feedRig(false);
+    resumeWith(stop, -12, -12);
+    check("long, price gapped below the stop: flatten", stop.broker.called("closeAtMarket") && stop.loggedContaining("FEED_RESUME_FLATTEN stop"));
+
+    Rig back = feedRig(false);
+    resumeWith(back, 25, 5); // jumped through the target, then came back between the levels
+    check("first price after the gap was beyond a level though it has since come back: flatten", back.broker.called("closeAtMarket"));
+
+    Rig late = feedRig(false);
+    resumeWith(late, 5, -10); // first tick between, but now at the stop
+    check("first tick between, price now AT the stop: flatten", late.broker.called("closeAtMarket"));
+
+    Rig sk = feedRig(true);
+    resumeWith(sk, 0, 5);
+    check("short, price between (4301.0 stop / 4298.0 target): keep", !sk.broker.called("closeAtMarket"));
+    Rig ss = feedRig(true);
+    resumeWith(ss, 11, 11); // 4301.1 >= the short's stop 4301.0
+    check("short, price gapped above the stop: flatten", ss.broker.called("closeAtMarket positionBefore=-1"));
+    Rig st = feedRig(true);
+    resumeWith(st, -20, -20); // 4298.0 == the short's target
+    check("short, price at the target: flatten", st.broker.called("closeAtMarket"));
+  }
+
+  private static void testFeedResumeOtherCases() {
+    Rig done = feedRig(false);
+    FakeBroker.FakeOrder target = done.broker.allOrders().get(2);
+    done.broker.fill(target, 4302.0f, 1_790_000_100_000L); // the platform filled the target on the first tick
+    done.tracker.onOrderFilled(target.order());
+    resumeWith(done, 25, 25);
+    check("the platform already resolved the position: nothing is sent", !done.broker.called("closeAtMarket")
+        && done.loggedContaining("FEED_RESUME_NOTHING_OPEN"));
+
+    Rig naked = feedRig(false);
+    naked.tracker.resetForKillSwitch(); // the tracker has no legs but the account is still long
+    resumeWith(naked, 25, 25);
+    check("a position with no tracked bracket is ALERTED, not blindly closed", naked.loggedContaining("FEED_RESUME_UNPROTECTED_POSITION")
+        && !naked.broker.called("closeAtMarket"));
+
+    Rig split = feedRig(false);
+    split.broker.reportAccountPosition(0); // the account says flat, the study says long
+    resumeWith(split, 25, 25);
+    check("crossed but the position readings disagree: no close (would open a short)", !split.broker.called("closeAtMarket")
+        && split.loggedContaining("FEED_RESUME_FLATTEN_HELD"));
+
+    Rig none = new Rig();
+    resumeWith(none, 25, 25);
+    check("nothing open at all: quiet", !none.broker.called("closeAtMarket") && none.loggedContaining("FEED_RESUME_NOTHING_OPEN"));
+
+    Rig noPrices = feedRig(false);
+    resumeWith(noPrices, null, null);
+    check("no prices to judge by: orders left as they are, said so", !noPrices.broker.called("closeAtMarket")
+        && noPrices.loggedContaining("FEED_RESUME_UNCHECKABLE"));
+  }
+
+  // ---- 2026-09-28: only the simulated account may affect anything -----------------------------------------------
+
+  private static void testNonSimulatedAccountIsNeverActedOn() {
+    Rig r = new Rig();
+    r.openLong(); // on "simulated": normal
+    check("precondition: a normal Sim trade left the system armed and unlocked", !r.armDenied && !r.gw.locked());
+    FakeBroker.FakeOrder stop = r.broker.allOrders().get(1);
+    int recordsBefore = r.records.size();
+    r.broker.fill(stop, 4299.0f, 1_790_000_000_000L);
+    r.broker.setAccountId("LFE025-R46U7LT7-TEST001"); // this fill is reported on some other account
+    r.tracker.onOrderFilled(stop.order());
+    check("a fill on another account disarms", r.armDenied);
+    check("...locks all order sending", r.gw.locked());
+    check("...is ALERTed with the account name", r.loggedContaining("NON_SIM_ACCOUNT_EVENT fill on account 'LFE025-R46U7LT7-TEST001'"));
+    check("...is journaled as its own record, and NOT as an order_fill", r.records.size() == recordsBefore + 1
+        && r.records.get(r.records.size() - 1).contains("\"type\":\"non_sim_account_event\""));
+    check("...and was NOT processed: the tracker still holds its legs (no sibling handling)", r.tracker.restingStop() != null);
+    int callsBefore = r.broker.calls().size();
+    r.tracker.onKillSwitch("test", true);
+    check("after the lock the kill switch sends NOTHING (no close, no cancel)", r.broker.calls().size() == callsBefore
+        && !r.broker.called("closeAtMarket"));
+    check("...and says the order was refused", r.loggedContaining("order_refused"));
+    r.tracker.flattenForSessionEnd("x");
+    r.tracker.verifyFlat("KILL_SWITCH", 0);
+    check("neither the session flatten nor a post-flatten verification sends anything", r.broker.calls().size() == callsBefore);
+
+    Rig k = new Rig();
+    k.openLong();      // long 1 with both legs resting, nothing filled: the kill switch would normally close + sweep
+    k.gw.lockOrders(); // ... but the lock is set
+    int kCalls = k.broker.calls().size();
+    k.tracker.onKillSwitch("test", true);
+    check("locked + an open position: the kill switch's close-and-sweep is refused too", k.broker.calls().size() == kCalls
+        && !k.broker.called("closeAtMarket") && k.loggedContaining("order_refused") && k.broker.position() == 1);
+
+    Rig c = new Rig();
+    c.openLong();
+    FakeBroker.FakeOrder cs = c.broker.allOrders().get(1);
+    cs.cancelled = true;
+    c.broker.setAccountId("other");
+    c.tracker.onOrderCancelled(cs.order());
+    check("a cancel on another account is refused the same way (no leg-lost flatten, no ordinary handling)",
+        c.armDenied && c.gw.locked() && c.scheduled.isEmpty());
+    Rig j = new Rig();
+    j.reconcile(1, -10, 20);
+    j.broker.setAccountId("other");
+    j.tracker.onOrderRejected(j.entry().order());
+    check("a rejection on another account: disarmed + locked, and not treated as our entry's rejection",
+        j.armDenied && j.gw.locked() && j.tracker.orderInFlight() && !j.loggedContaining("LIVE_ENTRY_REJECTED_DISARMING"));
+  }
+
+  private static void testEntryOnANonSimulatedAccountIsRefusedBeforeSending() {
+    Rig r = new Rig();
+    r.broker.setAccountId("LFE025-R46U7LT7-TEST001"); // the order the platform builds names a real account
+    String line = r.reconcile(1, -10, 20);
+    check("the entry is refused, said so", line.contains("reconcile_live_skipped") && line.contains("entry refused"));
+    check("NOTHING was submitted to the platform", !r.broker.called("submitOrders") && r.broker.activeOrders().isEmpty());
+    check("disarmed, locked, no entry left in flight", r.armDenied && r.gw.locked() && !r.tracker.orderInFlight());
+    check("the pipeline is told (B3), and it is ALERTed", r.tracker.lastEntryRefusal() != null && r.loggedContaining("NON_SIM_ACCOUNT_EVENT entry refused"));
+    r.broker.setAccountId("simulated");
+    String again = r.reconcile(1, -10, 20);
+    check("the lock does NOT clear itself when the account looks right again", again.contains("entry refused") && !r.broker.called("submitOrders"));
+  }
+
+  private static void testUnknownAccountIdIsAllowedButLogged() {
+    Rig r = new Rig();
+    r.broker.setAccountId(null);
+    r.openLong();
+    check("no account id reported: the trade goes through (fail-open, by design)", r.broker.allOrders().size() == 3 && !r.armDenied && !r.gw.locked());
+    check("...but it is logged, once", r.loggedContaining("ACCOUNT_ID_UNKNOWN"));
+    Rig u = new Rig();
+    u.broker.setAccountId(" Simulated ");
+    u.openLong();
+    check("case and spaces do not matter: ' Simulated ' is the simulated account", !u.armDenied && !u.gw.locked() && u.broker.allOrders().size() == 3);
   }
 
   // ---- partial fills (plumbingEdgeCases.md section 9, D-99) ---------------

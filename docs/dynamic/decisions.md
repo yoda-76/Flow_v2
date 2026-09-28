@@ -4403,6 +4403,72 @@ readable rather than being silently rewritten.
     price at the entry-fill callback; the 1 s account watch's cost. The next live Sim run should use a small
     `dailyLossLimitTicks` (10) to exercise F-1 end to end.
 
+- **D-114** (2026-09-28) — **Slippage-aware brackets, per-trade execution-cost records, and a market-data watchdog
+  (F-7, F-11, F-19, F-20, F-21).** From the 21:53 IST Rithmic disconnect and the latency/slippage measurement in
+  `logAnalysis-2026-09-28.md`. Built off-market, all gates green, **not deployed, not seen live.** User decisions
+  in this round: *"flatten if the price has crossed or reached either sl/tp; if it is still in between keep the
+  order open; the advanced approach (fetch historical bars for the gap, flatten if the range touched a level and
+  came back) later — add it to todo"*.
+  - **Measured first (151 Sim entries):** signal → fill callback median **0 ms** (max ~60 ms); fill vs the last
+    trade **+1.6…+1.9 ticks worse**; fill vs the touch 54–62 % exactly at it, ~a third one tick *better*; quoted
+    spread median 2 ticks. So on Sim the slippage **is the spread**, not latency; real-account latency will come on top.
+  - **F-7 — bracket anchored to the fill.** `Intent` gained `anchorToFill` (default false = absolute levels, so
+    structural stops keep working; a 6-argument constructor keeps every caller). `lvn_fade_test` sets it. The runtime
+    records the signal tick (`SignalInfo`: last, bid, ask, times) at submit; at the entry fill it places the stop and
+    target the strategy's own distances from the **fill** (`LIVE_BRACKET_ANCHORED_TO_FILL signal=… fill=… stop a->b
+    target c->d`). No signal info → falls back to the absolute levels. `marketstructure_lvn_reversal` is unchanged.
+  - **F-21 — never a leg on the wrong side of the fill.** A long's target at/below its fill (or stop at/above) is
+    clamped one tick to the right side (`LIVE_BRACKET_ADJUSTED`, WARN); the bracket is always still placed.
+  - **F-11 — cost records.** `real_order_submitted` now carries its own `t`, the signal last/bid/ask and times; one
+    `entry_execution` record per entry fill: fill ticks, slippage vs last and vs the touch (signed, + = worse),
+    spread, signal→submit and submit→fill milliseconds. `daily_report.py` prints an "Execution cost (entries)" table.
+  - **F-20 — artifact flag.** An exit filling more than 3 ticks from its own stop/limit price is marked ⚠ in the trade
+    table and the summary shows the gross with and without it (the +$820 outage fill is the model case).
+  - **F-19 — feed watchdog** (`feedStaleSeconds` 20, `feedSettleSeconds` 10; 0 = off; `configuration.md`). Local-clock
+    based, only inside the trading window and after the first tick: LIVE → STALE (`FEED_STALE` ALERT, risk filter
+    `feed` blocks entries, flat intents never blocked) → first tick = `data_gap` record (start, end, price before/after,
+    jump) + `FeedListener.onFeedResumed` + SETTLING → `feed_live`. A relapse while settling goes straight back to STALE.
+    Heartbeats carry `feedState`. **Open-position rule (user's):** 1.5 s after the first tick back the tracker compares
+    BOTH the first post-gap price and the current price with the resting stop and target; reached-or-crossed →
+    `FEED_RESUME_FLATTEN` (same two-source-checked, verified flatten as the kill switch; readings disagree →
+    `…_HELD`, nothing sent); strictly between → `FEED_RESUME_KEEP`, orders left working; legs already resolved by the
+    platform → `NOTHING_OPEN`; a position with no tracked bracket → `FEED_RESUME_UNPROTECTED_POSITION` ALERT.
+  - **Deliberately not done:** the "cap" (a marketable limit instead of a market entry, cancel if unfilled); gap
+    ticks are not back-filled into the recorders (only marked by `data_gap`); features are not re-warmed after a gap.
+    Todo F-22 holds the historical-bars refinement.
+  - **Tests:** new gate `FeedWatchdogTest`; `LiveOrderTrackerTest` +5 groups (anchored/absolute/clamped brackets,
+    cost record incl. SELL and price improvement, 9 feed-resume cases incl. exact-level, come-back, short side, readings
+    disagree, nothing open); 3 Python tests (67 total). Mutation: 10/10 new mutants caught. Full `build.sh` passes.
+  - **Not verified live:** all of it. In particular the anchored bracket's prices on the real platform, and that a
+    real outage triggers `FEED_STALE` (the 21:53 disconnect is the case to replay; a live repeat needs a network drop).
+
+- **D-115** (2026-09-28) — **The Simulated-account-only rule is now enforced in code, not just by a checkbox.**
+  User: *"only simulated trades will affect anything related to the system"*; also: the reversal cap, rate limit and
+  daily loss limit stay at their defaults in `config/risk.json` (they are all configurable there, and per machine in
+  the git-ignored `config/risk.local.json` — `maxReversalsPerSession` 20, `rateLimitPerMinute` 6,
+  `dailyLossLimitTicks` 200); Telegram alerts will be added by the user (`.examples.env` lists the two names);
+  memory/soak measured after the first day; the strategy and order-flow rules will be changed by the user before the
+  24/7 run.
+  - **Basis:** every `Order` has `getAccountId()` (Javadoc) and all 400+ Sim fills of 2026-09-28 reported exactly
+    `"simulated"` (`findings.md` F-2). `AccountPolicy.classify`: SIMULATED (exact, case/space-insensitive), OTHER (any
+    other name), UNKNOWN (null/blank).
+  - **Before sending:** `OrderGateway` builds each order, and if its `getAccountId()` names another account it
+    **refuses to submit** (throws; the tracker disarms, locks, logs `NON_SIM_ACCOUNT_EVENT entry refused…`).
+  - **On any callback:** a fill, cancel or rejection naming another account is **not processed**; the runtime disarms,
+    sets a shared **order lock** and journals `non_sim_account_event` (ALERT in the report). Once locked, every sending
+    method in `OrderGateway` — entry, bracket, close, cancel, kill-switch sweep — returns `order_refused` instead. **It
+    never tries to flatten the other account** (that would itself be an order on it). There is no un-lock: fix the
+    account, remove and re-add the study (the lock and the safety-disarm both survive a re-activation).
+  - **Fail-open on UNKNOWN**, by design: a freshly created, unsubmitted order may carry no account yet, and failing
+    closed would halt the system whenever a getter returns nothing. An UNKNOWN id is logged once (`ACCOUNT_ID_UNKNOWN`,
+    WARN); since every real fill has carried the id, a fill without one is still worth a look.
+  - **Still true:** "Sim Trade Only" stays enabled and the human still confirms the account selector — this is a second
+    layer that stops the *system* acting on anything else, not a replacement.
+  - **Tests:** new gate `AccountPolicyTest`; `LiveOrderTrackerTest` +3 groups (a fill/cancel/rejection on another
+    account; entry refused before sending and the lock not clearing itself; unknown id allowed and logged once).
+    Mutation: 6/6 caught (one survivor found and closed with a kill-switch-under-lock test). Full `build.sh` passes.
+  - **Not verified live** (the live account id has only ever been `simulated`, so the refusal paths cannot fire).
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

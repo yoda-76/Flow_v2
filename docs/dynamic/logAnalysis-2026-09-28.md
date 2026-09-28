@@ -111,3 +111,37 @@ config layering (`risk.local.json` overrides and `risk_config_loaded` values) co
   i.e. ~10 round trips per session) unless the user creates the file there.
 - Big-trade Min Size is still **1** (test value, last night's note).
 - MotiveWave is closed and the study removed; `status.py` reads `STOPPED`.
+
+## Addendum, 21:53 IST — Rithmic disconnect with a position open (a real test case)
+
+Session `lvn_fade_test_1790610724729_inst370945978`, evidence: MotiveWave log 21:53:17–21:56:20, the journal, `raw.jsonl`.
+
+**What happened.** 21:53:17 long 1 filled at 4162.8, bracket stop 4161.7 / **target 4162.7 (1 tick BELOW the fill — the signal-anchored bracket, F-7/N-1, produced a target already through the market)**. At **21:53:21** all four Rithmic connections
+(market data, trading, PnL, history) went "Broken" at the same instant; MotiveWave popped "Service Disconnected: RN". Last tick 21:53:22.7. Reconnected **21:56:04** ("no quotes posted for 163907 ms").
+
+**What the system did.** Nothing wrong, nothing noticed: heartbeats stayed `healthy:true` (exchange time frozen at 21:53:22.7, local clock advancing — by design, D-93), no alert, no
+disarm. On reconnect the resting target (SELL LMT 4162.7) **filled at 4171.0**: +82 ticks, **+$820** (cash 94,750 → 95,570) — the Sim engine matches only on a tick, so it filled at the first post-outage price. A real exchange would have executed a marketable
+limit at once (about breakeven). Then the sibling-cancel/benign path, the account watch (`explainedByFill`) and the new entry all behaved normally. The strategy re-entered within 3 s on the 82-tick-gapped price.
+
+**Findings**
+- **N-10a · High (for a real account)** A dead feed with a position open is invisible: no ALERT, entries continue on resume. With the trading connection also down, neither the kill switch nor a flatten could have sent an order for 2 m 43 s. On Sim nothing protected the position either (the local engine can't fill a stop without ticks) — a real account's resting stop would live at the exchange, this one did not.
+- **N-10b · Med** Sim fill artifact: a limit filled 8.3 points through its price. Every P&L figure that includes it (tonight's dev-machine total, +$820) is wrong for strategy evaluation. The report should flag fills far from their limit/stop price.
+- **N-10c · Med** The 164 s of ticks were **not** replayed into the pipeline (`raw.jsonl`: 165 s hole, price jumps 67 → 149 ticks; MotiveWave backfilled 7,296 ticks for its own chart). The footprint/VWAP/volume-profile/big-trade/market-structure recordings and features have a hole and a discontinuity; nothing marks it.
+- **N-10d · Med** First-tick-after-outage trading: entries resumed on the very first reconnect ticks with the features stale.
+- **N-10e · Info** Cause of the disconnect is not in our logs (all four connections dropped in the same 50 ms, then reconnected by themselves) — network or the Rithmic/Lucid server, not the study.
+
+## Addendum, 22:xx IST — latency and slippage, quantified (S7: 69 entries, S8: 82 entries; both dev machine, Sim)
+
+Method: for each entry, the signal = the raw tick whose `seq` fired the intent (`raw.jsonl`: receipt time, last price, bid, ask); the fill = the `order_fill` record. Script: scratchpad `lat.py` (not in the repo).
+
+| | S7 | S8 |
+|---|---|---|
+| signal tick received → entry fill callback (local clock) | median 0 ms, max 40 ms | median 0 ms, max 60 ms |
+| signal event time → fill time (exchange stamps) | median 0 s | median 0 s |
+| entry fill vs the **last-trade price** at the signal (ticks, + = worse) | mean **+1.64**, median 2, p90 3, range −4…+4 | mean **+1.94**, median 2, p90 3, range 0…+6 |
+| entry fill vs the **touch** (buy vs ask / sell vs bid) | 54 % exactly at the touch, 35 % one tick better, 3 % one worse | 62 % at the touch, 32 % one better |
+| quoted spread at the signal | median 2 ticks (mean 2.2) | median 2 ticks (mean 2.3) |
+| correlation of latency with slippage | 0.07 | −0.02 |
+
+**Reading:** on Sim there is **no latency at all** (the fill callback arrives within ~50 ms of the tick that fired the signal, and the fill is stamped with that same tick's time). The ~1.6–1.9 ticks are **not delay, they are the spread**: the signal fires on a last-trade price that sits on one side of a ~2-tick-wide book, and the market order buys the ask / sells the bid. Real-account latency (tens to hundreds of ms plus queue/impact) will come **on top** of that and cannot be measured on Sim. The journal cannot measure it later either until `real_order_submitted` carries a timestamp and the signal price/touch (F-11).
+Exit side (S7, 40 stops): 34 filled at the trigger, 6 within 1–2 ticks worse (mean ≈ 0.25 tick); limit targets fill at the limit or up to 1 tick better.

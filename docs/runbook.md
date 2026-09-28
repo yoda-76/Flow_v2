@@ -298,8 +298,16 @@ Nothing in this section has been tried. Do not rely on any of it until it has be
   a running time-sync service (the system trusts the local clock). **[YOU]**
 - **Soak:** nothing has run longer than one session; memory over days is unmeasured
   (todo Phase 3). The first 24/7 run *is* the soak test — watch memory.
-- **Feed loss / Rithmic disconnects:** deliberately not watched (D-93). A position
-  open through a disconnect is protected only by its resting stop/target legs.
+- **Feed loss / Rithmic disconnects (F-19, D-114, 2026-09-28):** watched now. No tick for
+  `feedStaleSeconds` (20) inside the trading window → `FEED_STALE` ALERT and new entries
+  blocked; the first tick after → a `data_gap` record and, if a bracket is open, a check
+  1.5 s later: price **reached or crossed** the stop/target (on the first tick back or now)
+  → flatten; still strictly between → orders left working. Entries stay blocked for
+  `feedSettleSeconds` (10) of continuous data. **On the Simulated account a position open
+  through a disconnect is NOT protected** (the local engine cannot fill a stop without
+  ticks — 2026-09-28: a resting target filled 8 points through its price the moment data
+  came back); a real account's resting orders live at the exchange, but the trading
+  connection is down too, so neither the kill switch nor a flatten can send anything until it is back.
 - **Remote monitoring** **[YOU]**: how you look at the machine (remote desktop, a
   VPN, a shared folder, …) is undecided. What exists: `status.py` and the report,
   which read files. Running them *on* the machine and looking at the output is the

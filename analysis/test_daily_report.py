@@ -295,6 +295,66 @@ class TestTrades(Base):
         j.write()
         self.assertIsNone(self.model()["trades"][0]["exit_t"], "explained changes are the study's own fills; the fill record closes the trade")
 
+    def test_fill_far_from_its_order_price_is_flagged_and_excluded(self):
+        """F-20: a target limit at 4302.0 filled at 4310.0 (the Sim engine after a data outage) is a probable artifact."""
+        j = self.journal()
+        t0 = self._entry_long(j)   # long @4300, target 4302.0
+        j.fill(t0 + 60_000, "target", "SELL", 4310.0, 0, 99640.0, order_id="2", limitPrice=4302.0)   # +80 ticks through
+        t1 = ct_ms(DAY, 11)
+        j.submitted("SELL", "normal")
+        j.fill(t1, "entry", "SELL", 4310.0, -1, 99640.0, order_id="3")
+        j.bracket(t1 + 100, "BUY", 4311.0, 4308.0)
+        j.fill(t1 + 20_000, "target", "BUY", 4308.0, 0, 99840.0, order_id="4", limitPrice=4308.0)   # exactly at its price
+        j.write()
+        m = self.model()
+        a, b = m["trades"]
+        self.assertTrue(a["artifact"])
+        self.assertAlmostEqual(a["exit_off_ticks"], 80.0)
+        self.assertFalse(b["artifact"])
+        text = dr.render(m)
+        self.assertIn("1 exit(s) filled more than 3 ticks away", text)
+        self.assertIn("without them $200.00", text)      # +1000 artifact, +200 real -> gross 1200; without: 200
+        self.assertIn("⚠ (+80 ticks vs its order price)", text)
+
+    def test_shorts_and_stops_measure_the_favourable_direction(self):
+        j = self.journal()
+        t0 = ct_ms(DAY, 10)
+        j.submitted("SELL", "short")
+        j.fill(t0, "entry", "SELL", 4300.0, -1)
+        j.bracket(t0 + 100, "BUY", 4301.0, 4298.0)
+        j.fill(t0 + 5_000, "stop", "BUY", 4301.2, 0, order_id="2", stopPrice=4301.0)   # short's stop filled 2 ticks WORSE
+        j.write()
+        t = self.model()["trades"][0]
+        self.assertAlmostEqual(t["exit_off_ticks"], -2.0)
+        self.assertFalse(t["artifact"], "2 ticks of stop slippage is normal")
+
+    def test_execution_cost_section_and_feed_alerts(self):
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        for i, (last, touch, sub, fill) in enumerate([(2, 1, 4, 5), (1, 0, 6, 8), (3, 2, 5, 12)]):
+            j.add({"type": "entry_execution", "t": t + i * 1000, "orderId": str(i), "side": "BUY", "fillPriceTicks": 10,
+                   "slippageVsLastTicks": last, "slippageVsTouchTicks": touch, "spreadTicks": 2,
+                   "signalToSubmitMs": sub, "submitToFillMs": fill})
+        j.add({"type": "FEED_STALE", "reason": "no market data for 21s during the trading window", "seq": 1})
+        j.add({"type": "data_gap", "seq": 2, "startLocalMs": t, "endLocalMs": t + 164000, "durationMs": 164000,
+               "priceBeforeTicks": 67, "priceAfterTicks": 149, "jumpTicks": 82})
+        j.log(t + 2, "FEED_RESUME_FLATTEN target 4302.0 reached/crossed at 4302.5 -- {}")
+        j.log(t + 3, "FEED_RESUME_KEEP price is still between the stop 1 and the target 2")
+        j.write()
+        m = self.model()
+        text = dr.render(m)
+        self.assertIn("## Execution cost (entries)", text)
+        self.assertIn("| fill vs the last-trade price at the signal | 3 | 2.00 | 2 | 3 | 3 |", text)
+        self.assertIn("| order submitted -> fill callback | 3 | 8.33 ms | 8 ms | 12 ms | 12 ms |", text)
+        sev = {a[3]: a[2] for a in m["attention"]}
+        self.assertEqual(sev["FEED_STALE"], "ALERT")
+        self.assertEqual(sev["data_gap"], "WARN")
+        self.assertEqual(sev["FEED_RESUME_FLATTEN"], "ALERT")
+        self.assertEqual(sev["FEED_RESUME_KEEP"], "NOTE")
+        gap = [a for a in m["attention"] if a[3] == "data_gap"][0]
+        self.assertIn("164s without ticks", gap[4])
+        self.assertIn("jump 82", gap[4])
+
     def test_flatten_verification_lines_are_alerts(self):
         j = self.journal()
         t = ct_ms(DAY, 10)
