@@ -88,6 +88,10 @@ echo "== code-review risk fixes test (B1/A4/A7/B2, 2026-09-27) =="
 "$JAVA" -cp build/classes/core com.flow.core.RiskReviewFixesTest
 echo "(risk fixes test passed -- see output above)"
 
+echo "== account-truth daily loss + pipeline suspend/resume + account watch test (F-1/F-3/F-4, 2026-09-28) =="
+"$JAVA" -cp build/classes/core com.flow.core.AccountTruthTest
+echo "(account-truth test passed -- see output above)"
+
 echo "== pipeline exception boundary / kill switch synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.PipelineExceptionBoundaryTest
 echo "(pipeline exception boundary test passed -- see output above)"

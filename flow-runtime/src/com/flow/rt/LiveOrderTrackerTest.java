@@ -55,10 +55,24 @@ public final class LiveOrderTrackerTest {
     final LiveOrderTracker tracker;
     int seq = 0;
 
+    final List<Runnable> scheduled = new ArrayList<>(); // F-1: post-flatten verifications, run by hand
+    final List<Long> scheduledDelays = new ArrayList<>();
+    int afterFillCalls = 0;
+
     Rig() {
       codec.toTicks(4300.0); // first price seen becomes the anchor: tick 0 == 4300.0
       tracker = new LiveOrderTracker(() -> gatewayAvailable ? gw : null, () -> codec, log::add, records::add,
           () -> armDenied = true);
+      tracker.setScheduler((task, delay) -> { scheduled.add(task); scheduledDelays.add(delay); });
+      tracker.setAfterFillHook(() -> afterFillCalls++);
+    }
+
+    /** Runs the oldest queued verification (it may queue the next one). */
+    void runNextVerification() { scheduled.remove(0).run(); }
+
+    boolean loggedContaining(String s) {
+      for (String l : log) if (l.contains(s)) return true;
+      return false;
     }
 
     /** Opening intent with stop/target in ticks from the anchor. */
@@ -108,6 +122,17 @@ public final class LiveOrderTrackerTest {
     testFillRecordForAFlattenCloseIsUntracked();
     testFillRecordFailureNeverBreaksOrderHandling();
     testPartialFills();
+    testKillSwitchWithAFilledLegSendsNoCloseL1();
+    testKillSwitchWrongWayFillIsCaughtAndCorrected();
+    testKillSwitchDisagreeingPositionsSendNothing();
+    testSessionFlattenDoesNotCloseOnAStaleStudyPosition();
+    testEntryRefusedWhenTheAccountHoldsSomethingTheStudyDoesNot();
+    testRefuseToArmSeesTheAccountPosition();
+    testResetForReactivationForgetsEverything();
+    testAfterFillHookAndAccountTruth();
+    testLostLegFlattensAndDisarms();
+    testPlatformSiblingCancelIsBenign();
+    testLostLegWithDisagreeingPositionsSendsNoClose();
 
     if (failures > 0) {
       System.err.println(failures + " FAILURE(S)");
@@ -479,6 +504,253 @@ public final class LiveOrderTrackerTest {
     bracketed.tracker.onOrderFilled(stop.order());
     checkEq("a late fill after the reset is treated as untracked -- no sibling handling",
         bracketed.broker.calls().size(), callsBefore);
+  }
+
+  // ---- F-1/F-2 (2026-09-28): live finding L-1 ------------------------------------------------------------------
+  //
+  // Live: a long 1 with a resting stop. The stop filled (SIM-166) in the same millisecond the daily-loss kill switch read
+  // the study's position (still 1) and sent closeAtMarket (SIM-168) -> two sells against one long -> SHORT 1, unprotected,
+  // and the tracker had already forgotten its legs so nothing noticed.
+
+  /** The leg's own state says it filled: no close is sent even though BOTH position readings still say long. */
+  private static void testKillSwitchWithAFilledLegSendsNoCloseL1() {
+    Rig r = new Rig();
+    r.openLong();
+    FakeBroker.FakeOrder stop = r.broker.allOrders().get(1);
+    r.broker.fill(stop, 4299.0f, 1_790_000_000_000L); // the real account is flat now ...
+    r.broker.reportStrategyPosition(1);               // ... but the study's view has not caught up
+    r.broker.reportAccountPosition(1);                // ... and neither has the account read (worst case)
+    r.tracker.onKillSwitch("daily loss limit breached", true);
+    check("L-1: a filled tracked leg -> NO closeAtMarket is sent", !r.broker.called("closeAtMarket"));
+    check("...the surviving target leg is swept", r.broker.activeOrders().isEmpty());
+    check("...and it says why", r.loggedContaining("already filled"));
+    checkEq("a verification is queued", r.scheduled.size(), 1);
+    checkEq("...for 1.5 s later", r.scheduledDelays.get(0), 1_500L);
+    r.broker.reportStrategyPosition(null);
+    r.broker.reportAccountPosition(null);
+    r.runNextVerification();
+    check("the verification finds the account flat", r.loggedContaining("FLATTEN_VERIFIED KILL_SWITCH"));
+    check("...and sends nothing", !r.broker.called("closeAtMarket"));
+  }
+
+  /** The race the leg check cannot see (fill after the read): the account ends up SHORT 1 -- the verification undoes it. */
+  private static void testKillSwitchWrongWayFillIsCaughtAndCorrected() {
+    Rig r = new Rig();
+    r.openLong();
+    r.tracker.onKillSwitch("daily loss limit breached", true);
+    check("normal case: long 1 -> close sent", r.broker.called("closeAtMarket positionBefore=1"));
+    checkEq("flat right after the kill switch", r.broker.position(), 0);
+    r.broker.setPosition(-1); // the stop leg's fill arrived after the read: two sells against one long
+    check("precondition: the account is short 1", r.broker.position() == -1);
+    r.runNextVerification(); // 1.5 s
+    check("verification 1: short 1 seen by BOTH readings -> corrected", r.loggedContaining("FLATTEN_CORRECTING KILL_SWITCH study=-1 account=-1"));
+    check("...with a close of the short (positionBefore=-1)", r.broker.called("closeAtMarket positionBefore=-1"));
+    checkEq("...flat again", r.broker.position(), 0);
+    checkEq("a further verification is queued to confirm", r.scheduled.size(), 1);
+    r.runNextVerification(); // 3 s
+    check("verification 2: confirmed flat", r.loggedContaining("FLATTEN_VERIFIED KILL_SWITCH"));
+    checkEq("nothing further queued", r.scheduled.size(), 0);
+    check("no NOT_CONFIRMED alert", !r.loggedContaining("FLATTEN_NOT_CONFIRMED"));
+
+    // A close that never takes: three looks, then the ALERT.
+    Rig stuck = new Rig();
+    stuck.openLong();
+    stuck.tracker.onKillSwitch("x", true);
+    stuck.broker.setPosition(-1);
+    stuck.runNextVerification();
+    stuck.broker.setPosition(-1); // the corrective close did not take either
+    stuck.runNextVerification();
+    stuck.broker.setPosition(-1);
+    stuck.runNextVerification();
+    check("still not flat after the third look: CHECK THE ACCOUNT BY HAND alert", stuck.loggedContaining("FLATTEN_NOT_CONFIRMED"));
+    checkEq("no more looks queued", stuck.scheduled.size(), 0);
+  }
+
+  /** L-2: the study says long, the account says flat (a manual close). Sending closeAtMarket would open a SHORT. */
+  private static void testKillSwitchDisagreeingPositionsSendNothing() {
+    Rig r = new Rig();
+    r.openLong();
+    int callsBefore = r.broker.calls().size();
+    r.broker.reportAccountPosition(0);
+    r.tracker.onKillSwitch("daily loss limit breached", true);
+    check("study=1 account=0: no order at all", !r.broker.called("closeAtMarket") && r.broker.calls().size() == callsBefore);
+    check("...the bracket is left working", r.broker.activeOrders().size() == 2);
+    check("...and the disagreement is logged", r.loggedContaining("POSITION_SOURCES_DISAGREE KILL_SWITCH study=1 account=0"));
+    check("the kill-switch line is still logged (the report keys on it)", r.logged("KILL_SWITCH_TRIGGERED"));
+    r.runNextVerification();
+    check("verification: disagree, no order", r.loggedContaining("FLATTEN_VERIFY_DISAGREE") && !r.broker.called("closeAtMarket"));
+    r.runNextVerification();
+    r.runNextVerification();
+    check("three looks, still disagreeing: ALERT", r.loggedContaining("FLATTEN_NOT_CONFIRMED"));
+    check("...and still no order was ever sent", !r.broker.called("closeAtMarket"));
+
+    // The opposite disagreement: the account holds it, the study's view says flat.
+    Rig o = new Rig();
+    o.broker.setPosition(1);
+    o.broker.reportStrategyPosition(0);
+    o.tracker.onKillSwitch("x", true);
+    check("study=0 account=1: not closed (closeAtMarket closes the STUDY's position)", !o.broker.called("closeAtMarket"));
+    check("...and logged", o.loggedContaining("POSITION_SOURCES_DISAGREE KILL_SWITCH study=0 account=1"));
+  }
+
+  private static void testSessionFlattenDoesNotCloseOnAStaleStudyPosition() {
+    Rig r = new Rig();
+    r.openLong();
+    r.broker.setPosition(0);            // the account is flat (a manual close) ...
+    r.broker.reportStrategyPosition(1); // ... the study still says long
+    boolean sent = r.tracker.flattenForSessionEnd("session-end flatten window");
+    check("a disagreement at the session flatten: nothing sent", !sent && !r.broker.called("closeAtMarket"));
+    check("...the bracket was not swept either (the next retry looks again)", r.broker.activeOrders().size() == 2);
+    r.broker.reportStrategyPosition(null);
+    check("once the readings agree (both flat, legs resting) it sweeps the strays", r.tracker.flattenForSessionEnd("retry")
+        && r.broker.activeOrders().isEmpty() && !r.broker.called("closeAtMarket"));
+  }
+
+  private static void testEntryRefusedWhenTheAccountHoldsSomethingTheStudyDoesNot() {
+    Rig r = new Rig();
+    r.broker.reportAccountPosition(1); // the study's own position reads 0
+    String line = r.reconcile(1, -10, 20);
+    check("an opening intent over a foreign account position is skipped", line.contains("reconcile_live_skipped")
+        && line.contains("account position is 1"));
+    check("...nothing submitted, nothing in flight", r.broker.allOrders().isEmpty() && !r.tracker.orderInFlight());
+    check("...and the refusal is reported to the pipeline (B3)", r.tracker.lastEntryRefusal() != null
+        && r.tracker.lastEntryRefusal().contains("account holds 1"));
+    r.broker.reportAccountPosition(null);
+    r.reconcile(1, -10, 20);
+    check("with the account flat the same intent goes through", r.tracker.orderInFlight());
+  }
+
+  private static void testRefuseToArmSeesTheAccountPosition() {
+    FakeBroker b = new FakeBroker();
+    OrderGateway gw = new OrderGateway(b.ctx());
+    check("flat: clear to arm", gw.refuseToArmReason() == null);
+    b.reportAccountPosition(2); // the study reads 0, the account holds 2
+    String why = gw.refuseToArmReason();
+    check("an account position the study does not see refuses to arm", why != null && why.contains("accountPosition=2"));
+  }
+
+  private static void testResetForReactivationForgetsEverything() {
+    Rig r = new Rig();
+    r.openLong();
+    r.tracker.resetForReactivation();
+    check("legs forgotten", r.tracker.restingStop() == null && r.tracker.restingTarget() == null);
+    Rig f = new Rig();
+    f.reconcile(1, -10, 20);
+    f.tracker.resetForReactivation();
+    check("an in-flight entry is forgotten (it would block every later entry)", !f.tracker.orderInFlight());
+    f.broker.reject(f.entry()); // the stale entry is gone from the account (re-activation only arms over a clean account, D-24)
+    f.reconcile(1, -10, 20);
+    check("...so a new entry can be submitted after re-activation", f.tracker.orderInFlight());
+  }
+
+  private static void testAfterFillHookAndAccountTruth() {
+    Rig r = new Rig();
+    r.broker.setCash(98_000.0);
+    r.openLong(); // fills at 4300.0 == the codec anchor
+    checkEq("the after-fill hook ran for the entry fill", r.afterFillCalls, 1);
+    com.flow.core.RiskChain.AccountTruth t = r.gw.accountTruth(r.codec, 100_000.0);
+    check("truth: cash, session start, position, dollars per tick", t != null && t.cash() == 98_000.0
+        && t.startCash() == 100_000.0 && t.position() == 1 && Math.abs(t.dollarsPerTick() - 10.0) < 1e-9);
+    checkEq("truth: the average entry (4300.0) in ticks from the anchor", t.avgEntryTicks(), 0);
+    PriceCodec fresh = new PriceCodec(0.1); // no price seen yet -> no anchor
+    check("no anchor: the entry is left null rather than fixing the anchor from it",
+        r.gw.accountTruth(fresh, 100_000.0).avgEntryTicks() == null && !fresh.hasAnchor());
+    Rig flat = new Rig();
+    checkEq("flat account: no entry", flat.gw.accountTruth(flat.codec, 1.0).avgEntryTicks(), null);
+    r.tracker.setAfterFillHook(() -> { throw new IllegalStateException("hook exploded"); });
+    FakeBroker.FakeOrder stop = r.broker.allOrders().get(1);
+    r.broker.fill(stop, 4299.0f, 1_790_000_060_000L);
+    r.tracker.onOrderFilled(stop.order());
+    check("a throwing after-fill hook is logged and never breaks fill handling", r.loggedContaining("AFTER_FILL_HOOK_FAILED")
+        && r.tracker.restingStop() == null);
+  }
+
+  // ---- F-5 / B6 (user: "flatten + disarm") ----------------------------------------------------------------------
+
+  /** A stop leg cancelled (or rejected) by the platform with the position still open: after the settle, flatten + disarm. */
+  private static void testLostLegFlattensAndDisarms() {
+    for (String how : new String[] {"cancelled", "rejected"}) {
+      Rig r = new Rig();
+      r.openLong();
+      FakeBroker.FakeOrder stop = r.broker.allOrders().get(1);
+      if (how.equals("cancelled")) {
+        stop.cancelled = true;
+        r.tracker.onOrderCancelled(stop.order());
+      } else {
+        r.broker.reject(stop);
+        r.tracker.onOrderRejected(stop.order());
+      }
+      check("[" + how + "] nothing is decided when the callback arrives -- only a confirmation is queued",
+          r.scheduled.size() == 1 && !r.armDenied && !r.broker.called("closeAtMarket"));
+      check("[" + how + "] the sighting is logged", r.loggedContaining("LEG_ENDED_SEEN leg=stop " + how));
+      r.runNextVerification();
+      check("[" + how + "] confirmed lost: disarmed", r.armDenied);
+      check("[" + how + "] the ALERT line names the leg", r.loggedContaining("LIVE_LEG_LOST leg=stop " + how));
+      check("[" + how + "] the position is closed", r.broker.called("closeAtMarket positionBefore=1") && r.broker.position() == 0);
+      check("[" + how + "] the surviving target leg is swept", r.broker.activeOrders().isEmpty());
+      check("[" + how + "] the tracker forgot the bracket", r.tracker.restingStop() == null && r.tracker.restingTarget() == null);
+      check("[" + how + "] a verification of the flatten is queued", r.scheduled.size() == 1);
+      r.runNextVerification();
+      check("[" + how + "] ...and finds the account flat", r.loggedContaining("FLATTEN_VERIFIED LEG_LOST"));
+    }
+  }
+
+  /**
+   * L-7: when a leg fills the PLATFORM cancels the sibling itself, and that cancel callback arrives BEFORE our fill
+   * callback. It must not be read as a lost leg -- and above all must not send a close to a flat account.
+   */
+  private static void testPlatformSiblingCancelIsBenign() {
+    Rig r = new Rig();
+    r.openLong();
+    FakeBroker.FakeOrder stop = r.broker.allOrders().get(1);
+    FakeBroker.FakeOrder target = r.broker.allOrders().get(2);
+    r.broker.fill(target, 4302.0f, 1_790_000_100_000L); // the target filled at the platform (account flat) ...
+    stop.cancelled = true;                               // ... and the platform cancelled the stop itself
+    r.tracker.onOrderCancelled(stop.order());            // that callback comes first
+    r.tracker.onOrderFilled(target.order());             // our fill callback second
+    r.broker.reportStrategyPosition(1);                  // worst case: both position reads still lag (L-1/L-2) when the check fires
+    r.broker.reportAccountPosition(1);
+    r.runNextVerification();
+    check("the platform's own sibling cancel is benign", r.loggedContaining("LEG_ENDED_BENIGN") && !r.armDenied);
+    check("nothing was sent", !r.broker.called("closeAtMarket"));
+
+    // Same, but our fill callback has not run yet when the check fires: the filled leg's own state is enough.
+    Rig q = new Rig();
+    q.openLong();
+    FakeBroker.FakeOrder qs = q.broker.allOrders().get(1);
+    FakeBroker.FakeOrder qt = q.broker.allOrders().get(2);
+    q.broker.fill(qt, 4302.0f, 1_790_000_100_000L);
+    qs.cancelled = true;
+    q.tracker.onOrderCancelled(qs.order());
+    q.broker.reportStrategyPosition(1); // ... and both position reads still lag
+    q.broker.reportAccountPosition(1);
+    q.runNextVerification(); // the fill callback never ran
+    check("even before the fill callback: the other leg is filled -> benign, no close", q.loggedContaining("LEG_ENDED_BENIGN")
+        && !q.armDenied && !q.broker.called("closeAtMarket"));
+
+    // Flat everywhere (e.g. a manual flatten): nothing left to protect.
+    Rig f = new Rig();
+    f.openLong();
+    FakeBroker.FakeOrder fs = f.broker.allOrders().get(1);
+    fs.cancelled = true;
+    f.broker.setPosition(0);
+    f.tracker.onOrderCancelled(fs.order());
+    f.runNextVerification();
+    check("account and study flat: benign", f.loggedContaining("LEG_ENDED_BENIGN") && !f.armDenied);
+  }
+
+  private static void testLostLegWithDisagreeingPositionsSendsNoClose() {
+    Rig r = new Rig();
+    r.openLong();
+    FakeBroker.FakeOrder stop = r.broker.allOrders().get(1);
+    stop.cancelled = true;
+    r.broker.reportAccountPosition(0); // the account says flat, the study says long
+    r.tracker.onOrderCancelled(stop.order());
+    r.runNextVerification();
+    check("disarmed either way", r.armDenied);
+    check("readings disagree: no close (it would open a short if the account is really flat)", !r.broker.called("closeAtMarket"));
+    check("the remaining target leg is left working", r.broker.activeOrders().size() == 1);
+    check("logged", r.loggedContaining("LEG_LOST_FLATTEN no close sent") && r.loggedContaining("POSITION_SOURCES_DISAGREE LEG_LOST"));
   }
 
   // ---- partial fills (plumbingEdgeCases.md section 9, D-99) ---------------

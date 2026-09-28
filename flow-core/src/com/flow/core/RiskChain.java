@@ -70,7 +70,20 @@ public final class RiskChain {
       long processingTimeMs
   ) {}
 
+  /**
+   * F-1 (2026-09-28, live findings L-1/L-14): the ACCOUNT's own numbers, so the daily-loss check does not have to
+   * estimate P&L from the strategy's signal prices (B7/C1 -- it fired ~10 ticks late in the live test, because the
+   * estimate booked the strategy's virtual exits, not the fills). cash is the account balance now (updated at
+   * each fill callback), startCash the balance when this study session began, position/avgEntryTicks the account's
+   * open position and its average entry price in this session's tick offsets, dollarsPerTick = point value x tick
+   * size. Supplied by the runtime only while it is genuinely live (SIM_LIVE + armed); null otherwise -- the DRY_RUN
+   * and replay paths keep the signal-price estimate exactly as before.
+   */
+  public record AccountTruth(double cash, double startCash, int position, Integer avgEntryTicks, double dollarsPerTick) {}
+
   private final ExternalConfig config;
+  private final java.util.function.Supplier<AccountTruth> truthSupplier; // nullable
+  private Double rolloverBaselineCash = null; // cash at the last 17:00 CT rollover seen while live; null = use startCash
   private final SessionBoundary.Tracker sessionTracker = new SessionBoundary.Tracker();
 
   // Churn guard + PnL state (drain-thread-only, same as every Feature).
@@ -85,7 +98,23 @@ public final class RiskChain {
   private final Deque<Long> recentChangeTimestamps = new ArrayDeque<>();
 
   public RiskChain(ExternalConfig config) {
+    this(config, null);
+  }
+
+  public RiskChain(ExternalConfig config, java.util.function.Supplier<AccountTruth> truthSupplier) {
     this.config = config;
+    this.truthSupplier = truthSupplier;
+  }
+
+  /** The account's numbers, or null when none are available (not live, or the supplier failed -- fall back to the estimate). */
+  private AccountTruth truth() {
+    if (truthSupplier == null) return null;
+    try {
+      AccountTruth t = truthSupplier.get();
+      return t != null && t.dollarsPerTick() > 0 ? t : null;
+    } catch (RuntimeException e) {
+      return null;
+    }
   }
 
   /**
@@ -99,6 +128,8 @@ public final class RiskChain {
     if (sessionTracker.advance(nowEventTimeMs)) {
       reversalsThisSession = 0;
       realizedPnlTicks = 0;
+      AccountTruth t = truth();
+      rolloverBaselineCash = t == null ? null : t.cash(); // F-1: the new trading day's loss is counted from here
     }
   }
 
@@ -226,12 +257,29 @@ public final class RiskChain {
   }
 
   private Verdict checkDailyLoss(Context ctx) {
+    int limit = config.dailyLossLimitTicks();
+    AccountTruth truth = truth();
+    if (truth != null) {
+      // F-1: realized = the account's own cash change since the day/session baseline; unrealized = the account's
+      // open position marked at the current price from its real average entry. Nothing here depends on what the
+      // strategy believes or on signal prices.
+      double baseline = rolloverBaselineCash != null ? rolloverBaselineCash : truth.startCash();
+      double realized = (truth.cash() - baseline) / truth.dollarsPerTick();
+      double unrealized = 0;
+      if (truth.position() != 0 && truth.avgEntryTicks() != null && ctx.currentPriceTicks() != null) {
+        unrealized = (double) (ctx.currentPriceTicks() - truth.avgEntryTicks()) * truth.position();
+      }
+      long accountTicks = Math.round(realized + unrealized);
+      if (accountTicks <= -limit) {
+        return block("daily_loss", "pnl " + accountTicks + " ticks breaches limit -" + limit + " (account)");
+      }
+      return allow("daily_loss");
+    }
     int unrealized = 0;
     if (entryPriceTicks != null && ctx.currentPriceTicks() != null && lastPosition != 0) {
       unrealized = (ctx.currentPriceTicks() - entryPriceTicks) * lastPosition; // A7: scales with size
     }
     int totalPnlTicks = realizedPnlTicks + unrealized;
-    int limit = config.dailyLossLimitTicks();
     if (totalPnlTicks <= -limit) {
       return block("daily_loss", "pnl " + totalPnlTicks + " ticks breaches limit -" + limit);
     }

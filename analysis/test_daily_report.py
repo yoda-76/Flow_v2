@@ -264,6 +264,51 @@ class TestTrades(Base):
         text = dr.render(m)
         self.assertIn("a fill with no open trade", text)
 
+    def test_manual_close_is_not_left_open(self):
+        """F-3 (2026-09-28, L-3): a close the study did not place shows up as account_position_change -> the trade is
+        closed by it, priced from the cash change, and no 'STILL OPEN' remains."""
+        j = self.journal()
+        t0 = self._entry_long(j)  # long 1 @4300, cash 98640 at the entry
+        t_close = t0 + 40_000
+        j.add({"type": "account_position_change", "t": t_close, "previousAccountPosition": 1, "accountPosition": 0,
+               "studyPosition": 1, "explainedByFill": False, "cashBalance": 98540.0})
+        j.log(t_close, "ACCOUNT_POSITION_CHANGED_UNTRACKED 1 -> 0 (study position 1) -- not from an order this study placed")
+        j.write()
+        m = self.model()
+        self.assertEqual(len(m["trades"]), 1)
+        t = m["trades"][0]
+        self.assertEqual(t["exit_t"], t_close)
+        self.assertEqual(t["exit_via"], "closed outside the study (manual / platform)")
+        self.assertAlmostEqual(t["points"], -1.0)          # -100 cash / (100 point value x 1 lot)
+        self.assertAlmostEqual(t["gross"], -100.0)
+        text = dr.render(m)
+        self.assertNotIn("STILL OPEN", text)
+        self.assertTrue(any(a[3] == "ACCOUNT_POSITION_CHANGED_UNTRACKED" and a[2] == "ALERT" for a in m["attention"]))
+
+    def test_account_change_explained_by_a_fill_or_not_flat_does_not_close_a_trade(self):
+        j = self.journal()
+        self._entry_long(j)
+        j.add({"type": "account_position_change", "t": ct_ms(DAY, 10, 0, 5), "previousAccountPosition": 0,
+               "accountPosition": 1, "studyPosition": 1, "explainedByFill": True, "cashBalance": 98640.0})
+        j.add({"type": "account_position_change", "t": ct_ms(DAY, 10, 0, 6), "previousAccountPosition": 1,
+               "accountPosition": 0, "studyPosition": 0, "explainedByFill": True, "cashBalance": 98640.0})
+        j.write()
+        self.assertIsNone(self.model()["trades"][0]["exit_t"], "explained changes are the study's own fills; the fill record closes the trade")
+
+    def test_flatten_verification_lines_are_alerts(self):
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        j.log(t, "FLATTEN_CORRECTING KILL_SWITCH study=-1 account=-1 -- still not flat: {}")
+        j.log(t + 1, "FLATTEN_NOT_CONFIRMED KILL_SWITCH study=-1 account=-1 after 3 looks -- CHECK THE ACCOUNT BY HAND")
+        j.log(t + 2, "POSITION_SOURCES_DISAGREE KILL_SWITCH study=1 account=0 -- no close sent")
+        j.log(t + 3, "FLATTEN_VERIFIED KILL_SWITCH account flat, nothing resting")
+        j.write()
+        sev = {a[3]: a[2] for a in self.model()["attention"]}
+        self.assertEqual(sev["FLATTEN_CORRECTING"], "ALERT")
+        self.assertEqual(sev["FLATTEN_NOT_CONFIRMED"], "ALERT")
+        self.assertEqual(sev["POSITION_SOURCES_DISAGREE"], "ALERT")
+        self.assertEqual(sev["FLATTEN_VERIFIED"], "NOTE")
+
     def test_trade_still_open_is_flagged(self):
         j = self.journal()
         self._entry_long(j)

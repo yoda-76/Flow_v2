@@ -244,6 +244,13 @@ batch in `todo.md` §2 is the plan for those.
   growing number means the *system* stopped, not a quiet market.
 - **Evening review (1–2 h):** `python analysis/daily_report.py`, then
   `python analysis/trade_view.py --date D --trade N` for any trade needing a "why".
+- **Removing the study while a position is open (user's answer, 2026-09-28, L-4/F-6): answer "Yes"** to MotiveWave's
+  "close the running position?" dialog. The platform then flattens the account itself, outside the study: the
+  journal records it as `account_position_change` (`explainedByFill:false`) + an `ACCOUNT_POSITION_CHANGED_UNTRACKED`
+  ALERT if the study is still alive to see it, and the report closes the trade as "closed outside the study". If the
+  study is already destroyed nothing is journaled — check the account by hand. Even better, wait until the study is
+  flat (`status.py` → `position: flat`) before removing it. Answering **No** is untested (bracket keeps working? does
+  a re-added study refuse to arm, D-24?) — don't, until it has been tried on purpose.
 - **A position is open when MotiveWave/the machine restarts:** the runtime **refuses to
   arm** and journals what it found; it does not adopt or flatten it. You clear it by
   hand (README "Restart with a live position"). Whether `onActivate` sees the live

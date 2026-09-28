@@ -4328,6 +4328,81 @@ readable rather than being silently rewritten.
     only.
   - **Not verified live**: all of it, and everything in D-111. The laptop's live test is the first run.
 
+- **D-113** (2026-09-28) — **P0 fixes from the live test (F-1…F-4 of the fix list): the account is the truth for
+  daily loss and for flatten decisions, every flatten is verified, non-study position changes are journaled, and a
+  deactivated study stops deciding.** Built off-market, all gates green, **not deployed, not seen live.** The user
+  said "start fixing the P0 items and ping me if my decision is needed"; the only decisions needed were F-5 and F-6
+  (asked, answered: "Flatten + disarm", "Yes, close it"). Evidence: `liveTest-2026-09-28.md` (L-1, L-2, L-3, L-14),
+  `logAnalysis-2026-09-28.md` (N-2).
+  - **New platform fact (`findings.md` F-2, [DOC] Javadoc):** `OrderContext.getPosition()` is *"the current open
+    position **for this strategy**"*; the **account's** is a separate `getAccountPosition()` (also
+    `getAccountAvgEntryPrice()`, `closeAccountAtMarket()`, `getExecutions()` "since this strategy was activated").
+    `closeAtMarket()` *"closes the position held by **this strategy**… waits until the market order(s) have been
+    filled"*. This explains L-2 (a manual close never reached the study's own position) and shows the earlier
+    "no accessor to the account" search (CLAUDE.md, 2026-09-26) missed the position accessors. Not yet checked live:
+    that `getAccountPosition()` is prompt at the callback/kill-switch instant (the fix reads both and never trusts
+    one alone — below).
+  - **F-1a — daily loss from the account.** `RiskChain.AccountTruth(cash, startCash, position, avgEntryTicks,
+    dollarsPerTick)` from an optional supplier. When present, `checkDailyLoss` = (cash − baseline)/dollarsPerTick
+    (realized, incl. fees) + the account position marked from its real average entry (unrealized); baseline =
+    the balance at the study's first activation, re-based at each 17:00 CT rollover. The runtime supplies it only
+    while SIM_LIVE + Armed (refreshed at every fill callback and about once a second); DRY_RUN/replay, a null or
+    throwing supplier, or a zero tick value keep the signal-price estimate unchanged. Verdict text ends "(account)".
+    Consequence: the daily limit now also counts anything else that moves this account's cash (another study, a
+    manual trade) — deliberately conservative. Restarting MotiveWave resets the baseline (as the old estimate did).
+  - **F-1b — a flatten no longer trusts one stale read.** `LiveOrderTracker.decide()`: a tracked bracket leg that
+    has already filled ⇒ position is closed, send no close (L-1's exact race); study and account positions both
+    non-flat with the same sign ⇒ close; anything else ⇒ **HOLD** — no order, bracket left working,
+    `POSITION_SOURCES_DISAGREE` logged (the report ALERTs). Used by the kill switch and the session flatten (the
+    latter retries every 5 s). `closeAtMarket()` closes the *study's* position, so it is never sent on a
+    disagreement (a manual close + a stale study position would have opened a short).
+  - **F-1c — verification after every position-relative flatten** (kill switch, double-fill correction, partial-entry
+    flatten): looks again at 1.5 s, 3 s, 5 s on a daemon thread (`scheduler` injected; tests drive it by hand).
+    Flat both ways ⇒ `FLATTEN_VERIFIED` (and sweeps stray legs); both readings agree it is non-flat (L-1's wrong-way
+    short) ⇒ `FLATTEN_CORRECTING` sends the close again; disagree ⇒ no order; still not confirmed after the third
+    look ⇒ `FLATTEN_NOT_CONFIRMED … CHECK THE ACCOUNT BY HAND`. All of these are ALERTs in `daily_report.py`.
+  - **F-2 (part) — entries and arming read the account too.** An opening intent is refused when the account holds a
+    position the study's own view does not (`account position is N while the study's own position is flat`, reported
+    to the pipeline as a block, B3); `refuseToArmReason` also looks at `getAccountPosition()`. **The rest of C1
+    (one position truth for strategy/risk chain/tracker) is not attempted** — the two-source rule above is a
+    safety net, not a single source of truth, and is provisional until the account read has been seen live.
+  - **F-3 — account watch.** `Pipeline.attachAccountWatch` (drain thread, ~1 s): the runtime journals
+    `account_position_change` (previous, now, study position, `explainedByFill`, cash, entry ticks) whenever the account
+    position or the (account, study) pair changes, and logs `ACCOUNT_POSITION_CHANGED_UNTRACKED` (ALERT) when the
+    account moved with no fill callback in the last 3 s. `daily_report.py` closes an open trade on such a record
+    (`closed outside the study (manual / platform)`, P&L from the cash change) — the phantom "STILL OPEN" and its
+    `status.py` echo go away for new journals. Old journals (L-3) still show the phantom.
+  - **F-4 — deactivated study.** `Pipeline.suspendTrading()/resumeTrading()`: while suspended the pipeline still
+    ingests, journals and records but does not wake the strategy (N-2: an allowed intent 5 s after DEACTIVATE). A
+    re-activation (only if it had been suspended) forgets the strategy's and risk chain's belief on the next event
+    (`pipeline_resync`, strategy `onFlattened("study re-activation")`, `lastIntent` cleared) and resets the tracker
+    (`resetForReactivation`: legs, in-flight entry, self-cancel set). L-10's misleading journal text reworded.
+  - **F-5 (B6) — a lost bracket leg (user's answer: "Flatten + disarm").** A tracked leg cancelled or rejected by
+    the platform is never judged when its callback arrives — the platform itself cancels the sibling the moment the
+    other leg fills, and that callback comes BEFORE ours (L-7). It is re-examined 1.5 s later (`LEG_ENDED_SEEN` →
+    `confirmLegLost`): benign if the bracket was already resolved, the other leg filled, or account and study are both
+    flat (`LEG_ENDED_BENIGN`); otherwise `LIVE_LEG_LOST` — disarm (`armDenied`), then the same two-source-checked flatten
+    (`LEG_LOST_FLATTEN`, ALERT) and the same verification. A disagreement between the two position readings sends no
+    close and leaves the surviving leg working (`POSITION_SOURCES_DISAGREE LEG_LOST`). Legs stay `DAY` orders (the
+    session-end flatten closes everything before the daily halt; GTC would only add lingering-leg risk) — recorded, not
+    asked. Mutation: 6/6 F-5 mutants caught (18/18 for all of D-113).
+  - **F-6 (L-4) — the "close the running position?" dialog (user's answer: "Yes, close it").** Runbook §6 now says so,
+    and that answering No is untested. No code change: the platform's close is journaled by the F-3 account watch when
+    the study is alive to see it.
+  - **Not done / needs a decision:** C1 in full, C3 (`Order.getAccountId()` exists and could back a real second layer
+    against a non-Simulated account — see `findings.md` F-2; every `order_fill` now journals `accountId` so the next
+    live run shows what it looks like).
+  - **Tests:** new gate `AccountTruthTest` (core; 8 groups); `LiveOrderTrackerTest` +8 groups on `FakeBroker`
+    (which now models `getAccountPosition`/`getAccountAvgEntryPrice` and scripted stale reads); 3 Python tests.
+    Mutation: 12/12 Java mutants caught (leg-filled ignored, close on either reading, verify never corrects, no
+    verification queued, opening guard off, session-flatten HOLD ignored, no NOT_CONFIRMED alert, refuse-to-arm
+    ignores the account, truth sign flipped, no rollover re-base, suspended still wakes, resume without resync).
+    Full `build.sh` passes (scratch deploy).
+  - **Not verified live:** everything. In particular: that `getAccountPosition()`/cash are current at the callback and
+    at the kill-switch instant; that `closeAtMarket()` blocking on the safety thread is fine; the truth path's entry
+    price at the entry-fill callback; the 1 s account watch's cost. The next live Sim run should use a small
+    `dailyLossLimitTicks` (10) to exercise F-1 end to end.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

@@ -66,6 +66,115 @@ final class LiveOrderTracker {
     this.denyArm = denyArm;
   }
 
+  // ---- F-1/F-2 (2026-09-28): flatten decisions read BOTH positions, and every kill-switch / double-fill flatten is
+  // ---- verified afterwards. Live finding L-1: a stop leg filled in the same millisecond the kill switch read the
+  // ---- study's position (still 1) and sent a close -> the account went SHORT 1, unprotected, and nothing noticed.
+
+  /**
+   * How to run something later, off the calling thread: (task, delayMs). Null in tests that do not exercise the
+   * post-flatten verification; the Study supplies a daemon scheduler. Never called with the tracker's own monitor
+   * held, and the task itself is fully guarded.
+   */
+  private volatile java.util.function.BiConsumer<Runnable, Long> scheduler;
+  void setScheduler(java.util.function.BiConsumer<Runnable, Long> scheduler) { this.scheduler = scheduler; }
+
+  /** Runs after every fill callback (the Study refreshes the risk chain's account snapshot here). Failure-proof by contract of the caller. */
+  private volatile Runnable afterFillHook;
+  void setAfterFillHook(Runnable hook) { this.afterFillHook = hook; }
+
+  /** Verification schedule after a flatten: 1.5 s, then 3 s, then 5 s later -- three chances to notice and undo a wrong-way fill. */
+  static final long[] VERIFY_DELAYS_MS = {1_500L, 3_000L, 5_000L};
+
+  private enum Act { NONE, CLOSE, HOLD }
+
+  /**
+   * Whether a flatten should send a close, from the STUDY's position (getPosition) AND the ACCOUNT's
+   * (getAccountPosition) -- they can disagree (L-2: the study's view did not show a manual close for two minutes;
+   * L-1: it still showed 1 while a leg fill was being delivered). closeAtMarket() closes the study's position, so
+   * it is only sent when both readings agree the account holds the same non-flat position; a tracked leg that has
+   * already filled means the position is closed whatever the readings say; any other disagreement is HOLD -- send
+   * nothing, leave the bracket working, and let the verification (or the next retry) look again.
+   */
+  private Act decide(OrderGateway gw, boolean legFilled, String what) {
+    if (legFilled) {
+      log.accept(what + " a tracked bracket leg has already filled -- the position is closed, no close sent");
+      return Act.NONE;
+    }
+    int strat = gw.currentPosition();
+    int acct = gw.accountPosition();
+    if (strat == 0 && acct == 0) return Act.NONE;
+    if (strat != 0 && acct != 0 && Integer.signum(strat) == Integer.signum(acct)) return Act.CLOSE;
+    log.accept("POSITION_SOURCES_DISAGREE " + what + " study=" + strat + " account=" + acct
+        + " -- no close sent (a stale read here is how L-1's naked short happened); verifying");
+    return Act.HOLD;
+  }
+
+  private boolean trackedLegFilled() {
+    return legFilled(restingStopOrder) || legFilled(restingTargetOrder);
+  }
+
+  private static boolean legFilled(Order o) {
+    if (o == null) return false;
+    try { return o.isFilled(); } catch (RuntimeException e) { return false; }
+  }
+
+  private void scheduleFlatVerification(String what, int attempt) {
+    java.util.function.BiConsumer<Runnable, Long> s = scheduler;
+    if (s == null || attempt >= VERIFY_DELAYS_MS.length) return;
+    s.accept(() -> verifyFlat(what, attempt), VERIFY_DELAYS_MS[attempt]);
+  }
+
+  /**
+   * F-1: after a kill-switch / double-fill flatten, look again. Flat both ways: done (and sweep any stray leg).
+   * Both readings agree the account is still (or now, wrong-way) non-flat: send the close again -- this is exactly
+   * L-1's short 1. Readings disagree: no order, alert, look again. Still not flat after the last look: ALERT.
+   * Fully guarded: a failure here is logged, never thrown.
+   */
+  void verifyFlat(String what, int attempt) {
+    try {
+      OrderGateway gw = gateway.get();
+      if (gw == null) {
+        log.accept("FLATTEN_VERIFY_SKIPPED " + what + " -- no gateway (study deactivated)");
+        return;
+      }
+      int strat = gw.currentPosition();
+      int acct = gw.accountPosition();
+      boolean last = attempt >= VERIFY_DELAYS_MS.length - 1;
+      if (strat == 0 && acct == 0) {
+        if (gw.hasRestingOrders()) {
+          log.accept("FLATTEN_VERIFIED " + what + " flat; sweeping stray orders " + gw.cancelAllOrders(what + " verification"));
+        } else {
+          log.accept("FLATTEN_VERIFIED " + what + " account flat, nothing resting");
+        }
+        return;
+      }
+      if (strat != 0 && acct != 0 && Integer.signum(strat) == Integer.signum(acct)) {
+        log.accept("FLATTEN_CORRECTING " + what + " study=" + strat + " account=" + acct + " -- still not flat: "
+            + gw.cancelAllAndClose(what + " verification: still holding " + acct));
+      } else {
+        log.accept("FLATTEN_VERIFY_DISAGREE " + what + " study=" + strat + " account=" + acct + " -- no order sent");
+      }
+      if (last) {
+        log.accept("FLATTEN_NOT_CONFIRMED " + what + " study=" + strat + " account=" + acct
+            + " after " + VERIFY_DELAYS_MS.length + " looks -- CHECK THE ACCOUNT BY HAND");
+      } else {
+        scheduleFlatVerification(what, attempt + 1);
+      }
+    } catch (RuntimeException e) {
+      log.accept("FLATTEN_VERIFY_FAILED " + what + " " + e);
+    }
+  }
+
+  /**
+   * F-4: the study was re-activated (MotiveWave reuses the instance). Re-activation only arms when the account is
+   * flat with nothing resting (D-24), so any leg / in-flight entry / self-cancel bookkeeping left over from before
+   * the gap is stale by construction.
+   */
+  void resetForReactivation() {
+    resetForKillSwitch();
+    selfCancelledOrderIds.clear();
+  }
+
   // ---- read-only state, for tests and the Study ------------------------
 
   boolean orderInFlight() { return liveOrderInFlight; }
@@ -94,6 +203,7 @@ final class LiveOrderTracker {
    * prefix the nightly report looks for.
    */
   void onKillSwitch(String reason, boolean liveOrdersRequested) {
+    boolean legFilled = trackedLegFilled(); // F-1: read BEFORE the tracker forgets its legs
     resetForKillSwitch();
     if (!liveOrdersRequested) {
       log.accept("KILL_SWITCH_TRIGGERED reason=" + reason + " -- not SIM_LIVE+Armed: disarmed, no order sent");
@@ -104,12 +214,17 @@ final class LiveOrderTracker {
       log.accept("KILL_SWITCH_TRIGGERED reason=" + reason + " (no gateway -- nothing to flatten)");
       return;
     }
-    int position = gw.currentPosition();
-    if (position == 0 && !gw.hasRestingOrders()) {
+    Act act = decide(gw, legFilled, "KILL_SWITCH");
+    boolean resting = gw.hasRestingOrders();
+    if (act == Act.HOLD) {
+      log.accept("KILL_SWITCH_TRIGGERED reason=" + reason + " -- study/account positions disagree: no order sent, "
+          + "bracket left working, verifying");
+    } else if (act == Act.NONE && !resting) {
       log.accept("KILL_SWITCH_TRIGGERED reason=" + reason + " -- account already flat, nothing resting: no order sent");
-      return;
+    } else {
+      log.accept("KILL_SWITCH_TRIGGERED " + (act == Act.NONE ? gw.cancelAllOrders(reason) : gw.cancelAllAndClose(reason)));
     }
-    log.accept("KILL_SWITCH_TRIGGERED " + (position == 0 ? gw.cancelAllOrders(reason) : gw.cancelAllAndClose(reason)));
+    scheduleFlatVerification("KILL_SWITCH", 0); // F-1: the wrong-way fill L-1 produced is caught here
   }
 
   /**
@@ -123,11 +238,13 @@ final class LiveOrderTracker {
   boolean flattenForSessionEnd(String reason) {
     OrderGateway gw = gateway.get();
     if (gw == null) return false;
-    int position = gw.currentPosition();
-    if (position == 0 && !gw.hasRestingOrders()) return false;
+    boolean legFilled = trackedLegFilled();
+    Act act = decide(gw, legFilled, "SESSION_FLATTEN");
+    if (act == Act.HOLD) return false; // the two readings disagree -- Pipeline retries every few seconds
+    if (act == Act.NONE && !gw.hasRestingOrders()) return false;
     resetForKillSwitch();
     // Flat but orders still working: cancel only -- never send a close to a flat account.
-    log.accept("SESSION_FLATTEN " + (position == 0 ? gw.cancelAllOrders(reason) : gw.cancelAllAndClose(reason)));
+    log.accept("SESSION_FLATTEN " + (act == Act.NONE ? gw.cancelAllOrders(reason) : gw.cancelAllAndClose(reason)));
     return true;
   }
 
@@ -207,6 +324,15 @@ final class LiveOrderTracker {
               + ") not auto-handled -- see reconcileLive()'s javadoc")
           .build();
     }
+    if (opening && gw.accountPosition() != 0) {
+      // F-2: the study's own position says flat but the ACCOUNT holds something (a manual trade, the platform's own
+      // close, a fill the study never saw). Stacking an entry on it is how a small loss becomes a large one (D-24).
+      lastEntryRefusal = "account holds " + gw.accountPosition() + " the study did not open";
+      return Json.object().field("type", "reconcile_live_skipped")
+          .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
+          .field("reason", "account position is " + gw.accountPosition() + " while the study's own position is flat -- refusing to stack a new entry on it")
+          .build();
+    }
     if (opening && gw.hasRestingOrders()) {
       lastEntryRefusal = "resting orders on the account";
       return Json.object().field("type", "reconcile_live_skipped")
@@ -282,6 +408,14 @@ final class LiveOrderTracker {
   void onOrderFilled(Order order) {
     log.accept("ORDER_FILLED " + order);
     recordFill(order);
+    Runnable hook = afterFillHook;
+    if (hook != null) {
+      try {
+        hook.run();
+      } catch (RuntimeException e) {
+        log.accept("AFTER_FILL_HOOK_FAILED " + e);
+      }
+    }
 
     if (liveOrderInFlight) {
       // D-99 (plumbingEdgeCases.md section 9): the entry is resolved only when it is COMPLETELY filled. A
@@ -365,6 +499,7 @@ final class LiveOrderTracker {
             + " -- both bracket legs likely filled, flattening");
         log.accept("POSITION_MISMATCH_CORRECTED " + gw.cancelAllAndClose(
             "double-fill correction: expected flat, was " + posAfter));
+        scheduleFlatVerification("DOUBLE_FILL_CORRECTION", 0); // F-1: the correction is itself a position-relative close
       }
     }
   }
@@ -406,8 +541,10 @@ final class LiveOrderTracker {
     Integer filled = filledOf(order);
     int position = gw.currentPosition();
     if ((filled == null || filled <= 0) && position == 0) return null;
-    return gw.cancelAllAndClose("partial entry ended with " + filled + " filled, position " + position
+    String line = gw.cancelAllAndClose("partial entry ended with " + filled + " filled, position " + position
         + " -- flattening the unbracketed position");
+    scheduleFlatVerification("PARTIAL_ENTRY_FLATTEN", 0); // F-1
+    return line;
   }
 
   /**
@@ -458,7 +595,9 @@ final class LiveOrderTracker {
       log.accept("LIVE_ENTRY_CANCELLED_DISARMING -- entry cancelled before filling, disarming");
       String flat = flattenIfEntryLeftAPosition(order);
       if (flat != null) log.accept("LIVE_ENTRY_PARTIAL_FLATTENED " + flat);
+      return;
     }
+    noteLegEnded(order, "cancelled");
   }
 
   /** D-82/Q-11: same reasoning as onOrderCancelled() above. */
@@ -470,6 +609,67 @@ final class LiveOrderTracker {
       log.accept("LIVE_ENTRY_REJECTED_DISARMING -- entry rejected, disarming");
       String flat = flattenIfEntryLeftAPosition(order);
       if (flat != null) log.accept("LIVE_ENTRY_PARTIAL_FLATTENED " + flat);
+      return;
+    }
+    noteLegEnded(order, "rejected");
+  }
+
+  // ---- F-5 / B6 (2026-09-28, the user chose "flatten + disarm") -------------------------------------------------
+  //
+  // A bracket leg that is cancelled or rejected on its own (not by us) while a position is open leaves that position
+  // with only one protective leg -- or none. But the platform ALSO cancels the sibling leg itself the instant the other
+  // one fills (L-7), and that cancel callback arrives BEFORE our fill callback. So a cancel is never judged when it
+  // arrives: it is re-examined 1.5 s later, when the fill callback has either cleared our leg references (benign) or
+  // not (a real lost leg).
+
+  private void noteLegEnded(Order order, String how) {
+    String id = order.getOrderId();
+    if (id == null) return;
+    Order stop = restingStopOrder;
+    Order target = restingTargetOrder;
+    String leg = stop != null && id.equals(stop.getOrderId()) ? "stop"
+        : target != null && id.equals(target.getOrderId()) ? "target" : null;
+    if (leg == null) return; // not one of the current bracket's legs
+    log.accept("LEG_ENDED_SEEN leg=" + leg + " " + how + " -- confirming in " + VERIFY_DELAYS_MS[0] + " ms whether the position lost its protection");
+    java.util.function.BiConsumer<Runnable, Long> s = scheduler;
+    if (s != null) s.accept(() -> confirmLegLost(leg, id, how), VERIFY_DELAYS_MS[0]);
+  }
+
+  /** The delayed half of noteLegEnded(). Fully guarded; safe to call from the safety thread. */
+  void confirmLegLost(String leg, String id, String how) {
+    try {
+      Order stop = restingStopOrder;
+      Order target = restingTargetOrder;
+      boolean stillOurs = (stop != null && id.equals(stop.getOrderId())) || (target != null && id.equals(target.getOrderId()));
+      if (!stillOurs) {
+        log.accept("LEG_ENDED_BENIGN leg=" + leg + " " + how + " -- the bracket was already resolved (a leg filled or we flattened)");
+        return;
+      }
+      if (legFilled(stop) || legFilled(target)) {
+        log.accept("LEG_ENDED_BENIGN leg=" + leg + " " + how + " -- the other leg filled, the position is closed");
+        return;
+      }
+      OrderGateway gw = gateway.get();
+      if (gw == null) return;
+      int strat = gw.currentPosition();
+      int acct = gw.accountPosition();
+      if (strat == 0 && acct == 0) {
+        log.accept("LEG_ENDED_BENIGN leg=" + leg + " " + how + " -- account and study are flat, nothing left to protect");
+        return;
+      }
+      denyArm.run();
+      log.accept("LIVE_LEG_LOST leg=" + leg + " " + how + " on its own with the position still open (study=" + strat
+          + " account=" + acct + ") -- disarming and flattening");
+      resetForKillSwitch();
+      Act act = decide(gw, false, "LEG_LOST");
+      if (act == Act.CLOSE) {
+        log.accept("LEG_LOST_FLATTEN " + gw.cancelAllAndClose("bracket leg lost (" + leg + " " + how + ")"));
+      } else {
+        log.accept("LEG_LOST_FLATTEN no close sent (study and account readings disagree) -- the remaining leg is left working; verifying");
+      }
+      scheduleFlatVerification("LEG_LOST", 0);
+    } catch (RuntimeException e) {
+      log.accept("LEG_LOST_CHECK_FAILED " + e);
     }
   }
 }

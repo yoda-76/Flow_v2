@@ -269,6 +269,18 @@ ATTENTION = OrderedDict([
     ("LIVE_BRACKET_SIZE_FROM_FILL", "WARN"),    # D-99: bracket sized from the actual fill, not the intended qty
     ("LIVE_FILL_NO_BRACKET", "WARN"),
     ("LIVE_LEG_LOST", "ALERT"),                 # future runtime line: a protective leg cancelled/rejected/expired on its own
+    # 2026-09-28 P0 fixes (F-1/F-2/F-3): account-truth position watch and the post-flatten verification.
+    ("ACCOUNT_POSITION_CHANGED_UNTRACKED", "ALERT"),  # the account position moved without an order this study placed
+    ("POSITION_SOURCES_DISAGREE", "ALERT"),           # the study's position and the account's differ at a flatten decision
+    ("FLATTEN_NOT_CONFIRMED", "ALERT"),               # three looks after a flatten and the account was not confirmed flat
+    ("FLATTEN_CORRECTING", "ALERT"),                  # a flatten left a position (L-1's wrong-way fill) and was corrected
+    ("LEG_LOST_FLATTEN", "ALERT"),                    # F-5: a bracket leg was lost on its own; the position is being flattened
+    ("LEG_LOST_CHECK_FAILED", "ALERT"),
+    ("FLATTEN_VERIFY_FAILED", "ALERT"),
+    ("FLATTEN_VERIFY_DISAGREE", "WARN"),
+    ("FLATTEN_VERIFIED", "NOTE"),
+    ("AFTER_FILL_HOOK_FAILED", "WARN"),
+    ("REACTIVATED", "NOTE"),                          # F-4: the study was re-activated, tracker/pipeline state reset
     ("DOM_BACKLOG_SKIPPED", "WARN"),            # E1: the event queue fell behind and skipped intermediate DOM snapshots
     ("SESSION_FLATTEN", "NOTE"),
     ("ACTIVATE", "NOTE"),
@@ -320,6 +332,23 @@ def build_trades(recs):
                 since_entry.add("session-end flatten")
             elif msg.startswith("POSITION_MISMATCH_CORRECTED"):
                 since_entry.add("double-fill correction")
+        elif typ == "account_position_change":
+            # F-3 (2026-09-28): the ACCOUNT's position moved with no fill callback for an order this study placed -- a
+            # manual close, or MotiveWave's own "close the running position?" dialog (L-3/L-4). Without this the
+            # trade stayed "STILL OPEN" in every report. No exit price is journaled for it, so the P&L is the cash
+            # change since the entry (indicative: the platform may update cash after the fact).
+            if open_t is not None and r.get("accountPosition") == 0 and not r.get("explainedByFill"):
+                pv = open_t["point_value"]
+                cash_after = r.get("cashBalance")
+                cash_delta = None if cash_after is None or open_t["cash_before"] is None \
+                    else round(cash_after - open_t["cash_before"], 2)
+                pts = None if cash_delta is None or not pv else round(cash_delta / (pv * open_t["qty"]), 4)
+                open_t.update(exit_t=r.get("t") or r["_t"], exit_px=None,
+                              exit_via="closed outside the study (manual / platform)",
+                              points=pts, gross=cash_delta, cash_delta=cash_delta)
+                trades.append(open_t)
+                open_t = None
+                since_entry = set()
         elif typ == "order_fill":
             role = r.get("role")
             if role == "entry" and open_t is None:

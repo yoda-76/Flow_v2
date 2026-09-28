@@ -77,6 +77,15 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   private String lastRuntimeJournaled = null;  // drain-thread-only
   /** How often (in ~100 ms clock events) the arming state is compared with the last journaled one: ~1 s. */
   static final long ARMING_CHECK_EVERY_CLOCK_EVENTS = 10;
+  // F-4 (2026-09-28, live finding N-2): while the study is deactivated the pipeline keeps ingesting and journaling
+  // but must not wake the strategy (tonight a fresh long intent was ALLOWED 5 s after DEACTIVATE, with no gateway to
+  // act on it), and on re-activation -- MotiveWave reuses the instance (A6) -- the strategy and risk chain must not
+  // carry a stale belief about a position across the gap.
+  private volatile boolean suspended = false;
+  private final AtomicBoolean resyncRequested = new AtomicBoolean(false);
+  // F-3: optional, called from the drain thread about once a second (on ClockEvents); the runtime uses it to watch
+  // the ACCOUNT's position for changes the study did not cause (a manual close, the platform's own close dialog).
+  private volatile Runnable accountWatch;
 
   /**
    * features is required explicitly (an empty Map.of() is fine, but
@@ -174,6 +183,35 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     this.runtimeStatus = status;
   }
 
+  /** F-3: see accountWatch. Call before the first event is published. */
+  public void attachAccountWatch(Runnable watch) {
+    this.accountWatch = watch;
+  }
+
+  /**
+   * F-4: the study was deactivated -- keep ingesting and journaling, stop invoking the strategy (the kill switch and
+   * the session flatten above the healthy check are unaffected, and no-op without a gateway).
+   */
+  public void suspendTrading() {
+    suspended = true;
+  }
+
+  /**
+   * F-4: the study was re-activated. Only if it had been suspended: on the next event the strategy and the risk chain
+   * are told the account is flat (re-activation refuses to arm over a position, D-24, so flat is the only state that
+   * can trade) and the last intent is forgotten, exactly like the session-end flatten does.
+   */
+  public void resumeTrading() {
+    if (suspended) {
+      resyncRequested.set(true); // before the flag drops, so the drain thread cannot wake the strategy on stale state first
+      suspended = false;
+    }
+  }
+
+  public boolean suspended() {
+    return suspended;
+  }
+
   public MarketState marketState() {
     return marketState;
   }
@@ -200,6 +238,15 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
       if (armedSupplier != null && riskChain != null
           && (lastArmedJournaled == null || count % ARMING_CHECK_EVERY_CLOCK_EVENTS == 0)) {
         journalArmingChange(e);
+      }
+      Runnable watch = accountWatch;
+      if (watch != null && count % ARMING_CHECK_EVERY_CLOCK_EVENTS == 0) {
+        try {
+          watch.run();
+        } catch (RuntimeException ex) {
+          journal.writeDecision(e.seq(), Json.object()
+              .field("type", "account_watch_failed").field("reason", String.valueOf(ex)).field("seq", e.seq()).build());
+        }
       }
       if (count % HEARTBEAT_EVERY_CLOCK_EVENTS == 0) heartbeat(e);
       if (count % DOM_SNAPSHOT_EVERY_CLOCK_EVENTS == 0) maybeDomSnapshot(e);
@@ -272,6 +319,9 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
       checkSessionFlatten(e);
     }
 
+    if (resyncRequested.compareAndSet(true, false)) resyncAfterReactivation(e);
+
+    if (suspended) return; // F-4: deactivated -- the strategy is not woken until the study is re-activated
     if (!healthy.get()) return; // keep ingesting/journaling raw events; stop invoking the strategy (kill switch above is exempt -- see its own comment)
 
     // Every declared trigger is evaluated every event, never short-circuited
@@ -371,6 +421,22 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
    */
   private long riskNowMs() {
     return marketState.riskClockMs();
+  }
+
+  /** F-4: drain-thread half of resumeTrading() -- forget every belief held across the deactivated gap. */
+  private void resyncAfterReactivation(Event e) {
+    journal.writeDecision(e.seq(), Json.object()
+        .field("type", "pipeline_resync")
+        .field("reason", "study re-activated: strategy and risk chain told the account is flat, last intent forgotten")
+        .field("seq", e.seq())
+        .build());
+    if (riskChain != null) {
+      riskChain.onFlattened(new RiskChain.Context(armedSupplier.getAsBoolean(), true, marketState.lastPriceTicks(),
+          riskNowMs(), 0, 0L));
+    }
+    if (healthy.get()) strategy.onFlattened("study re-activation");
+    lastIntent = Intent.none(strategy.id(), 0);
+    lastIntentBlocked = false;
   }
 
   /**

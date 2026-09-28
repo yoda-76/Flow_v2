@@ -50,7 +50,8 @@ final class OrderGateway {
         .field("role", role)
         .field("orderId", String.valueOf(safe(order::getOrderId)))
         .field("instrument", inst == null ? "?" : String.valueOf(safe(inst::getSymbol)))
-        .field("action", Boolean.TRUE.equals(safe(order::isBuy)) ? "BUY" : "SELL");
+        .field("action", Boolean.TRUE.equals(safe(order::isBuy)) ? "BUY" : "SELL")
+        .field("accountId", String.valueOf(safe(order::getAccountId))); // F-2 probe (C3): what the platform calls the account -- read-only evidence for a future real-account guard
     Integer quantity = safe(order::getQuantity);
     Integer filled = safe(order::getFilled);
     Long lastFillTimeMs = safe(order::getLastFillTime);
@@ -115,17 +116,53 @@ final class OrderGateway {
   @SuppressWarnings("unchecked") // getActiveOrders() returns a raw List in this jar, same T-6-class mismatch as other raw-List SDK returns
   String refuseToArmReason() {
     int position = ctx.getPosition();
+    int accountPosition = ctx.getAccountPosition(); // F-2: the ACCOUNT's, which the study's own getPosition() can miss
     java.util.List activeOrders = ctx.getActiveOrders();
     int orderCount = activeOrders == null ? 0 : activeOrders.size();
-    if (position != 0 || orderCount > 0) {
-      return "existing position=" + position + " activeOrders=" + orderCount + " -- clear manually before arming";
+    if (position != 0 || accountPosition != 0 || orderCount > 0) {
+      return "existing position=" + position + " accountPosition=" + accountPosition + " activeOrders=" + orderCount
+          + " -- clear manually before arming";
     }
     return null;
   }
 
-  /** D-82/Q-11: the account's actual position, for reconcileLive()'s diff -- never the strategy's own belief. */
+  /**
+   * The STUDY's own position (SDK getPosition(): "the current open position for this strategy"). Not the account's:
+   * F-2 (2026-09-28) found the SDK has a separate getAccountPosition(), and that this one did not show a manual close
+   * for two minutes (L-2) and lagged a leg fill by milliseconds (L-1). Use accountPosition() alongside it.
+   */
   int currentPosition() {
     return ctx.getPosition();
+  }
+
+  /** F-2: the ACCOUNT's position for the chart instrument (SDK getAccountPosition()) -- includes trades the study did not place. */
+  int accountPosition() {
+    return ctx.getAccountPosition();
+  }
+
+  /**
+   * F-1: the account's own numbers for the risk chain's daily-loss check -- see RiskChain.AccountTruth. Read at fill
+   * callbacks and once a second. Null if the instrument's tick value is unavailable. The average entry is only
+   * converted to ticks when the price anchor already exists (toTicks would otherwise fix the anchor from it).
+   */
+  com.flow.core.RiskChain.AccountTruth accountTruth(PriceCodec codec, double startCash) {
+    com.motivewave.platform.sdk.common.Instrument inst = safe(ctx::getInstrument);
+    Double pointValue = inst == null ? null : safe(inst::getPointValue);
+    Double tickSize = inst == null ? null : safe(inst::getTickSize);
+    Double cash = safe(ctx::getCashBalance);
+    Integer position = safe(ctx::getAccountPosition);
+    if (pointValue == null || tickSize == null || cash == null || position == null) return null;
+    Integer entryTicks = null;
+    if (position != 0 && codec != null && codec.hasAnchor()) {
+      Float entry = safe(ctx::getAccountAvgEntryPrice);
+      if (entry != null && !entry.isNaN() && entry != 0f) entryTicks = codec.toTicks(entry);
+    }
+    return new com.flow.core.RiskChain.AccountTruth(cash, startCash, position, entryTicks, pointValue * tickSize);
+  }
+
+  /** The account's cash balance now, or null if the platform cannot say (used to fix the session's starting balance). */
+  Double cashBalance() {
+    return safe(ctx::getCashBalance);
   }
 
   /** D-82/Q-11: same existing-order check refuseToArmReason() uses, reused as a stacking guard before every automatic real entry. */

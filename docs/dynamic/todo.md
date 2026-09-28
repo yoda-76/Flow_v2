@@ -5,6 +5,71 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
+## FIX LIST 2026-09-28 (from the log analysis — `logAnalysis-2026-09-28.md` + `liveTest-2026-09-28.md`; NOTHING here is fixed yet)
+
+Sources: **L-n** = `liveTest-2026-09-28.md` (last night), **N-n** = `logAnalysis-2026-09-28.md` (tonight's 34-min run, S7),
+**A/B/C/E** = `codeReview.md`. ⚑ = needs the user's decision before coding. Order = do top to bottom; tick + date when closed.
+State when this was written: dev machine's MotiveWave closed, `risk.local.json` = 100000 reversals / 90000 loss ticks
+(git-ignored — the *other* machine needs its own copy or gets the 200-tick / 20-reversal defaults), Big-trade Min Size still 1.
+
+### P0 — safety: must be fixed before any unattended / cloud run
+- [x] **F-1 · Kill switch acts on the wrong position and the wrong P&L (L-1, L-2, L-14).** *(2026-09-28, D-113: built + unit-tested + mutation-checked; **NOT deployed, NOT seen live** — re-test live with `dailyLossLimitTicks` 10. Done: (a) daily loss from the account's cash/position, (b) leg-filled + two-source position check before any close, (c) 1.5/3/5 s post-flatten verification that corrects a wrong-way fill, (d) ALERTs for every verification outcome. Original wording below.)* Last night it sent a second SELL on
+  top of a leg fill → short 1, unprotected. Fix: (a) daily loss from **fills/cash** (`order_fill.cashBalance` deltas), not the
+  risk chain's signal-price estimate (B7/C1); (b) before the flatten, re-read the position after a short settle *and* consult
+  the order tracker (an in-flight leg fill = don't send the close); (c) keep the tracker's legs until the flatten is confirmed
+  so the D-87 double-fill check still runs; (d) never leave the study disarmed *and* a position open without an ALERT.
+  Re-test live with `dailyLossLimitTicks` 10 (the 90000 run proved nothing about this).
+- [~] **F-2 · `getPosition()` lags (L-2).** *(2026-09-28, D-113 — **cause found:** `getPosition()` is the STUDY's position; the account's is `getAccountPosition()` (`findings.md` F-2). Done: flatten decisions, opening intents and refuse-to-arm read both and never trust one alone. **Left: C1 in full** — one position truth for strategy/risk chain/tracker — ⚑ still the user's call, and whether `getAccountPosition()` is prompt is unverified live.)* Measure whether it lags only for fills the study did not place or always; then make
+  every consumer (reconcile, kill switch, session flatten, refuse-to-arm, D-87 check) use the fill-driven tracker as truth,
+  the account read as a cross-check only. Same root as C1 — ⚑ **decide C1 (account vs tracker as position truth) first.**
+- [x] **F-3 · Fills the study did not place never reach the journal (L-3, N-7).** *(2026-09-28, D-113: built + unit-tested, NOT live. A ~1 s account watch journals `account_position_change` + ALERT `ACCOUNT_POSITION_CHANGED_UNTRACKED`; `daily_report.py` closes the phantom open trade from it. Journals written before this still show the phantom.)* Manual closes and MotiveWave's
+  "close the running position?" dialog leave a phantom open trade (`status.py`/report show `1 open trade` + 4 ALERTs today).
+  Route account-level fills/position changes into the journal; then the report's phantom open trade goes away.
+- [x] **F-4 · Stale strategy/risk state survives DEACTIVATE → re-activate (N-2, verify first).** *(2026-09-28, D-113: built + unit-tested, NOT live — the "verify first" step was skipped because the fix is safe either way: the pipeline is suspended while deactivated and resets on re-activation. Still worth one deliberate deactivate/activate on a quiet chart to see `REACTIVATED` + `pipeline_resync`.)* After DEACTIVATE the pipeline
+  still accepts intents (tonight: an *allowed* long intent 5 s before DESTROY) while the gateway is gone; MotiveWave reuses the
+  instance (A6), so on re-activation the strategy may believe it is long and the first reconcile could send a market entry on
+  a stale signal. Reproduce with a deliberate deactivate/activate on a quiet chart, then reset pipeline + risk state on
+  activate and stop consuming ticks while deactivated (also fixes L-10's misleading "not yet constructed" text).
+- [x] **F-5 · Lost bracket leg goes unnoticed (B6, ⚑).** *(2026-09-28, D-113: user chose **flatten + disarm**; built + unit-tested + mutation-checked, NOT live. Legs stay `DAY`. Original wording below.)* Legs are `DAY` orders; an expired/cancelled/rejected leg leaves the
+  position unprotected. ⚑ user decides: GTC legs? re-submit vs flatten on a lost leg. (Report already has a `LIVE_LEG_LOST` slot.)
+- [~] **F-6 · Removal with a position open (L-4).** *(2026-09-28: user's answer **"Yes, close it"** is in runbook §6; the "No" case stays an untested live test. Original wording below.)* The platform offers "close the running position?" although the study says
+  it doesn't support close-on-deactivate. Test answering **No** (does the bracket stay? does the re-added study refuse to arm, D-24?)
+  and write the answer into the runbook.
+
+### P1 — execution quality / correctness
+- [ ] **F-7 · Bracket anchored on the signal, entries fill ~1.6 ticks worse (N-1 = B8 = L-6, ⚑).** Measured on 94 trades: the
+  "5/5" bracket is really 7 stop / 3 target from the fill; avg win +3.7 vs avg loss −6.8; needs ~66 % wins to break even
+  (observed 25–42 %). ⚑ user decides: offset from the fill price / marketable-limit entry / widen. Also feeds L-5 (the
+  strategy's virtual `target_hit` vs the real target that didn't fill).
+- [ ] **F-8 · Max-reversals meaning (B5, ⚑).** Counts every position change (20 ≈ 10 round trips). Currently worked around by
+  `risk.local.json` = 100000. ⚑ decide the intended semantics (round trips? per hour?) and the shipped default.
+- [ ] **F-9 · Rate limit is what shapes trading (S7 numbers in `logAnalysis`).** 472 of 536 denials tonight were "6 changes in the last 60s".
+  ⚑ decide whether 6/min is the intended cap for a real run; it is per *intent change*, entries and exits both count.
+- [ ] **F-10 · Strategy chatter on thin profiles (L-11).** Flip-flopping on 1-tick LVN zones; contained by the guards. Only if
+  the strategy is to be judged, not the plumbing.
+
+### P2 — records, tools, housekeeping
+- [ ] **F-11 · `real_order_submitted` has no timestamp / signal price (N-6).** Add `t` + intent price so latency and slippage
+  are read from the journal, not inferred.
+- [ ] **F-12 · Log volume for long runs (N-3).** `raw.jsonl` ≈ 33 MB/h, `logs/` 438 MB, retention 0. Choose a `logRetentionHours`
+  for the cloud run and watch one real prune.
+- [ ] **F-13 · Clock (N-5 = E4).** Feed ahead of the PC by 0.2–1.9 s. `w32tm /resync` on both machines before a long run;
+  decide whether the risk clock should follow the exchange time.
+- [ ] **F-14 · `sdkTotalRealizedPnL` is per activation (L-15)** — never sum it across sessions; report/tools must use cash.
+- [ ] **F-15 · Cosmetic/text:** bracket prices journaled as float expansions (L-17); two `warm_start` lines in one day file (L-13);
+  Friday's last bar arrives as the first live bar (L-12); `order_fill.t` vs `lastFillTimeMs` (L-18); `ORDER_MODIFIED` ×2 (L-16).
+- [ ] **F-16 · MotiveWave-side noise, recorded not fixed:** `OrderImpl::target order not found!` (L-8), platform cancelling the
+  sibling leg itself (L-7), one JavaFX `ConcurrentModificationException` in the chart renderer (N-4 — check our chart drawing
+  stays on the UI thread if it recurs), Rithmic `get_order_book permission denied GCZ6` at workspace load (N-8 — spot-check the
+  liquidity map has depth after each session).
+- [ ] **F-17 · C3 real-account guard** (one checkbox is the only guard, D-107) — ⚑ the cash-balance/second-layer idea is still open.
+- [ ] **F-18 · Housekeeping before the next session:** decide `risk.local.json` values per machine; set big-trade Min Size back
+  from 1; remove + re-add the study after every deploy.
+
+### Live tests still owed (unchanged from below, all Sim, user does the GUI): ES-chart refusal · refuse-to-arm with an existing
+position (D-24) · removal-with-position "No" (F-6) · session-end flatten (D-92) · re-test F-1 with a 10-tick limit · same run on
+the second machine · multi-hour soak + 17:00 CT day roll · partial fills / both legs / DOM backlog (opportunistic).
+
 ## Roadmap to the target state (added 2026-09-24 — read this first)
 
 ### CODE REVIEW (2026-09-27) — `docs/dynamic/codeReview.md`; everything not needing a decision is FIXED (D-111)

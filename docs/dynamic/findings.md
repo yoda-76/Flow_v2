@@ -53,3 +53,29 @@ Also, only gold may now be traded (`InstrumentPolicy`), so a wrong chart can no 
 *Original status:* flagged, **not fixed** (working agreements §3 — awaiting the user's go). Open question for the fix:
 put the symbol in the path (`data/<construct>/<symbol>/<sessionId>.jsonl`) or in the `header` line, and whether
 the readers must handle the old layout. `todo.md` has the checkbox. Today's mixed files were left as they are.
+
+### F-2 (2026-09-28, from the live-test log analysis) — `[DOC]` `getPosition()` is the STUDY's position; the ACCOUNT's is a separate accessor
+Read from the SDK Javadoc (`../motivewave/docs/static/javadoc/com/motivewave/platform/sdk/order_mgmt/`, and
+`javap` on `mwave_sdk.jar`), while looking for why L-2 happened:
+
+| Method | Javadoc says |
+|---|---|
+| `OrderContext.getPosition()` | "Gets the current open position **for this strategy** for the default (chart) instrument." |
+| `OrderContext.getAccountPosition()` | "Gets the current open position **for the account** (for the default position)." |
+| `getAccountAvgEntryPrice()` | average entry price of the position on the selected account (chart instrument) |
+| `getExecutions()` | executed orders "since this strategy was activated" |
+| `closeAtMarket()` | "Closes the position held **by this strategy**. … will **wait until the market order(s) have been filled**." |
+| `closeAccountAtMarket()` | closes the position held by the selected account; `throws MException` |
+| `getTotalRealizedPnL()` | "since this strategy was opened (or last reset)" — explains L-15 (per activation) |
+| `Order.getAccountId()` | "the account ID for this order" — **usable as a second layer against a non-Simulated account (C3), never tried** |
+
+**What it explains:** L-2 (the study's position did not show a manual close for two minutes — the manual order was not
+the study's), and why re-activation showed `pos=0` (position recomputed). It also corrects the 2026-09-26 statement in
+`CLAUDE.md` that the SDK has "no accessor" to the account — there is none for the account *object*, but the account's
+position/entry/cash/orders ARE readable.
+
+**Not yet seen live:** how promptly `getAccountPosition()` updates relative to a fill callback and to the platform's own
+close (the runtime reads both and never trusts one alone — D-113); that `closeAccountAtMarket()` behaves as documented
+(deliberately **not** used); what `Order.getAccountId()` returns for the Sim account (a next-session read-only probe:
+log it at `ACTIVATE` and on every fill). This is a platform fact and belongs in `../motivewave/docs/dynamic/findings.md`
+too — recorded here because that repo may not exist on the machine that reads this.

@@ -224,6 +224,92 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // priceCodec/armDenied, which its suppliers read.
   private final LiveOrderTracker liveOrders =
       new LiveOrderTracker(() -> gateway, () -> priceCodec, this::logLine, this::journalDecision, this::denyArmBySafetyRule);
+  {
+    liveOrders.setAfterFillHook(this::onFillCallbackSeen);
+    liveOrders.setScheduler(this::scheduleSafetyTask);
+  }
+
+  // F-1 (2026-09-28): the ACCOUNT's numbers for the risk chain's daily-loss check (RiskChain.AccountTruth). Written on
+  // the order-callback / drain / safety threads, read on the drain thread -- an immutable record in a volatile.
+  private volatile com.flow.core.RiskChain.AccountTruth accountTruth = null;
+  private volatile double sessionStartCash = Double.NaN; // the account balance when this study instance first activated
+  // F-3: the account position last journaled, and when a fill callback last ran (to tell a change the study caused from one it did not).
+  private volatile int lastAccountPosition = Integer.MIN_VALUE;
+  private volatile long lastAccountPairKey = Long.MIN_VALUE;
+  private volatile long lastFillCallbackMs = 0;
+  private volatile boolean deactivatedBefore = false; // F-4: onActivate after an onDeactivate = a re-activation
+  private final Object safetyLock = new Object(); // not `this`: the platform's Study base class may lock on itself
+  private ScheduledExecutorService safetyExecutor;    // F-1: post-flatten verification, off every hot thread; guarded by safetyLock
+
+  /** F-1: run a safety task later on its own daemon thread (never the drain thread, whose clock events must not stall). */
+  private void scheduleSafetyTask(Runnable task, Long delayMs) {
+    synchronized (safetyLock) {
+      if (safetyExecutor == null) {
+        safetyExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+          Thread t = new Thread(r, "flow-runtime-safety-inst" + instanceId);
+          t.setDaemon(true);
+          return t;
+        });
+      }
+      safetyExecutor.schedule(task, delayMs, TimeUnit.MILLISECONDS);
+    }
+  }
+
+  /** F-1: after every fill callback -- note the time and refresh the risk chain's account snapshot from the just-updated balance. */
+  private void onFillCallbackSeen() {
+    lastFillCallbackMs = System.currentTimeMillis();
+    refreshAccountTruth();
+  }
+
+  private void refreshAccountTruth() {
+    OrderGateway gw = gateway;
+    PriceCodec codec = priceCodec;
+    if (gw == null) return;
+    if (Double.isNaN(sessionStartCash)) {
+      Double c = gw.cashBalance();
+      if (c == null) return;
+      sessionStartCash = c;
+    }
+    com.flow.core.RiskChain.AccountTruth t = gw.accountTruth(codec, sessionStartCash);
+    if (t != null) accountTruth = t;
+  }
+
+  /**
+   * F-3 (drain thread, about once a second): watch the ACCOUNT's position for changes the study did not cause -- a
+   * manual close, MotiveWave's own "close the running position?" dialog (L-3/L-4). Journals `account_position_change`
+   * whenever the account position or the (account, study) pair changes, flagged explainedByFill when a fill callback ran
+   * within the last 3 s. Read-only: it never places anything. Also keeps the risk chain's account snapshot fresh.
+   */
+  private void watchAccount() {
+    OrderGateway gw = gateway;
+    if (gw == null) return;
+    refreshAccountTruth();
+    int acct = gw.accountPosition();
+    int strat = gw.currentPosition();
+    long pairKey = (long) acct * 1_000_003L + strat;
+    if (acct == lastAccountPosition && pairKey == lastAccountPairKey) return;
+    boolean first = lastAccountPosition == Integer.MIN_VALUE;
+    int previous = lastAccountPosition;
+    lastAccountPosition = acct;
+    lastAccountPairKey = pairKey;
+    if (first) return; // the baseline was taken at activation; only CHANGES are records
+    boolean explained = System.currentTimeMillis() - lastFillCallbackMs < 3_000L;
+    Double cash = gw.cashBalance();
+    journalDecision(Json.object()
+        .field("type", "account_position_change")
+        .field("t", System.currentTimeMillis())
+        .field("previousAccountPosition", previous)
+        .field("accountPosition", acct)
+        .field("studyPosition", strat)
+        .field("explainedByFill", explained)
+        .fieldOrNull("cashBalance", cash)
+        .fieldOrNull("avgEntryTicks", accountTruth == null ? null : accountTruth.avgEntryTicks()) // F-1 evidence: the entry the daily-loss check marks against
+        .build());
+    if (!explained && previous != acct) {
+      logLine("ACCOUNT_POSITION_CHANGED_UNTRACKED " + previous + " -> " + acct + " (study position " + strat
+          + ") -- not from an order this study placed (manual trade / platform close)");
+    }
+  }
 
   /** A safety rule disarmed this session (A6): stays denied across re-activation, until the study is re-added. */
   private void denyArmBySafetyRule() {
@@ -459,7 +545,10 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         .field("fileLastModifiedMs", riskConfig.fileLastModifiedMs())
         .field("sessionStartMs", sessionStartMs) // staleness: compare against fileLastModifiedMs (README "traceable... not silently assumed current")
         .build());
-    com.flow.core.RiskChain riskChain = new com.flow.core.RiskChain(riskConfig);
+    // F-1: while genuinely live (SIM_LIVE + Armed) the daily-loss check uses the ACCOUNT's balance and position, not the
+    // signal-price estimate; in DRY_RUN there is no account activity, so the supplier says "none" and the estimate stays.
+    com.flow.core.RiskChain riskChain = new com.flow.core.RiskChain(riskConfig,
+        () -> isLiveModeRequested() ? accountTruth : null);
     java.util.function.BooleanSupplier armedSupplier =
         () -> getSettings().getBoolean(ARMED_KEY) && !armDenied && instrumentRefusal == null;
     java.util.function.IntSupplier queueDepthSupplier = () -> {
@@ -503,6 +592,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks,
         riskChain, armedSupplier, queueDepthSupplier, killSwitch, sessionFlatten);
     pipeline.attachRuntimeStatus(runtimeStatus);
+    pipeline.attachAccountWatch(this::watchAccount); // F-3
     // F-1: one folder per instrument, so a session on another chart never shares a day file with gold's.
     com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT,
         com.flow.core.InstrumentPolicy.symbolDir(instrument.getSymbol()));
@@ -553,7 +643,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     if (gw == null) {
       journal.writeDecision(triggeringEvent.seq(), Json.object()
           .field("type", "reconcile_skipped")
-          .field("reason", "OrderGateway not yet constructed (onActivate has not fired)")
+          .field("reason", "OrderGateway not available (onActivate has not fired yet, or the study was deactivated)") // L-10
           .field("seq", triggeringEvent.seq())
           .build());
       return;
@@ -1223,6 +1313,12 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       ce.shutdownNow();
       clockExecutor = null;
     }
+    synchronized (safetyLock) {
+      if (safetyExecutor != null) { // F-1: a pending post-flatten check must not outlive the instance
+        safetyExecutor.shutdownNow();
+        safetyExecutor = null;
+      }
+    }
     Sequencer s = sequencer;
     if (s != null) {
       s.stop();
@@ -1298,8 +1394,19 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   @Override
   public void onActivate(OrderContext ctx) {
     gateway = new OrderGateway(ctx);
-    logLine("ACTIVATE pos=" + ctx.getPosition() + " cash=" + ctx.getCashBalance()
+    logLine("ACTIVATE pos=" + ctx.getPosition() + " accountPos=" + ctx.getAccountPosition() + " cash=" + ctx.getCashBalance()
         + " -- CONFIRM: is this the Simulated account? (Sim Trade Only must stay enabled)");
+    lastAccountPosition = ctx.getAccountPosition(); // F-3: the baseline; only changes after this are journaled
+    lastAccountPairKey = (long) lastAccountPosition * 1_000_003L + ctx.getPosition();
+    if (deactivatedBefore) {
+      // F-4: a re-activation. Forget everything held across the gap (legs, in-flight entry, the strategy's and risk
+      // chain's belief -- Pipeline does its half on the next event); the arming checks below decide whether it may trade.
+      liveOrders.resetForReactivation();
+      logLine("REACTIVATED -- tracker and pipeline state reset");
+    }
+    Pipeline p = pipeline;
+    if (p != null) p.resumeTrading();
+    refreshAccountTruth();
 
     String refuseReason = gateway.refuseToArmReason();
     if (refuseReason != null) {
@@ -1321,7 +1428,11 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   @Override
   public void onDeactivate(OrderContext ctx) {
     logLine("DEACTIVATE pos=" + ctx.getPosition());
+    Pipeline p = pipeline;
+    if (p != null) p.suspendTrading(); // F-4: no strategy wakes while there is no gateway to act on them
+    deactivatedBefore = true;
     gateway = null;
+    accountTruth = null;
   }
 
   @Override
