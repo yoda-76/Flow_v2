@@ -82,6 +82,12 @@ State when this was written: dev machine's MotiveWave closed, `risk.local.json` 
 **F. Watching it:** nothing pushes an alert when it disarms, trips the kill switch, goes `FEED_STALE` or the disk fills — a delivery channel (phone push/Telegram/email; credentials go in `.env` by the user) + a small watcher over `status.py`; and a way to look at the machine remotely.
 **G. Housekeeping:** big-trade Min Size back from 1; `risk.local.json` per machine (git-ignored); decide what the 24/7 strategy is — `lvn_fade_test` is a plumbing stress test (≈ −2 ticks a trade on Sim even with the fixes), fine as a soak, not as a result.
 
+- [ ] **F-24 · MotiveWave does not resume market data after a network drop (N-11).** Needs: the Telegram alert on `FEED_STALE` (user is adding the bot), MotiveWave's own auto-reconnect setting checked, and a decision on recovery (operator / documented manual reconnect / a watcher). The 24/7 run should not start without at least the alert.
+- [ ] **F-25 · Sim gap-fill optimism (N-12).** Compare a stop/limit fill after a `data_gap` with the first post-gap price in the report, so a −$50 "stop" that really was −19 ticks is shown honestly.
+
+- [ ] **F-26 · The feed-resume *flatten* branch has never fired live.** In the 23:13 Wi-Fi test the Sim engine filled the stop 40 ms after the first tick back, before our 1.5 s check. To exercise our own flatten: repeat the drop with the price gapping through a level while the platform can't fill it (e.g. a wider stop, or a target placed far enough that only the first post-gap price crosses it), or accept the fake-broker tests. Also repeat once with the price still BETWEEN the levels to see `FEED_RESUME_KEEP` live.
+- [x] **N-13 · False `ACCOUNT_POSITION_CHANGED_UNTRACKED` on a genuine entry fill** — fixed 2026-09-28 (D-116, `AccountWatch`), built + tested, deploy pending.
+
 ### Live tests still owed (unchanged from below, all Sim, user does the GUI): ES-chart refusal · refuse-to-arm with an existing
 position (D-24) · removal-with-position "No" (F-6) · session-end flatten (D-92) · re-test F-1 with a 10-tick limit · same run on
 the second machine · multi-hour soak + 17:00 CT day roll · partial fills / both legs / DOM backlog (opportunistic).

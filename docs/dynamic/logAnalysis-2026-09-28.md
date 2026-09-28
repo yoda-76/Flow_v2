@@ -145,3 +145,28 @@ Method: for each entry, the signal = the raw tick whose `seq` fired the intent (
 
 **Reading:** on Sim there is **no latency at all** (the fill callback arrives within ~50 ms of the tick that fired the signal, and the fill is stamped with that same tick's time). The ~1.6–1.9 ticks are **not delay, they are the spread**: the signal fires on a last-trade price that sits on one side of a ~2-tick-wide book, and the market order buys the ask / sells the bid. Real-account latency (tens to hundreds of ms plus queue/impact) will come **on top** of that and cannot be measured on Sim. The journal cannot measure it later either until `real_order_submitted` carries a timestamp and the signal price/touch (F-11).
 Exit side (S7, 40 stops): 34 filled at the trigger, 6 within 1–2 ticks worse (mean ≈ 0.25 tick); limit targets fill at the limit or up to 1 tick better.
+
+## Addendum, 23:13–23:18 IST — the deliberate network drop (Wi-Fi off), first live test of the feed watchdog
+
+Session `lvn_fade_test_1790617258316_inst1389144690` (build with D-113/D-114/D-115), long 1 open from 4171.0 (stop 4170.5, target 4171.5, anchored to the fill).
+
+| time (IST) | what |
+|---|---|
+| 23:13:07 | last tick reaches the study (Wi-Fi turned off) |
+| **23:13:18** | **`FEED_STALE`** (no data for 20 s, last price 4170.7 = between stop and target); entries blocked by the `feed` filter |
+| 23:13:27–23:13:53 | MotiveWave only NOW logs its four Rithmic connections "Broken" (30–45 s after the loss — our watchdog was faster) |
+| 23:14:16 | Wi-Fi back: MotiveWave logs "connection re-established"; `MWException: Market Data Connection Not Available` from `REngine.getAccounts` at the same instant |
+| 23:14:19 → 23:17:38 | **no ticks reach any study or the chart**; MotiveWave's own quote queue grows 1,001 → 3,818 → 6,369 → 10,000 ("unable to post quote! queue size: 10000") and it dumps all thread stacks (no FLOW thread among them — the study was not the blocker) |
+| 23:17:46 | user: Disconnect / Connect Rithmic in MotiveWave |
+| **23:17:57** | ticks resume: `data_gap` (290 s, price 110 → 89 ticks, jump −21), `FEED_RESUMED`; entries stay blocked |
+| 23:17:57.388 | the **Sim engine itself fills the resting stop** at 4170.5 (its stop price) 40 ms after the first tick — while the market was at 4168.9 (tick 89) |
+| 23:17:58.9 | our 1.5 s check: `FEED_RESUME_NOTHING_OPEN` (the platform had already resolved it) |
+| **23:18:07.265** | `feed_live` exactly 10 s after the resume; the first entry follows within 26 ms |
+
+**Worked:** detection (20 s), the entry block, the `data_gap` record with the price jump, the resume check, the settle period, no false flatten, nothing sent while data was down, state correct afterwards (flat, cash 93,500 = the −$50 stop).
+**Not exercised:** the resume rule's *flatten* branch — the platform filled the leg first (unit-tested with a fake broker only).
+
+New findings:
+- **N-11 · High (for 24/7)** **MotiveWave does not recover market-data delivery by itself after a network drop.** ~4 min of nothing after a "re-established" connection, until Rithmic was manually disconnected/reconnected. Any 24/7 run needs (a) the Telegram alert on `FEED_STALE` (the only thing that saw it), and (b) a recovery plan: MotiveWave's own auto-reconnect setting, or an operator, or a watcher that alerts and waits.
+- **N-12 · Med** **Sim stop fills at its stop price even through a 19-tick gap** (4170.5 filled while the market traded 4168.9): −$50 recorded, a real stop-market would have filled near the market, ≈ −16 ticks worse (≈ −$160 more). Sim P&L is optimistic on gaps — the F-20 flag only catches fills that differ from their order price; a gap fill should be compared with the first post-gap price.
+- **N-13 · Low (fixed, D-116)** A genuine entry fill was ALERTed as `ACCOUNT_POSITION_CHANGED_UNTRACKED` (23:13:01): the 1 s watcher read the new account position a few ms before the fill callback ran. Judgement is now deferred 2.5 s (`AccountWatch`).

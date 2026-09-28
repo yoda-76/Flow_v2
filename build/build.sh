@@ -145,6 +145,10 @@ echo "== live order tracker test against the fake broker (D-91) =="
 "$JAVA" -cp "${SDKJAR}${SEP}build/classes/core${SEP}build/classes/runtime" com.flow.rt.LiveOrderTrackerTest
 echo "(live order tracker test passed -- see output above)"
 
+echo "== account watch judgement test (F-3 race fix, 2026-09-28) =="
+"$JAVA" -cp "${SDKJAR}${SEP}build/classes/core${SEP}build/classes/runtime" com.flow.rt.AccountWatchTest
+echo "(account watch test passed -- see output above)"
+
 echo "== daily report tests (python, D-94) =="
 if command -v python >/dev/null 2>&1; then
   python analysis/test_daily_report.py

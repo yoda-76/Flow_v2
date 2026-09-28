@@ -4469,6 +4469,17 @@ readable rather than being silently rewritten.
     Mutation: 6/6 caught (one survivor found and closed with a kill-switch-under-lock test). Full `build.sh` passes.
   - **Not verified live** (the live account id has only ever been `simulated`, so the refusal paths cannot fire).
 
+- **D-116** (2026-09-28) — **Race fix in the account watch; first live test of the feed watchdog.** The Wi-Fi-off test
+  (`logAnalysis-2026-09-28.md`, last addendum) passed for detection (`FEED_STALE` at 20 s, before MotiveWave's own
+  "Broken" alerts), the entry block, `data_gap`, the settle period (`feed_live` exactly 10 s after the resume) and a
+  clean end state; the flatten branch of the resume rule was not reached (the Sim engine filled the stop first).
+  It also showed **MotiveWave failing to resume market-data delivery after Wi-Fi returned** (~4 min, manual Rithmic
+  disconnect/connect needed) and **Sim filling a stop at its stop price through a 19-tick gap** (N-11, N-12).
+  Code: the F-3 watch was extracted to `AccountWatch` and an unexplained position change is now re-judged 2.5 s later
+  before it is called untracked (a genuine entry fill had been ALERTed because the watcher read the position a few
+  ms before the fill callback ran). New gate `AccountWatchTest` (5 groups incl. that race); mutation 4/4. Full
+  `build.sh` passes; **built, not deployed** (the study was running).
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

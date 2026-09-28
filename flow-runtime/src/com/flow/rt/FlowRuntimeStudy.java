@@ -236,10 +236,13 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // the order-callback / drain / safety threads, read on the drain thread -- an immutable record in a volatile.
   private volatile com.flow.core.RiskChain.AccountTruth accountTruth = null;
   private volatile double sessionStartCash = Double.NaN; // the account balance when this study instance first activated
-  // F-3: the account position last journaled, and when a fill callback last ran (to tell a change the study caused from one it did not).
-  private volatile int lastAccountPosition = Integer.MIN_VALUE;
-  private volatile long lastAccountPairKey = Long.MIN_VALUE;
-  private volatile long lastFillCallbackMs = 0;
+  // F-3: journals every change of the ACCOUNT's position and whether a fill callback of this study explains it
+  // (judged after a short grace period -- see AccountWatch for the race that made a plain check raise a false alert).
+  private final AccountWatch accountWatch = new AccountWatch(new AccountWatch.Sink() {
+    @Override public void journal(String jsonLine) { journalDecision(jsonLine); }
+    @Override public void alert(String message) { logLine(message); }
+    @Override public void later(Runnable task, long delayMs) { scheduleSafetyTask(task, delayMs); }
+  }, System::currentTimeMillis);
   private volatile boolean deactivatedBefore = false; // F-4: onActivate after an onDeactivate = a re-activation
   private final Object safetyLock = new Object(); // not `this`: the platform's Study base class may lock on itself
   private ScheduledExecutorService safetyExecutor;    // F-1: post-flatten verification, off every hot thread; guarded by safetyLock
@@ -260,7 +263,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
 
   /** F-1: after every fill callback -- note the time and refresh the risk chain's account snapshot from the just-updated balance. */
   private void onFillCallbackSeen() {
-    lastFillCallbackMs = System.currentTimeMillis();
+    accountWatch.onFillCallback();
     refreshAccountTruth();
   }
 
@@ -287,31 +290,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     OrderGateway gw = gateway;
     if (gw == null) return;
     refreshAccountTruth();
-    int acct = gw.accountPosition();
-    int strat = gw.currentPosition();
-    long pairKey = (long) acct * 1_000_003L + strat;
-    if (acct == lastAccountPosition && pairKey == lastAccountPairKey) return;
-    boolean first = lastAccountPosition == Integer.MIN_VALUE;
-    int previous = lastAccountPosition;
-    lastAccountPosition = acct;
-    lastAccountPairKey = pairKey;
-    if (first) return; // the baseline was taken at activation; only CHANGES are records
-    boolean explained = System.currentTimeMillis() - lastFillCallbackMs < 3_000L;
-    Double cash = gw.cashBalance();
-    journalDecision(Json.object()
-        .field("type", "account_position_change")
-        .field("t", System.currentTimeMillis())
-        .field("previousAccountPosition", previous)
-        .field("accountPosition", acct)
-        .field("studyPosition", strat)
-        .field("explainedByFill", explained)
-        .fieldOrNull("cashBalance", cash)
-        .fieldOrNull("avgEntryTicks", accountTruth == null ? null : accountTruth.avgEntryTicks()) // F-1 evidence: the entry the daily-loss check marks against
-        .build());
-    if (!explained && previous != acct) {
-      logLine("ACCOUNT_POSITION_CHANGED_UNTRACKED " + previous + " -> " + acct + " (study position " + strat
-          + ") -- not from an order this study placed (manual trade / platform close)");
-    }
+    accountWatch.observe(gw.accountPosition(), gw.currentPosition(), gw.cashBalance(),
+        accountTruth == null ? null : accountTruth.avgEntryTicks());
   }
 
   /** A safety rule disarmed this session (A6): stays denied across re-activation, until the study is re-added. */
@@ -1423,8 +1403,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     gateway = new OrderGateway(ctx, orderLock);
     logLine("ACTIVATE pos=" + ctx.getPosition() + " accountPos=" + ctx.getAccountPosition() + " cash=" + ctx.getCashBalance()
         + " -- CONFIRM: is this the Simulated account? (Sim Trade Only must stay enabled)");
-    lastAccountPosition = ctx.getAccountPosition(); // F-3: the baseline; only changes after this are journaled
-    lastAccountPairKey = (long) lastAccountPosition * 1_000_003L + ctx.getPosition();
+    accountWatch.baseline(ctx.getAccountPosition(), ctx.getPosition()); // F-3: only changes after this are journaled
     if (deactivatedBefore) {
       // F-4: a re-activation. Forget everything held across the gap (legs, in-flight entry, the strategy's and risk
       // chain's belief -- Pipeline does its half on the next event); the arming checks below decide whether it may trade.
