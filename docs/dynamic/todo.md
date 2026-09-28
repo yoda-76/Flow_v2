@@ -74,7 +74,7 @@ State when this was written: dev machine's MotiveWave closed, `risk.local.json` 
 - [ ] **F-23 · Entry slippage cap (deferred from D-114).** Marketable limit at the touch + 2–3 ticks instead of a bare market order; unfilled → cancel, journal `entry_missed`. Matters on a real account (Sim slippage is just the spread, max 6 ticks).
 
 ### BEFORE THE 24/7 RUN (assessed 2026-09-28 — the user asked "what else is left")
-**A. Prove the new code live (nothing from D-113/D-114 has run yet)** — deploy, then on Sim: (1) `dailyLossLimitTicks` 10 → kill switch, watch the verified flatten; (2) a **deliberate network drop** (~40 s, ideally with a position open) → `FEED_STALE`, `data_gap`, the resume rule; (3) deactivate → re-activate on a quiet chart (`REACTIVATED`, `pipeline_resync`); (4) the anchored bracket's real prices; (5) refuse-to-arm over a position, ES refusal, session-end flatten (`flattenLeadMinutes` 400).
+**A. Live proof — status 2026-09-28 23:45 IST.** DONE on Sim: kill switch at 10 ticks (one close, verified flat, disarmed); Wi-Fi drop and a manual Rithmic disconnect/connect (`FEED_STALE` + alert, entry block, `data_gap`, settle, clean end); anchored brackets; cost records; account watch (no false alerts after D-116); placeholder alert file (`logs/alerts.log`: SESSION_START, FEED_STALE, FEED_RESUMED). STILL TO DO: (1) the **16:00–17:00 CT halt** — entries stop 15:45 CT (02:15 IST), flatten 15:55 CT (02:25 IST), reopen and **day roll** 17:00 CT (03:30 IST): leave a study running through it; (2) deactivate → re-activate on a quiet chart (`REACTIVATED`, `pipeline_resync`); (3) refuse-to-arm over an existing position, ES-chart refusal; (4) the resume-rule flatten branch and the account-refusal paths (both need a fault the Sim will not produce on its own — unit-tested only, F-26).
 **B. Decided 2026-09-28:** the reversal cap, rate limit and daily loss limit stay at their `risk.json` defaults (all configurable; per machine in `risk.local.json`) — F-8/F-9 closed as "defaults"; the account guard is built (D-115, C3/F-17 done); the strategy and order-flow rules will be changed by the user before the run; Telegram alerts by the user (`.examples.env`); memory measured after day one. **Still open:** C1 (one position truth).
 **C. Never tried live:** the 16:00–17:00 CT halt (flatten 15:55, reopen 17:00), the 17:00 CT **day roll** (risk re-base, VWAP reset, new data file, retention prune), Friday → Sunday, holidays/early closes (not modelled), the **December contract roll** (`GCZ6` expires; `@GC` vs explicit contract), and Rithmic's own daily disconnect/relogin.
 **D. Machine:** no sleep/hibernate (D6), no forced Windows-update reboots, **clock sync** (F-13 — laptop was 3 s off, this one ~1–2 s), a persistent desktop session, MotiveWave auto-update pinned (7.0.28 vs 7.1.1), and a **restart policy** — after any MotiveWave/PC restart the study must be re-added by hand today (runbook §9).
@@ -82,11 +82,73 @@ State when this was written: dev machine's MotiveWave closed, `risk.local.json` 
 **F. Watching it:** nothing pushes an alert when it disarms, trips the kill switch, goes `FEED_STALE` or the disk fills — a delivery channel (phone push/Telegram/email; credentials go in `.env` by the user) + a small watcher over `status.py`; and a way to look at the machine remotely.
 **G. Housekeeping:** big-trade Min Size back from 1; `risk.local.json` per machine (git-ignored); decide what the 24/7 strategy is — `lvn_fade_test` is a plumbing stress test (≈ −2 ticks a trade on Sim even with the fixes), fine as a soak, not as a result.
 
-- [ ] **F-24 · MotiveWave does not resume market data after a network drop (N-11).** Needs: the Telegram alert on `FEED_STALE` (user is adding the bot), MotiveWave's own auto-reconnect setting checked, and a decision on recovery (operator / documented manual reconnect / a watcher). The 24/7 run should not start without at least the alert.
-- [ ] **F-25 · Sim gap-fill optimism (N-12).** Compare a stop/limit fill after a `data_gap` with the first post-gap price in the report, so a −$50 "stop" that really was −19 ticks is shown honestly.
+- [~] **F-24 · MotiveWave does not resume market data after a network drop (N-11).** *(2026-09-28, D-117: the alert path and a placeholder `logs/alerts.log` channel are built — Telegram = a `TelegramAlertSink` the user adds; the user plans EC2 hosting and will revisit the recovery question only if the disconnection recurs there.)* Needs: the Telegram alert on `FEED_STALE` (user is adding the bot), MotiveWave's own auto-reconnect setting checked, and a decision on recovery (operator / documented manual reconnect / a watcher). The 24/7 run should not start without at least the alert.
+- [x] **F-25 · Sim gap-fill optimism (N-12).** *(2026-09-28, D-117: built + tested; report shows recorded vs realistic.)* Compare a stop/limit fill after a `data_gap` with the first post-gap price in the report, so a −$50 "stop" that really was −19 ticks is shown honestly.
 
 - [ ] **F-26 · The feed-resume *flatten* branch has never fired live.** In the 23:13 Wi-Fi test the Sim engine filled the stop 40 ms after the first tick back, before our 1.5 s check. To exercise our own flatten: repeat the drop with the price gapping through a level while the platform can't fill it (e.g. a wider stop, or a target placed far enough that only the first post-gap price crosses it), or accept the fake-broker tests. Also repeat once with the price still BETWEEN the levels to see `FEED_RESUME_KEEP` live.
 - [x] **N-13 · False `ACCOUNT_POSITION_CHANGED_UNTRACKED` on a genuine entry fill** — fixed 2026-09-28 (D-116, `AccountWatch`), built + tested, deploy pending.
+
+### STATUS 2026-09-29 00:xx IST — after the user's replies (D-118)
+- **Done live:** kill switch, Wi-Fi drop + manual feed reconnect, a second short self-recovered feed blip (23:56:55 IST, 21s), **deactivate → re-activate** (2026-09-28 23:45:48–52 IST: `DEACTIVATE`, `ACTIVATE`, `REACTIVATED` + `pipeline_resync`, armed kept, trading resumed normally), placeholder alert file. **Built (D-118):** `ops/watchdog.py` (+22 tests), `ops/register_tasks.ps1`, `ops/harden_windows.ps1`, `docs/runbook-ec2.md`.
+- **Deferred by the user (do when reached):** ES-chart refusal and refuse-to-arm-over-a-position tests; feed-resume flatten branch + account-refusal paths (Sim cannot produce the fault — F-26); the Java `TelegramAlertSink` (the watchdog forwards `alerts.log` to Telegram once the bot exists — the user adds the bot); holidays (no ticks → no trades; `FEED_STALE` will alert on a holiday until a calendar exists) and the **December gold contract roll**; memory/disk soak numbers after day one (`logs/watchdog_metrics.csv`).
+- **Pending — the user will review later:** the **strategy** and **order-flow rules** (the 24/7 run should not start until they are set); `lvn_fade_test` is only a plumbing test.
+- **To discuss:** **C1** (one position truth) and **F-22 / F-23** (historical-bars gap check, entry slippage cap).
+- **Configurable, no code needed:** reversal cap, rate limit, daily loss limit (`config/risk.json` / `risk.local.json`); **big-trade Min Size is a STUDY setting** (MotiveWave → study settings → Big Trades → Min Size, default 1) — set it on the EC2 chart, it is not in `risk.json`.
+- **Still to run on EC2:** the reboot test, a full halt + reopen (02:15 → 03:45 IST) with the watchdog running, and the first-24-hours checklist (`runbook-ec2.md` §10). The halt tonight on this machine is the dress rehearsal.
+
+## Session handoff — 2026-09-28 night → 2026-09-29 (read this first if picking this up fresh)
+
+**Everything in this block is also in the sections below it (D-113…D-118, F-1…F-26) — this is only the "what actually
+happened tonight, in order, with real numbers" summary**, per the project's own convention of keeping a chat-free
+handoff in this file.
+
+**What shipped tonight, in commits `060d9f8` → `91520b4` → (this session's commit, made together with this note):**
+D-113 (account-truth kill switch + verified flatten + lost-leg handling), D-114 (bracket anchored to the fill,
+execution-cost records, feed watchdog, gap-fill artifact flag), D-115 (Simulated-account-only enforced in code —
+`AccountPolicy`/order lock), D-116 (account-watch race fix — a genuine fill no longer mis-alerts), D-117 (alert
+path with a placeholder file channel; gap-fill honesty in the report), D-118 (outside-MotiveWave watchdog, restart-
+policy scripts, `docs/runbook-ec2.md`).
+
+**Live-verified on Sim tonight, on the dev machine, all on `lvn_fade_test`/`@GC`/20 s:**
+1. **Kill switch** (22:55:16 IST, limit 10 ticks): fired at exactly −10 ticks, one market close, `FLATTEN_VERIFIED`,
+   disarmed, no naked position. (`liveTest`/`logAnalysis` addenda, D-113.)
+2. **Wi-Fi off** (23:13–23:18 IST): `FEED_STALE` at 20 s (before MotiveWave's own "Broken" alerts), entries blocked,
+   MotiveWave itself did **not** resume ticks for ~4 min until a manual Rithmic disconnect/connect, then `data_gap`
+   + `feed_live` 10 s later, clean end state. Sim filled a resting stop at its own price through the gap (N-12 →
+   F-25, now flagged honestly in the report).
+3. **Feed disconnect/connect from inside MotiveWave** (23:39–23:42 IST, no Wi-Fi toggle): same shape, 71 s gap,
+   `FEED_STALE` → `data_gap` → `feed_live`, no false alerts.
+4. **A second, shorter feed blip** (23:56:55–57 IST): `FEED_STALE` for 21 s, self-recovered, no manual reconnect —
+   caught and cleared correctly. (Built after this one: the outside watchdog. The placeholder in-runtime channel
+   caught it fine either way.)
+5. **Deactivate → re-activate** (23:45:48–52 IST): `REACTIVATED` + `pipeline_resync`, armed survived, trading
+   resumed normally.
+6. **Account-watch race fix (D-116) confirmed silent since**: no false `ACCOUNT_POSITION_CHANGED_UNTRACKED` in any
+   session after the fix deployed (23:35 IST on).
+
+**NOT live-verified (say so, don't imply otherwise):** the feed-resume *flatten* branch (a reached/crossed level —
+Sim keeps beating our 1.5 s check by filling the leg itself first, F-26); the account-refusal paths (D-115) — the
+account id has only ever been `"simulated"`; the ES-chart / refuse-to-arm-over-a-position tests; the 16:00–17:00 CT
+halt and day roll (due ~02:30–03:30 IST tonight — **the study was left running through it on purpose**, a dress
+rehearsal for the EC2 timetable in `runbook-ec2.md` §9 — check the flatten, the quiet halt with no false
+`FEED_STALE`, and the reopen/day-roll the next time this is picked up); a machine reboot; anything about EC2 itself
+(nothing has run there yet — `runbook-ec2.md` is written from measurement + general knowledge, marked **[CHECK]**
+throughout).
+
+**State when this was written (2026-09-29 00:20 IST):** session
+`logs/lvn_fade_test_1790618732366_inst909684115/` still `ALIVE`, armed `SIM_LIVE`, 94 fills so far, cash **$92,420**.
+`config/risk.local.json` on this machine: `{"maxReversalsPerSession":100000, "dailyLossLimitTicks":90000}` (loose,
+for testing — reset to the defaults, i.e. delete the file, before anything resembling a real evaluation).
+`status.py` shows a phantom "2 open trade" (the old L-3 gap: a platform-side close the journal never saw, from
+before tonight's F-3 fix — the old journal entries that produced it predate the fix and stay wrong). Big-trade Min
+Size is still the test value **1** (a MotiveWave study setting, not `risk.json` — todo item G).
+
+**User's plan, in the user's own words: "will complete all of this in one go tomorrow."** Deferred, not forgotten:
+ES-chart/refuse-to-arm tests, F-26's two branches, the Telegram bot (`TelegramAlertSink` swap or just keep using the
+watchdog's Telegram forwarding — either works, the user picks), holidays/contract-roll handling, and — the biggest
+item — **the strategy and order-flow rules**, which the user will change before any real 24/7 run; `lvn_fade_test`
+is a plumbing stress test only. Also pending a joint decision: **C1** (one position truth for strategy/risk
+chain/tracker) and **F-22/F-23** (historical-bars gap check; entry slippage cap) — both discussed, neither decided.
 
 ### Live tests still owed (unchanged from below, all Sim, user does the GUI): ES-chart refusal · refuse-to-arm with an existing
 position (D-24) · removal-with-position "No" (F-6) · session-end flatten (D-92) · re-test F-1 with a 10-tick limit · same run on

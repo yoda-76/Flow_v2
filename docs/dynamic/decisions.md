@@ -4480,6 +4480,53 @@ readable rather than being silently rewritten.
   ms before the fill callback ran). New gate `AccountWatchTest` (5 groups incl. that race); mutation 4/4. Full
   `build.sh` passes; **built, not deployed** (the study was running).
 
+- **D-117** (2026-09-28) — **Alert path with a placeholder channel; gap-fill honesty in the report; EC2 note.**
+  User: *"add a placeholder logger function in place of the Telegram alert, I will add the bot later"*; *"I am
+  planning to use EC2 instances so the internet problem won't be there; if we run into the disconnection issue there
+  as well we will revisit"* (so F-24's recovery plan waits for evidence on EC2; the alert path does not).
+  - **Alert path (flow-core):** `AlertSink` (one method: severity, key, message, time), `AlertPolicy` (which runtime
+    log lines are ALERT / WARN / INFO — mirrors the report's "Needs attention" list, longest prefix first),
+    `AlertDispatcher` (throttle: the same key at most once a minute, the next one that gets through says how many were
+    held back; a failing sink is swallowed), `LogFileAlertSink` (the placeholder: appends to `logs/alerts.log`).
+    Wiring: `FlowRuntimeStudy.logLine` feeds every runtime line through the policy; `Pipeline.attachAlertHook` carries
+    the two events only the pipeline knows (`FEED_STALE`, and `DISARM` from an exception or journal overflow). Swapping
+    in Telegram = a class implementing `AlertSink` at the one place the dispatcher is built; it must not block (the
+    drain thread calls it). New gate `AlertDispatcherTest`; `FeedWatchdogTest` +2 groups.
+  - **F-25 done — gap fills in the report.** A trade open across a `data_gap` whose exit is a stop is re-priced at the
+    first price back when that is worse than the stop; a limit exit is never better than its limit. The summary shows
+    recorded vs realistic gross, and the trade row says "⚠ across a data gap (realistic exit …)". (Model case: the
+    23:17:57 stop recorded −5 ticks, realistic ≈ −16.) 2 new Python tests (69 total).
+  - **Built, deployed for the next live run; not yet seen live** (no alert has fired on the new path).
+
+- **D-118** (2026-09-28) — **An outside-MotiveWave watchdog, the restart policy, and an EC2 runbook.** User: *"implement the
+  outside watcher; implement the restart policy; write the EC2 runbook; leave the tests that are done; big-trade Min Size
+  is configurable [it is a study setting]; keep strategy/order-flow rules pending; discuss C1 and F-22/F-23; holidays and
+  the contract roll when we reach them; on EC2 only the Sim account runs."*
+  - **`ops/watchdog.py`** (stdlib Python, run every minute): reads only the tail of the newest `decisions.jsonl` and the
+    process list. Alerts on: journal silent > 90 s (MotiveWave/study crashed or froze), clean stop while a 24/7 run is
+    expected, runtime DISARMED by a safety rule, `healthy=false`, `feedState` not LIVE, no MotiveWave process, free disk
+    < 5 GB; **forwards new lines of `logs/alerts.log` to the same channel** (so Telegram works with no Java-side sink);
+    appends `logs/watchdog_metrics.csv` (journal age, feed state, MotiveWave memory, disk) — the soak record. (A
+    second, brief `FEED_STALE` happened live at 23:56:55 IST — 21 s, self-recovered, no manual reconnect needed; the
+    placeholder alert file caught it correctly, the watchdog was built after and was not yet running for it.) Quiet by
+    state: alert on start, repeat every 30 min while it lasts, "…_RECOVERED" when it clears. Channel: `logs/alerts.log`
+    always, Telegram if `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are in the environment or in `<repo>/.env` (read by the
+    script when the user runs it; Claude never reads `.env`). Read-only toward MotiveWave, the study, orders and the
+    account. `--dry-run`, `--test-alert`, `--loop`. 22 unit tests (`ops/test_watchdog.py`, in `build.sh`); run once
+    against the live journals: OK.
+  - **Restart policy = scripts + a test to run, not magic:** `ops/register_tasks.ps1` registers FLOW-Watchdog (every
+    minute) and FLOW-Start-MotiveWave (at logon, starts MotiveWave if it is not running); `ops/harden_windows.ps1`
+    (dry run by default) sets no-sleep / no forced update reboot / time sync check. Both parse cleanly; neither has been
+    run elevated on a fresh machine. **What MotiveWave does after a restart (auto-connect, workspace, study
+    re-activation, Armed) is unknown and must be tested once on EC2** (`runbook-ec2.md` §8). The runtime's own guards
+    apply whatever comes back: refuse-to-arm over a position or resting orders (D-24), the Simulated-only lock.
+  - **`docs/runbook-ec2.md`** written: decisions (size/region/OS/access), AWS side, Windows preparation, MotiveWave and FLOW
+    set-up on the instance, alerts, backups, the restart procedure, the daily timetable in CT/IST, the first-24-hours
+    checklist and the list of unknowns. Everything unverified is marked [CHECK].
+  - **Deferred by the user, recorded in `todo.md`:** the ES-chart and refuse-to-arm tests, the feed-resume flatten and
+    account-refusal live tests (Sim cannot produce the fault), the Telegram Java sink (the watchdog covers it), holidays
+    and the December contract roll, strategy and order-flow rules ("pending, review later"), C1, F-22/F-23 (to discuss).
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

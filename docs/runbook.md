@@ -285,6 +285,8 @@ see §9. **[YOU]:** whether you want the chart/UI in a particular zone.
 
 ## 9. Unattended running — almost all of this is [UNKNOWN]
 
+> **Cloud (EC2) plan: [`runbook-ec2.md`](runbook-ec2.md)** — instance choice, AWS set-up, Windows hardening, alerts/watchdog, restart policy, first-24-hours checklist. This section keeps the general reasoning.
+
 Nothing in this section has been tried. Do not rely on any of it until it has been.
 
 - **A desktop session that stays logged in.** MotiveWave is a GUI app and needs one.
@@ -312,7 +314,15 @@ Nothing in this section has been tried. Do not rely on any of it until it has be
   VPN, a shared folder, …) is undecided. What exists: `status.py` and the report,
   which read files. Running them *on* the machine and looking at the output is the
   only supported way today.
-- **Alerts** **[YOU]**: nothing tells you when the system disarms itself, trips the
+- **Alerts (placeholder built 2026-09-28, D-117):** the runtime now raises operator alerts
+  (`AlertDispatcher`, throttled to one per alert key per minute) for the kill switch, disarms,
+  `FEED_STALE`, a non-simulated account, a lost bracket leg, position-source disagreements, an
+  unconfirmed flatten, and start/stop notes. **The only channel today is a placeholder: a line in
+  `logs/alerts.log`** (`2026-09-28T23:13:18+05:30 [ALERT] FEED_STALE: ...`). The Telegram bot is the
+  user's to add — a `TelegramAlertSink` implementing `AlertSink`, swapped in where `FlowRuntimeStudy`
+  builds the dispatcher; credentials only in `.env` (names in `.examples.env`). Still unalerted: the
+  disk filling, and a crash of MotiveWave itself (nothing is left running to notice — that needs an
+  outside watcher). Original note: nothing tells you when the system disarms itself, trips the
   daily-loss kill switch, loses the feed, or the disk fills. That needs a delivery
   channel (email, phone push, chat) chosen first — todo §4. Until then the daily
   report's "Needs attention" section and the status line are the only signals.

@@ -316,6 +316,54 @@ class TestTrades(Base):
         self.assertIn("without them $200.00", text)      # +1000 artifact, +200 real -> gross 1200; without: 200
         self.assertIn("⚠ (+80 ticks vs its order price)", text)
 
+    def test_exit_across_a_data_gap_gets_a_realistic_estimate(self):
+        """F-25: the Sim filled a stop at its own price (4299.0) although price came back at 4295.0 after a gap."""
+        j = self.journal()
+        j.add({"type": "price_anchor", "price": 4300.0, "tickSize": 0.1})
+        t0 = ct_ms(DAY, 10)
+        j.submitted("BUY", "long")
+        j.fill(t0, "entry", "BUY", 4300.0, 1)
+        j.bracket(t0 + 100, "SELL", 4299.0, 4301.0)
+        j.add({"type": "data_gap", "seq": 9, "startLocalMs": t0 + 5_000, "endLocalMs": t0 + 295_000, "durationMs": 290_000,
+               "priceBeforeTicks": -3, "priceAfterTicks": -50, "jumpTicks": -47})
+        j.fill(t0 + 295_100, "stop", "SELL", 4299.0, 0, 99900.0, order_id="2", stopPrice=4299.0)   # filled AT its stop
+        # a second trade, no gap: must be untouched
+        t1 = ct_ms(DAY, 11)
+        j.submitted("BUY", "normal")
+        j.fill(t1, "entry", "BUY", 4300.0, 1, 99900.0, order_id="3")
+        j.bracket(t1 + 100, "SELL", 4299.0, 4301.0)
+        j.fill(t1 + 10_000, "target", "SELL", 4301.0, 0, 100000.0, order_id="4", limitPrice=4301.0)
+        j.write()
+        m = self.model()
+        a, b = m["trades"]
+        self.assertTrue(a["gap_fill"])
+        self.assertAlmostEqual(a["gap_exit_px"], 4295.0)
+        self.assertAlmostEqual(a["gap_points"], -5.0)
+        self.assertAlmostEqual(a["gap_gross"], -500.0)
+        self.assertAlmostEqual(a["gross"], -100.0)
+        self.assertFalse(b["gap_fill"])
+        text = dr.render(m)
+        self.assertIn("1 exit(s) filled across a data gap", text)
+        self.assertIn("realistic estimate **-$500.00**", text)
+        self.assertIn("**-$400.00** realistic", text)      # day: recorded 0 = -100 + 100 ; realistic -500 + 100
+        self.assertIn("across a data gap (realistic exit 4295.0, -5.0 pts)", text)
+
+    def test_gap_limit_fill_is_never_better_than_its_limit(self):
+        j = self.journal()
+        j.add({"type": "price_anchor", "price": 4300.0, "tickSize": 0.1})
+        t0 = ct_ms(DAY, 10)
+        j.submitted("BUY", "long")
+        j.fill(t0, "entry", "BUY", 4300.0, 1)
+        j.bracket(t0 + 100, "SELL", 4299.0, 4301.0)
+        j.add({"type": "data_gap", "seq": 9, "durationMs": 100000, "priceBeforeTicks": 5, "priceAfterTicks": 80, "jumpTicks": 75})
+        j.fill(t0 + 100_000, "target", "SELL", 4308.0, 0, 100800.0, order_id="2", limitPrice=4301.0)  # Sim: at market, 7 pts better
+        j.write()
+        t = self.model()["trades"][0]
+        self.assertTrue(t["gap_fill"])
+        self.assertAlmostEqual(t["gap_exit_px"], 4301.0)
+        self.assertAlmostEqual(t["gap_points"], 1.0)
+        self.assertTrue(t["artifact"], "it is also flagged by the far-from-its-own-price rule")
+
     def test_shorts_and_stops_measure_the_favourable_direction(self):
         j = self.journal()
         t0 = ct_ms(DAY, 10)

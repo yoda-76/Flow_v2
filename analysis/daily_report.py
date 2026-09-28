@@ -332,9 +332,18 @@ def build_trades(recs):
     open_t = None
     last_submit = None
     since_entry = set()
+    anchor, anchor_tick = None, 0.1    # the session's tick-offset origin, to turn data_gap ticks back into prices
     for r in recs:
         typ = r.get("type")
-        if typ == "real_order_submitted":
+        if typ == "price_anchor":
+            anchor, anchor_tick = r.get("price"), r.get("tickSize") or 0.1
+        elif typ == "data_gap":
+            # F-25: a stretch without market data while a trade is open. Remember where price was when data came
+            # back -- the Sim engine fills stops at their own price even through a gap (2026-09-28: a 19-tick gap
+            # recorded as a 5-tick stop), so the report can say what a real stop-market would likely have done.
+            if open_t is not None and anchor is not None and r.get("priceAfterTicks") is not None:
+                open_t["gap_after"] = round(anchor + r["priceAfterTicks"] * anchor_tick, 4)
+        elif typ == "real_order_submitted":
             last_submit = r
         elif typ == "KILL_SWITCH":
             since_entry.add("kill switch")
@@ -381,6 +390,7 @@ def build_trades(recs):
                     "order_id": r.get("orderId"),
                     "stop": None, "target": None,  # filled in by the LIVE_BRACKET_SUBMITTED line that follows this fill
                     "exit_off_ticks": None, "artifact": False,
+                    "gap_after": None, "gap_fill": False, "gap_exit_px": None, "gap_points": None, "gap_gross": None,
                 }
                 since_entry = set()
             elif role == "entry" and open_t is not None and r.get("orderId") == open_t.get("order_id"):
@@ -415,6 +425,19 @@ def build_trades(recs):
                     open_t.update(exit_t=r.get("lastFillTimeMs") or r["_t"], exit_px=px, exit_via=via,
                                   points=pts, gross=gross, cash_delta=cash_delta, exit_off_ticks=off,
                                   artifact=off is not None and abs(off) > ARTIFACT_TICKS)
+                    # F-25: the realistic exit if this trade crossed a data gap: a stop fills at the first price back
+                    # when that is worse than the stop; a limit fills at its own price, never better.
+                    ga = open_t.get("gap_after")
+                    if ga is not None and px is not None and open_t["entry_px"] is not None and role in ("stop", "target"):
+                        honest = px
+                        if role == "stop":
+                            honest = min(px, ga) if d > 0 else max(px, ga)
+                        elif order_px is not None:
+                            honest = min(px, order_px) if d > 0 else max(px, order_px)
+                        if abs(honest - px) > 1e-9:
+                            gpts = round((honest - open_t["entry_px"]) * d, 4)
+                            open_t.update(gap_fill=True, gap_exit_px=honest, gap_points=gpts,
+                                          gap_gross=None if pv is None else round(gpts * pv * open_t["qty"], 2))
                     trades.append(open_t)
                     open_t = None
                     since_entry = set()
@@ -695,6 +718,15 @@ def render(model) -> str:
         L.append(f"- ⚠ **{len(artifacts)} exit(s) filled more than {ARTIFACT_TICKS} ticks away from their own stop/limit price** "
                  f"(probable Sim artifact, typically the first tick after a data outage): they contributed **{_money(art_gross)}**; "
                  f"gross **without them {_money(all_gross - art_gross)}**. Marked ⚠ in the trade table.")
+    gapped = [t for t in closed if t.get("gap_fill")]
+    if gapped:
+        rec_g = sum(t["gross"] for t in gapped if t["gross"] is not None)
+        real_g = sum(t["gap_gross"] for t in gapped if t["gap_gross"] is not None)
+        all_g = sum(t["gross"] for t in closed if t["gross"] is not None)
+        L.append(f"- ⚠ **{len(gapped)} exit(s) filled across a data gap.** The Simulated engine cannot match orders while data is down and "
+                 f"fills them at their own price afterwards; a real stop-market would have filled near the first price back. "
+                 f"Recorded on those trades {_money(rec_g)}, realistic estimate **{_money(real_g)}** — gross for the day "
+                 f"{_money(all_g)} recorded, **{_money(all_g - rec_g + real_g)}** realistic.")
     if open_trades:
         L.append(f"- **{len(open_trades)} trade(s) STILL OPEN at the end of the journal** — check the account.")
     ia = model["intents"]
@@ -738,6 +770,8 @@ def render(model) -> str:
             held = fmt_dur(t["exit_t"] - t["entry_t"]) if t["exit_t"] and t["entry_t"] else "?"
             pts = "n/a" if t["points"] is None else f"{t['points']:+.1f}"
             via = t["exit_via"] + (f" ⚠ ({t['exit_off_ticks']:+.0f} ticks vs its order price)" if t.get("artifact") else "")
+            if t.get("gap_fill"):
+                via += f" ⚠ across a data gap (realistic exit {_num(t['gap_exit_px'])}, {t['gap_points']:+.1f} pts)"
             L.append(f"| {i} | {t['side']} {t['qty']} | {fmt_ct(t['entry_t'])} | {fmt_ist(t['entry_t'])} | {held} | "
                      f"{_num(t['entry_px'])} | {_num(t['exit_px'])} | {via} | {pts} | {_money(t['gross'])} | "
                      f"{_money(t['cash_delta'])} | {t['reason']} |")

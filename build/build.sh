@@ -92,6 +92,10 @@ echo "== account-truth daily loss + pipeline suspend/resume + account watch test
 "$JAVA" -cp build/classes/core com.flow.core.AccountTruthTest
 echo "(account-truth test passed -- see output above)"
 
+echo "== alert path test (placeholder log-file channel; Telegram later) =="
+"$JAVA" -cp build/classes/core com.flow.core.AlertDispatcherTest
+echo "(alert path test passed -- see output above)"
+
 echo "== simulated-account-only classifier test (2026-09-28) =="
 "$JAVA" -cp build/classes/core com.flow.core.AccountPolicyTest
 echo "(account policy test passed -- see output above)"
@@ -155,6 +159,9 @@ if command -v python >/dev/null 2>&1; then
   python analysis/test_trade_view.py
   python analysis/test_status.py
   echo "(daily report + trade viewer + status tests passed -- see output above)"
+  echo "== watchdog tests (python, ops/) =="
+  python ops/test_watchdog.py
+  echo "(watchdog tests passed -- see output above)"
 else
   echo "(python not found -- daily report tests SKIPPED; the report is an offline tool and does not gate the deploy)"
 fi

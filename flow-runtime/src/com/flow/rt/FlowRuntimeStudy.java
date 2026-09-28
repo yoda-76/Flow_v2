@@ -160,6 +160,11 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
 
   private volatile Sequencer sequencer;
   private volatile Pipeline pipeline;
+  // 2026-09-28: operator alerts. PLACEHOLDER channel for now -- a line in logs/alerts.log; the user will add a Telegram
+  // bot later by swapping the sink here (AlertSink is the whole interface). Throttled: one message per alert key a minute.
+  private final com.flow.core.AlertDispatcher alerts = new com.flow.core.AlertDispatcher(
+      new com.flow.core.LogFileAlertSink(LOG_ROOT.resolve("alerts.log")), System::currentTimeMillis,
+      com.flow.core.AlertDispatcher.DEFAULT_THROTTLE_MS);
   private volatile JournalWriter journal;
   private volatile ScheduledExecutorService clockExecutor;
   private volatile PriceCodec priceCodec;
@@ -576,6 +581,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         riskChain, armedSupplier, queueDepthSupplier, killSwitch, sessionFlatten);
     pipeline.attachRuntimeStatus(runtimeStatus);
     pipeline.attachAccountWatch(this::watchAccount); // F-3
+    pipeline.attachAlertHook(alerts::record); // FEED_STALE, DISARM: events only the pipeline sees
     // F-19: market data is back after an outage -> the tracker judges an open bracket against where price jumped to.
     pipeline.attachFeedListener(gap -> {
       logLine("FEED_RESUMED after " + (gap.durationMs() / 1000) + "s: price " + gap.priceBeforeTicks() + " -> "
@@ -1518,6 +1524,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
 
   private void logLine(String s) {
     info("FLOW_RUNTIME: " + s);
+    alerts.onLogLine(s); // operator alert (placeholder log-file channel), if this line is one
     JournalWriter j = journal;
     if (j != null) {
       j.writeDecision(0, Json.object().field("type", "log").field("t", System.currentTimeMillis()).field("msg", s).build());

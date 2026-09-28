@@ -37,6 +37,7 @@ FLOW_V2/
 ├── docs/dynamic/      decisions.md, findings.md — working record for THIS system
 ├── data/              retained per-construct data, rolling 7 trading days (D-88), gitignored
 ├── analysis/          offline Python report/status/viewer scripts (read-only over logs/ and data/)
+├── ops/               watchdog.py (alerts from OUTSIDE MotiveWave) + Windows scheduled-task / hardening scripts (docs/runbook-ec2.md)
 ├── config/            risk.json — hand-edited limits; docs/configuration.md explains every key
 ├── reports/           generated report pages, gitignored
 ├── flow-core/         core logic — compiles without mwave_sdk.jar on the classpath (D-09)

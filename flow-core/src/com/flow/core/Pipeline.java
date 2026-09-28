@@ -115,6 +115,30 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   }
 
   /**
+   * 2026-09-28: the operator-alert hook (AlertDispatcher in the runtime). Called for the events only the pipeline
+   * knows about -- the feed going stale and the pipeline disarming itself. Failure-proof: a hook that throws is ignored.
+   */
+  public interface AlertHook {
+    void alert(String severity, String key, String message);
+  }
+
+  private volatile AlertHook alertHook;
+
+  public void attachAlertHook(AlertHook h) {
+    this.alertHook = h;
+  }
+
+  private void raise(String severity, String key, String message) {
+    AlertHook h = alertHook;
+    if (h == null) return;
+    try {
+      h.alert(severity, key, message);
+    } catch (RuntimeException ignored) {
+      // an alert channel must never disturb the drain thread
+    }
+  }
+
+  /**
    * features is required explicitly (an empty Map.of() is fine, but
    * callers must say so) rather than defaulted, so "this Pipeline has no
    * features" is a visible choice at every call site -- ReplayHarness
@@ -301,6 +325,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           .field("reason", "decisions journal queue overflow")
           .field("seq", e.seq())
           .build());
+      raise("ALERT", "DISARM", "DISARM pipeline disarmed: decisions journal queue overflow");
     }
 
     // Daily-loss kill switch (2026-09-21, user's explicit "no matter what"
@@ -506,6 +531,8 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           .fieldOrNull("lastPriceTicks", lastTickPriceTicks)
           .build());
       riskChain.setFeedBlock("no market data for " + (age / 1000) + "s");
+      raise("ALERT", "FEED_STALE", "FEED_STALE no market data for " + (age / 1000) + "s during the trading window (last price "
+          + lastTickPriceTicks + " ticks); new entries blocked. MotiveWave may need a manual Rithmic disconnect/connect.");
     } else if (feedState == FeedState.SETTLING && now >= settleUntilLocalMs) {
       feedState = FeedState.LIVE;
       riskChain.setFeedBlock(null);
@@ -666,6 +693,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
         .field("seq", e.seq())
         .build();
     journal.writeDecision(e.seq(), line);
+    raise("ALERT", "DISARM", "DISARM pipeline disarmed by an exception: " + t);
   }
 
   private void heartbeat(Event e) {

@@ -68,6 +68,7 @@ public final class FeedWatchdogTest {
     final RiskChain rc;
     final Pipeline p;
     final List<Pipeline.FeedGap> gaps = new ArrayList<>();
+    final List<String> alerts = new ArrayList<>(); // operator alerts raised by the pipeline
     long seq = 0;
 
     Rig(String feedKeys) throws Exception {
@@ -78,6 +79,7 @@ public final class FeedWatchdogTest {
       rc = new RiskChain(config(feedKeys));
       p = new Pipeline(new StubStrategy(), journal, (i, e) -> {}, Map.of(), null, rc, () -> true, () -> 0, r -> {}, r -> {});
       p.attachFeedListener(gaps::add);
+      p.attachAlertHook((sev, key, msg) -> alerts.add(sev + "|" + key + "|" + msg));
     }
 
     void clock(long t) { p.handle(new ClockEvent(++seq, t, t)); }
@@ -113,6 +115,7 @@ public final class FeedWatchdogTest {
     testWatchdogOffAndOutsideTheWindow();
     testRelapseWhileSettling();
     testHeartbeatCarriesTheFeedState();
+    testPipelineDisarmRaisesAnAlert();
 
     if (failures > 0) {
       System.err.println(failures + " FAILURE(S)");
@@ -136,6 +139,9 @@ public final class FeedWatchdogTest {
         new RiskChain.Context(true, true, 1000, t0 + 6_000, 0, 0L)).allowed());
     r.clocks(t0 + 6_000, t0 + 20_000);
     checkEq("no listener call while it is still down", r.gaps.size(), 0);
+    checkEq("exactly ONE operator alert for the outage (not one per clock event)", r.alerts.size(), 1);
+    check("...an ALERT keyed FEED_STALE that says what to do", r.alerts.get(0).startsWith("ALERT|FEED_STALE|FEED_STALE no market data for 6s")
+        && r.alerts.get(0).contains("Rithmic disconnect/connect"));
 
     r.clock(t0 + 20_000);
     r.tick(t0 + 20_000, 1010); // the feed is back, 10 ticks higher
@@ -200,6 +206,22 @@ public final class FeedWatchdogTest {
     List<String> lines = r.lines();
     checkEq("two FEED_STALE alerts", Rig.count(lines, "\"type\":\"FEED_STALE\""), 2);
     checkEq("two data_gap records", Rig.count(lines, "\"type\":\"data_gap\""), 2);
+  }
+
+  private static void testPipelineDisarmRaisesAnAlert() throws Exception {
+    Rig r = new Rig(",\"feedStaleSeconds\":5");
+    r.p.onPipelineException(new IllegalStateException("boom"), new ClockEvent(1, 1000L, 1000L));
+    check("a pipeline exception disarms AND alerts the operator", !r.p.healthy() && r.alerts.size() == 1
+        && r.alerts.get(0).startsWith("ALERT|DISARM|") && r.alerts.get(0).contains("boom"));
+    Rig thrower = new Rig(",\"feedStaleSeconds\":5");
+    thrower.p.attachAlertHook((sev, key, msg) -> { throw new IllegalStateException("channel down"); });
+    boolean threw = false;
+    try {
+      thrower.p.onPipelineException(new IllegalStateException("boom"), new ClockEvent(1, 1000L, 1000L));
+    } catch (RuntimeException e) {
+      threw = true;
+    }
+    check("a failing alert hook never disturbs the pipeline", !threw && !thrower.p.healthy());
   }
 
   private static void testHeartbeatCarriesTheFeedState() throws Exception {
