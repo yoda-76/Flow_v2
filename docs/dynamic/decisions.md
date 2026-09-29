@@ -4527,6 +4527,37 @@ readable rather than being silently rewritten.
     account-refusal live tests (Sim cannot produce the fault), the Telegram Java sink (the watchdog covers it), holidays
     and the December contract roll, strategy and order-flow rules ("pending, review later"), C1, F-22/F-23 (to discuss).
 
+- **D-119** (2026-09-29) — **First unattended multi-hour run: the daily halt, the day roll, and F-26's feed-resume
+  flatten branch all verified live, no intervention needed for 10.5 hours.** The user left the study running
+  overnight ("I'll keep the strategy running"); checked next at 10:08 IST. Full numbers and evidence:
+  `logAnalysis-2026-09-28.md`'s final addendum. Session `lvn_fade_test_1790618732366_inst909684115`, 23:35 IST →
+  overnight.
+  - **The 16:00–17:00 CT halt worked exactly as designed:** entries stopped 02:15:26 IST (`NO_NEW_ENTRIES`), the
+    flatten window entered 02:25:00 IST (`SESSION_FLATTEN_DUE`, account already flat — nothing to close), reopened
+    03:30:00 IST, first new entry 03:30:09. **Zero false `FEED_STALE` inside the halt** (877 records — heartbeats,
+    liquidity snapshots — kept flowing through the quiet window; the watchdog's `marketExpectedOpen()` check did its
+    job). **The day roll worked:** a new `data/*/GC/20724.jsonl` file appeared at the reopen; one `price_anchor` for
+    the whole session (unaffected by the roll, as designed).
+  - **F-26 (2026-09-28's todo item) closed — both feed-resume branches now live-verified:** 113
+    `FEED_RESUME_NOTHING_OPEN`, 6 `FEED_RESUME_KEEP` (price stayed between the stop and target, orders left working),
+    and **1 `FEED_RESUME_FLATTEN`** (03:35:31 IST: long 1, target reached/crossed during a 25 s outage → the verified
+    two-source-checked flatten fired, filled +0.4 pts, `FLATTEN_VERIFIED` 1.5 s later) — exactly the user's rule
+    from 2026-09-28 ("flatten if crossed/reached, keep if still between") and exactly D-114's design, working
+    end to end on a real outage for the first time.
+  - **F-7 (bracket anchored to the fill) confirms itself at scale:** all 210 overnight brackets measured exactly
+    5/5 ticks from the fill (one 6/4 from the wrong-side clamp) — the old lopsided 7-stop/3-target bracket (N-1) has
+    not recurred since the fix. Avg win +5.85 ticks vs avg loss −5.58 (a real 1:1 R:R), against a 31% win rate
+    (`lvn_fade_test` has no edge — still a losing plumbing test, as expected).
+  - **Nothing went wrong:** no kill switch, no disarm, no `LIVE_LEG_LOST`, no non-simulated-account event, no
+    exception, in 210 round trips over 10.5 h. Guards worked as designed: 433 intents blocked (churn 189, rate_limit
+    138, `session_open` 94 for the halt, `feed` 12 during outages) — no entry got through on a stale feed.
+  - **N-14 (network, not code):** 120 feed outages overnight (20–75 s each), clustered right after the reopen —
+    almost certainly this machine's home connection (MotiveWave's own log shows only 30 connection events and 13
+    "no quotes" warnings, so most of the 120 were brief and self-recovered with no manual reconnect, unlike the two
+    deliberate drops the night before). Supports moving to EC2 rather than fixing this machine's network.
+  - **Still not live-verified:** the account-refusal paths (D-115 — the account id has only ever been
+    `"simulated"`), the ES-chart / refuse-to-arm-over-a-position tests, a machine reboot, anything on EC2 itself.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

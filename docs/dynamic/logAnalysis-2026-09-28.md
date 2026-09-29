@@ -170,3 +170,60 @@ New findings:
 - **N-11 · High (for 24/7)** **MotiveWave does not recover market-data delivery by itself after a network drop.** ~4 min of nothing after a "re-established" connection, until Rithmic was manually disconnected/reconnected. Any 24/7 run needs (a) the Telegram alert on `FEED_STALE` (the only thing that saw it), and (b) a recovery plan: MotiveWave's own auto-reconnect setting, or an operator, or a watcher that alerts and waits.
 - **N-12 · Med** **Sim stop fills at its stop price even through a 19-tick gap** (4170.5 filled while the market traded 4168.9): −$50 recorded, a real stop-market would have filled near the market, ≈ −16 ticks worse (≈ −$160 more). Sim P&L is optimistic on gaps — the F-20 flag only catches fills that differ from their order price; a gap fill should be compared with the first post-gap price.
 - **N-13 · Low (fixed, D-116)** A genuine entry fill was ALERTed as `ACCOUNT_POSITION_CHANGED_UNTRACKED` (23:13:01): the 1 s watcher read the new account position a few ms before the fill callback ran. Judgement is now deferred 2.5 s (`AccountWatch`).
+
+## Addendum, 2026-09-29 — the overnight unattended run (23:35 IST → 10:08 IST next check-in, ~10.5 h)
+
+Same session, `lvn_fade_test_1790618732366_inst909684115`, left running unattended overnight per the user's plan ("I'll
+keep the strategy running") — the first multi-hour unattended stretch, and it covers the **16:00-17:00 CT halt / day
+roll** and **F-26's feed-resume flatten branch**, both untested until now.
+
+### Result in one paragraph
+
+**No human intervention needed for 10.5 hours.** 210 closed round trips, 65 win / 145 loss, net **−429 ticks
+(−$4,290)**, cash 93,100 → 88,810. No kill switch, no disarm, no `LIVE_LEG_LOST`, no non-simulated-account event, no
+Java exception. The daily halt (entries stopped 02:15:26 IST, flatten window entered 02:25:00 IST, reopened
+03:30:00 IST) and the day roll (new `data/*/GC/20724.jsonl` files, one price anchor throughout) both behaved exactly
+as designed, with **zero false `FEED_STALE` during the halt** (877 records — heartbeats, liquidity snapshots — still
+flowing through the quiet window, none of them a feed alert). One real network problem showed up: **120 market-data
+outages** (20–75 s each, mean 30 s), almost all real (not deliberate) and heavily clustered in the hour right after
+the reopen (51 of 120 between 04:00–04:59 IST = ~17:30–18:29 CT) — this machine's home connection, not the system.
+
+### F-26 — both feed-resume branches verified live for the first time
+
+| Outcome | Count | What happened |
+|---|---:|---|
+| `FEED_RESUME_NOTHING_OPEN` | 113 | no position/bracket open when the outage started |
+| `FEED_RESUME_KEEP` | 6 | a position was open, price stayed between the stop and target → orders left working |
+| **`FEED_RESUME_FLATTEN`** | **1** | a position was open, price **reached/crossed the target** during the outage → flattened |
+
+The flatten (03:35:31 IST): long 1 from 4153.2 (target 4153.7, 5 ticks — the F-7 anchored bracket). Data resumed at
+4153.89, past the target. `decide()` found both the study's and the account's position long 1 (agreeing) →
+`cancelAllAndClose` → filled at 4153.6 (`role:"untracked"`, expected — the flatten's own close, not the tracked
+bracket) → **+0.4 pts / +$40**, better than doing nothing (price had gapped through the target). 1.5 s later
+`FLATTEN_VERIFIED FEED_RESUME account flat, nothing resting`. Exactly the user's rule (2026-09-28: "flatten if the
+price has crossed or reached either sl/tp; if it is still in between keep the order open"), and exactly the design in
+D-114 (§F-19) — no wrong-way fill, no naked position, one clean close.
+
+### Execution quality overnight (F-7 confirms itself)
+
+Every one of the 210 brackets was **exactly 5/5 from the fill** (`stop dist` / `target dist` from `order_fill`:
+5 ticks in 209/210 cases, one at 6/4 from a wrong-side-of-fill clamp) — the lopsided 7-stop/3-target bracket from
+before the fix (N-1/F-7) has not recurred once. Average win **+5.85** ticks vs average loss **−5.58** — a realistic
+1:1 R:R for the first time, against 27–52% wins the strategy actually produces; still a losing plumbing test, as
+expected (`lvn_fade_test` has no edge, it stress-tests the pipeline).
+
+### Guards, for the record
+
+433 intents blocked: churn 189, rate_limit 138, `session_open` 94 (the halt), **`feed` 12** (the watchdog blocking
+entries during/just after the 12 outages that happened to coincide with a signal). No guard misfired; no entry got
+through during a stale feed.
+
+### New finding
+
+- **N-14 · Low (evidence for EC2, not a code problem)** 120 unscheduled feed drops in 10.5 h, clustered right after
+  the 17:00 CT reopen, is a lot for a "leave it running" night — almost certainly this machine's home network, not
+  MotiveWave or the code. **Checked against MotiveWave's own log: only 30 connection Broken/Opened events and 13
+  "no quotes posted" warnings all night** (vs. our 120 `FEED_STALE`s), so the great majority were brief tick gaps
+  that **self-recovered with no manual Rithmic reconnect** — unlike the two deliberate drops the night before (both
+  needed one). Only the harder, longer breaks (full 4-connection drops) needed a hand. Supports the user's plan to
+  move to EC2 (`runbook-ec2.md`) rather than fixing this machine's network.

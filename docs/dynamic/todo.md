@@ -85,7 +85,7 @@ State when this was written: dev machine's MotiveWave closed, `risk.local.json` 
 - [~] **F-24 · MotiveWave does not resume market data after a network drop (N-11).** *(2026-09-28, D-117: the alert path and a placeholder `logs/alerts.log` channel are built — Telegram = a `TelegramAlertSink` the user adds; the user plans EC2 hosting and will revisit the recovery question only if the disconnection recurs there.)* Needs: the Telegram alert on `FEED_STALE` (user is adding the bot), MotiveWave's own auto-reconnect setting checked, and a decision on recovery (operator / documented manual reconnect / a watcher). The 24/7 run should not start without at least the alert.
 - [x] **F-25 · Sim gap-fill optimism (N-12).** *(2026-09-28, D-117: built + tested; report shows recorded vs realistic.)* Compare a stop/limit fill after a `data_gap` with the first post-gap price in the report, so a −$50 "stop" that really was −19 ticks is shown honestly.
 
-- [ ] **F-26 · The feed-resume *flatten* branch has never fired live.** In the 23:13 Wi-Fi test the Sim engine filled the stop 40 ms after the first tick back, before our 1.5 s check. To exercise our own flatten: repeat the drop with the price gapping through a level while the platform can't fill it (e.g. a wider stop, or a target placed far enough that only the first post-gap price crosses it), or accept the fake-broker tests. Also repeat once with the price still BETWEEN the levels to see `FEED_RESUME_KEEP` live.
+- [x] **F-26 · The feed-resume *flatten* branch has never fired live.** *(2026-09-29, D-119: fired on its own overnight — long 1's target reached/crossed during a 25 s outage → flattened, +0.4 pts, `FLATTEN_VERIFIED`. `FEED_RESUME_KEEP` also confirmed live (x6). Original wording below.)* In the 23:13 Wi-Fi test the Sim engine filled the stop 40 ms after the first tick back, before our 1.5 s check. To exercise our own flatten: repeat the drop with the price gapping through a level while the platform can't fill it (e.g. a wider stop, or a target placed far enough that only the first post-gap price crosses it), or accept the fake-broker tests. Also repeat once with the price still BETWEEN the levels to see `FEED_RESUME_KEEP` live.
 - [x] **N-13 · False `ACCOUNT_POSITION_CHANGED_UNTRACKED` on a genuine entry fill** — fixed 2026-09-28 (D-116, `AccountWatch`), built + tested, deploy pending.
 
 ### STATUS 2026-09-29 00:xx IST — after the user's replies (D-118)
@@ -95,6 +95,19 @@ State when this was written: dev machine's MotiveWave closed, `risk.local.json` 
 - **To discuss:** **C1** (one position truth) and **F-22 / F-23** (historical-bars gap check, entry slippage cap).
 - **Configurable, no code needed:** reversal cap, rate limit, daily loss limit (`config/risk.json` / `risk.local.json`); **big-trade Min Size is a STUDY setting** (MotiveWave → study settings → Big Trades → Min Size, default 1) — set it on the EC2 chart, it is not in `risk.json`.
 - **Still to run on EC2:** the reboot test, a full halt + reopen (02:15 → 03:45 IST) with the watchdog running, and the first-24-hours checklist (`runbook-ec2.md` §10). The halt tonight on this machine is the dress rehearsal.
+
+## Update 2026-09-29 10:08 IST — the overnight unattended run (see D-119 for the full write-up)
+
+Left running per the user's "I'll keep the strategy running." **10.5 hours, no intervention needed.** Both closed the
+day roll / 16:00-17:00 CT halt tests (flatten window, quiet halt with zero false `FEED_STALE`, clean reopen, new day's
+data file) **and F-26** (both feed-resume branches fired live, including the flatten). 210 round trips, all brackets
+exactly 5/5 from the fill (F-7 confirmed at scale), net −$4,290 (`lvn_fade_test` has no edge, expected). One thing
+worth noting for EC2: 120 feed blips overnight, almost certainly this machine's home network (most self-recovered).
+Full numbers: `logAnalysis-2026-09-28.md` final addendum.
+
+**Still not live-verified, unchanged from last night:** account-refusal paths (D-115), ES-chart/refuse-to-arm tests, a
+machine reboot, anything on EC2. **Still pending, the user's to review:** the strategy and order-flow rules, C1,
+F-22/F-23, the Telegram bot.
 
 ## Session handoff — 2026-09-28 night → 2026-09-29 (read this first if picking this up fresh)
 

@@ -133,6 +133,11 @@ What is meant to happen, and what is **untested**:
 **Test it on purpose, once, when flat:** reboot the instance and write down exactly what came back (MotiveWave? Rithmic?
 chart? study? armed?) at 1, 3 and 10 minutes. Put the answer here.
 
+**Note (2026-09-29, dev machine, not EC2):** an unattended overnight run (no reboot, just left alone) survived 120
+unscheduled feed drops with no intervention — the vast majority self-recovered inside MotiveWave with no manual
+Rithmic reconnect; only the harder/longer breaks needed one. Evidence for §11's "internet problem won't be there on
+EC2" expectation, not proof of it (this was still a home connection).
+
 **Manual recovery checklist** (RDP/SSM in): (1) Is the account flat and nothing resting? (Sim account window.) (2) Is
 Rithmic connected? If the chart is frozen, use MotiveWave's Disconnect then Connect (2026-09-28: a Wi-Fi drop left market
 data stuck until this was done). (3) Is the study on the chart? If not, add it; if a safety disarm is suspected, remove and
@@ -146,7 +151,7 @@ account name in the first fill (`accountId":"simulated"`).
 | 15:45 | 02:15 | no new entries |
 | 15:55 | 02:25 | open positions flattened; retried every 5 s until flat |
 | 16:00–17:00 | 02:30–03:30 | CME halt: no ticks. The feed watchdog stays quiet (`FLATTEN` phase); Rithmic may disconnect for maintenance — **untested** |
-| 17:00 | 03:30 | reopen; **day roll**: risk baseline re-based, VWAP reset, new data file, retention prune — **untested live** |
+| 17:00 | 03:30 | reopen; **day roll**: risk baseline re-based, VWAP reset, new data file, retention prune — **verified live on the dev machine 2026-09-29 (D-119): zero false `FEED_STALE` through the halt, clean reopen, new day's data file. Not yet seen on EC2 itself.** |
 | Fri 15:55 → Sun 17:00 | Sat 02:25 → Mon 03:30 | weekend: flat, quiet |
 
 Not modelled: exchange holidays and early closes (no ticks → `FEED_STALE` will ALERT inside a window the system thinks is
