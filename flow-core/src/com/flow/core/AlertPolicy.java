@@ -56,6 +56,7 @@ public final class AlertPolicy {
     warn("RISK_LOCAL_CONFIG_IGNORED");
     // ---- state changes worth knowing (a stopped study is otherwise silent) ----
     info("SESSION_START");
+    info("STUDY_SETTINGS"); // 2026-09-29: VP/FP range, big-trade Min Size/agg period -- so a run's actual settings are on record
     info("DEACTIVATE");
     info("DESTROY");
     info("FEED_RESUMED");

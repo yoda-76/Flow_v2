@@ -452,6 +452,11 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     bigTradeLogger = new BigTradeFileLogger(priceCodec, btMinSize, btAggPeriodMs);
     bigTrades = new com.flow.flow.BigTradeFeature(
         com.flow.flow.BigTradeView.FEATURE_ID, btMinSize, btAggPeriodMs, bigTradeLogger);
+    // 2026-09-29: these are per-chart MotiveWave STUDY settings, not in risk.json -- unlike risk_config_loaded's
+    // values they were never journaled anywhere, so a past session's actual Big Trade Min Size (etc.) could not be
+    // confirmed from the logs after the fact (the user changed it on this machine and asked for this).
+    logLine("STUDY_SETTINGS vpRangeTicks=" + rangeTicks + " fpRangeTicks=" + fpRangeTicks
+        + " bigTradeMinSize=" + btMinSize + " bigTradeAggPeriodMs=" + btAggPeriodMs);
     // D-56: order-id repeat tracking, kept alive alongside big trades (not
     // merged into it) for future iceberg/hidden-liquidity analysis -- see
     // OrderRepeatView's javadoc. No settings/drawing yet, log-only.

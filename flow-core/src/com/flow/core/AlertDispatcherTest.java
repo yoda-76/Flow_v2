@@ -36,6 +36,8 @@ public final class AlertDispatcherTest {
     check("FEED_RESUMED is INFO (a recovery note)", AlertPolicy.forLogLine("FEED_RESUMED after 290s").severity().equals("INFO"));
     check("study start/stop are INFO", AlertPolicy.forLogLine("DESTROY instance=1").severity().equals("INFO")
         && AlertPolicy.forLogLine("SESSION_START strategyId=x").severity().equals("INFO"));
+    check("study settings (VP/FP range, big-trade Min Size) are INFO, not silently unrecorded",
+        AlertPolicy.forLogLine("STUDY_SETTINGS vpRangeTicks=1 bigTradeMinSize=5").severity().equals("INFO"));
     check("ordinary chatter is not an alert", AlertPolicy.forLogLine("ORDER_MODIFIED bp.aa@1") == null
         && AlertPolicy.forLogLine("ORDER_FILLED bp.aa@1") == null && AlertPolicy.forLogLine("LEG_ENDED_BENIGN leg=stop") == null
         && AlertPolicy.forLogLine("FLATTEN_VERIFIED KILL_SWITCH ok") == null && AlertPolicy.forLogLine(null) == null);
