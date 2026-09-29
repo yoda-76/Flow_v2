@@ -1,5 +1,6 @@
 package com.flow.strategies;
 
+import com.flow.core.FillEvent;
 import com.flow.core.FlowStrategy;
 import com.flow.core.Intent;
 import com.flow.core.MarketState;
@@ -96,10 +97,54 @@ public final class LvnFadeTestStrategy implements FlowStrategy {
     return result;
   }
 
+  /**
+   * Code review B2: search() moves to IN_POSITION the moment it decides to enter. If the risk chain blocks that
+   * entry (not armed -- every entry in DRY_RUN --, the entry window, rate, churn, reversals, lag, ...), no order was
+   * placed, so drop the position again and keep searching. Only an ENTRY is rolled back: a blocked "holding"
+   * restatement does not mean the position went away, and flat intents are never blocked.
+   */
+  @Override
+  public void onIntentRejected(Intent intent, String reason) {
+    if (intent.targetPosition() != 0 && intent.reason().startsWith("lvn_fade ")) {
+      phase = Phase.SEARCHING;
+      positionDirection = 0;
+    }
+  }
+
   @Override
   public void onFlattened(String reason) {
     phase = Phase.SEARCHING; // D-92: the runtime closed everything -- drop the phantom position
     positionDirection = 0;
+  }
+
+  /**
+   * C1 (2026-09-29, D-120): react to a REAL fill instead of only ever guessing from price. Ignored while not
+   * IN_POSITION (a stale/late callback, or one for an entry this instance never opened after a restart).
+   *   ENTRY -- re-anchor OUR OWN stop/target to the real fill, the exact math LiveOrderTracker uses to anchor the
+   *     real bracket (F-7): this strategy always asks for a fixed SL_TP_TICKS either side of the signal, so
+   *     re-deriving from the fill price and the already-known direction reproduces the real bracket's levels
+   *     exactly. Without this, manageOpenPosition() judges stopHit/targetHit against the SIGNAL price's levels
+   *     while the real bracket sits at the FILL price's levels -- the L-5 divergence, now closed for entries.
+   *   STOP / TARGET -- the real bracket just closed the position; stop believing we're still in it right now,
+   *     rather than waiting for the next price tick's manageOpenPosition() to notice the same thing independently.
+   */
+  @Override
+  public void onFill(FillEvent fill) {
+    if (phase != Phase.IN_POSITION) return;
+    switch (fill.role()) {
+      case ENTRY -> {
+        int f = fill.fillPriceTicks();
+        positionStopTicks = positionDirection > 0 ? f - SL_TP_TICKS : f + SL_TP_TICKS;
+        positionTargetTicks = positionDirection > 0 ? f + SL_TP_TICKS : f - SL_TP_TICKS;
+      }
+      case STOP, TARGET -> {
+        phase = Phase.SEARCHING;
+        positionDirection = 0;
+      }
+      case OTHER -> {
+        // not one of this position's tracked legs -- nothing to react to
+      }
+    }
   }
 
   private Intent manageOpenPosition(int price) {
@@ -110,7 +155,7 @@ public final class LvnFadeTestStrategy implements FlowStrategy {
       return new Intent(id(), intentSeq.incrementAndGet(), 0, null, null, stopHit ? "stop_hit" : "target_hit");
     }
     // Still holding -- honest restatement of "still want this," a no-op at reconciliation (README).
-    return new Intent(id(), intentSeq.incrementAndGet(), positionDirection, positionStopTicks, positionTargetTicks, "holding");
+    return new Intent(id(), intentSeq.incrementAndGet(), positionDirection, positionStopTicks, positionTargetTicks, "holding", true);
   }
 
   private Intent search(MarketState state, int price) {
@@ -140,7 +185,8 @@ public final class LvnFadeTestStrategy implements FlowStrategy {
 
       String reason = "lvn_fade entered=" + (enteredFromBelow ? "below" : "above")
           + " zone=[" + z.lowPriceTicks() + "," + z.highPriceTicks() + "]";
-      return new Intent(id(), intentSeq.incrementAndGet(), direction, stopTicks, targetTicks, reason);
+      // F-7: SL_TP_TICKS either side of the SIGNAL price -> the runtime re-anchors the real bracket to the fill.
+      return new Intent(id(), intentSeq.incrementAndGet(), direction, stopTicks, targetTicks, reason, true);
     }
     return Intent.none(id(), intentSeq.incrementAndGet());
   }

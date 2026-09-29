@@ -41,6 +41,15 @@ public final class Sequencer {
   private final AtomicBoolean running = new AtomicBoolean(false);
   private volatile Thread drainThread;
 
+  // Code review E1: every DomEvent carries the WHOLE book (~600-700 rows a side on @GC), so a stalled drain used to
+  // let tens of thousands queue up (gigabytes) before publish() blocked -- and then it blocked MotiveWave's own
+  // callback threads. Each DomEvent supersedes the previous one completely, so under a backlog an intermediate book
+  // can be skipped without losing the current state: at most MAX_PENDING_DOM are ever queued. Ticks, bars and clock
+  // events are never skipped (they are not snapshots).
+  public static final int MAX_PENDING_DOM = 64;
+  private final java.util.concurrent.atomic.AtomicInteger pendingDom = new java.util.concurrent.atomic.AtomicInteger();
+  private final AtomicLong skippedDom = new AtomicLong();
+
   public Sequencer(java.util.function.Consumer<Event> handler, ExceptionHandler exceptionHandler) {
     this.handler = handler;
     this.exceptionHandler = exceptionHandler;
@@ -58,6 +67,25 @@ public final class Sequencer {
       throw new IllegalStateException("interrupted publishing seq=" + seq, ie);
     }
     return event;
+  }
+
+  /**
+   * E1: publish a DomEvent unless MAX_PENDING_DOM are already waiting to be drained, in which case it is skipped
+   * (counted in skippedDomCount()) -- the next book replaces it anyway. Returns whether it was published.
+   */
+  public boolean publishDom(EventFactory<DomEvent> factory, long eventTimeMs) {
+    if (pendingDom.get() >= MAX_PENDING_DOM) {
+      skippedDom.incrementAndGet();
+      return false;
+    }
+    pendingDom.incrementAndGet();
+    publish(factory, eventTimeMs);
+    return true;
+  }
+
+  /** E1: how many order-book snapshots were skipped because a backlog of them was already queued. */
+  public long skippedDomCount() {
+    return skippedDom.get();
   }
 
   public long lastSeq() {
@@ -79,6 +107,15 @@ public final class Sequencer {
     running.set(false);
     Thread t = drainThread;
     if (t != null) t.interrupt();
+    // Code review A8: wait (briefly) for the event being handled to finish, so the caller can close the journal
+    // right after this without the drain thread still writing into it. Never joins itself.
+    if (t != null && t != Thread.currentThread()) {
+      try {
+        t.join(2000);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+      }
+    }
   }
 
   private void drainLoop() {
@@ -90,6 +127,7 @@ public final class Sequencer {
         Thread.currentThread().interrupt();
         break;
       }
+      if (e instanceof DomEvent) pendingDom.decrementAndGet();
       try {
         handler.accept(e);
       } catch (Throwable t) {

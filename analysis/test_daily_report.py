@@ -264,6 +264,176 @@ class TestTrades(Base):
         text = dr.render(m)
         self.assertIn("a fill with no open trade", text)
 
+    def test_manual_close_is_not_left_open(self):
+        """F-3 (2026-09-28, L-3): a close the study did not place shows up as account_position_change -> the trade is
+        closed by it, priced from the cash change, and no 'STILL OPEN' remains."""
+        j = self.journal()
+        t0 = self._entry_long(j)  # long 1 @4300, cash 98640 at the entry
+        t_close = t0 + 40_000
+        j.add({"type": "account_position_change", "t": t_close, "previousAccountPosition": 1, "accountPosition": 0,
+               "studyPosition": 1, "explainedByFill": False, "cashBalance": 98540.0})
+        j.log(t_close, "ACCOUNT_POSITION_CHANGED_UNTRACKED 1 -> 0 (study position 1) -- not from an order this study placed")
+        j.write()
+        m = self.model()
+        self.assertEqual(len(m["trades"]), 1)
+        t = m["trades"][0]
+        self.assertEqual(t["exit_t"], t_close)
+        self.assertEqual(t["exit_via"], "closed outside the study (manual / platform)")
+        self.assertAlmostEqual(t["points"], -1.0)          # -100 cash / (100 point value x 1 lot)
+        self.assertAlmostEqual(t["gross"], -100.0)
+        text = dr.render(m)
+        self.assertNotIn("STILL OPEN", text)
+        self.assertTrue(any(a[3] == "ACCOUNT_POSITION_CHANGED_UNTRACKED" and a[2] == "ALERT" for a in m["attention"]))
+
+    def test_account_change_explained_by_a_fill_or_not_flat_does_not_close_a_trade(self):
+        j = self.journal()
+        self._entry_long(j)
+        j.add({"type": "account_position_change", "t": ct_ms(DAY, 10, 0, 5), "previousAccountPosition": 0,
+               "accountPosition": 1, "studyPosition": 1, "explainedByFill": True, "cashBalance": 98640.0})
+        j.add({"type": "account_position_change", "t": ct_ms(DAY, 10, 0, 6), "previousAccountPosition": 1,
+               "accountPosition": 0, "studyPosition": 0, "explainedByFill": True, "cashBalance": 98640.0})
+        j.write()
+        self.assertIsNone(self.model()["trades"][0]["exit_t"], "explained changes are the study's own fills; the fill record closes the trade")
+
+    def test_fill_far_from_its_order_price_is_flagged_and_excluded(self):
+        """F-20: a target limit at 4302.0 filled at 4310.0 (the Sim engine after a data outage) is a probable artifact."""
+        j = self.journal()
+        t0 = self._entry_long(j)   # long @4300, target 4302.0
+        j.fill(t0 + 60_000, "target", "SELL", 4310.0, 0, 99640.0, order_id="2", limitPrice=4302.0)   # +80 ticks through
+        t1 = ct_ms(DAY, 11)
+        j.submitted("SELL", "normal")
+        j.fill(t1, "entry", "SELL", 4310.0, -1, 99640.0, order_id="3")
+        j.bracket(t1 + 100, "BUY", 4311.0, 4308.0)
+        j.fill(t1 + 20_000, "target", "BUY", 4308.0, 0, 99840.0, order_id="4", limitPrice=4308.0)   # exactly at its price
+        j.write()
+        m = self.model()
+        a, b = m["trades"]
+        self.assertTrue(a["artifact"])
+        self.assertAlmostEqual(a["exit_off_ticks"], 80.0)
+        self.assertFalse(b["artifact"])
+        text = dr.render(m)
+        self.assertIn("1 exit(s) filled more than 3 ticks away", text)
+        self.assertIn("without them $200.00", text)      # +1000 artifact, +200 real -> gross 1200; without: 200
+        self.assertIn("⚠ (+80 ticks vs its order price)", text)
+
+    def test_exit_across_a_data_gap_gets_a_realistic_estimate(self):
+        """F-25: the Sim filled a stop at its own price (4299.0) although price came back at 4295.0 after a gap."""
+        j = self.journal()
+        j.add({"type": "price_anchor", "price": 4300.0, "tickSize": 0.1})
+        t0 = ct_ms(DAY, 10)
+        j.submitted("BUY", "long")
+        j.fill(t0, "entry", "BUY", 4300.0, 1)
+        j.bracket(t0 + 100, "SELL", 4299.0, 4301.0)
+        j.add({"type": "data_gap", "seq": 9, "startLocalMs": t0 + 5_000, "endLocalMs": t0 + 295_000, "durationMs": 290_000,
+               "priceBeforeTicks": -3, "priceAfterTicks": -50, "jumpTicks": -47})
+        j.fill(t0 + 295_100, "stop", "SELL", 4299.0, 0, 99900.0, order_id="2", stopPrice=4299.0)   # filled AT its stop
+        # a second trade, no gap: must be untouched
+        t1 = ct_ms(DAY, 11)
+        j.submitted("BUY", "normal")
+        j.fill(t1, "entry", "BUY", 4300.0, 1, 99900.0, order_id="3")
+        j.bracket(t1 + 100, "SELL", 4299.0, 4301.0)
+        j.fill(t1 + 10_000, "target", "SELL", 4301.0, 0, 100000.0, order_id="4", limitPrice=4301.0)
+        j.write()
+        m = self.model()
+        a, b = m["trades"]
+        self.assertTrue(a["gap_fill"])
+        self.assertAlmostEqual(a["gap_exit_px"], 4295.0)
+        self.assertAlmostEqual(a["gap_points"], -5.0)
+        self.assertAlmostEqual(a["gap_gross"], -500.0)
+        self.assertAlmostEqual(a["gross"], -100.0)
+        self.assertFalse(b["gap_fill"])
+        text = dr.render(m)
+        self.assertIn("1 exit(s) filled across a data gap", text)
+        self.assertIn("realistic estimate **-$500.00**", text)
+        self.assertIn("**-$400.00** realistic", text)      # day: recorded 0 = -100 + 100 ; realistic -500 + 100
+        self.assertIn("across a data gap (realistic exit 4295.0, -5.0 pts)", text)
+
+    def test_gap_limit_fill_is_never_better_than_its_limit(self):
+        j = self.journal()
+        j.add({"type": "price_anchor", "price": 4300.0, "tickSize": 0.1})
+        t0 = ct_ms(DAY, 10)
+        j.submitted("BUY", "long")
+        j.fill(t0, "entry", "BUY", 4300.0, 1)
+        j.bracket(t0 + 100, "SELL", 4299.0, 4301.0)
+        j.add({"type": "data_gap", "seq": 9, "durationMs": 100000, "priceBeforeTicks": 5, "priceAfterTicks": 80, "jumpTicks": 75})
+        j.fill(t0 + 100_000, "target", "SELL", 4308.0, 0, 100800.0, order_id="2", limitPrice=4301.0)  # Sim: at market, 7 pts better
+        j.write()
+        t = self.model()["trades"][0]
+        self.assertTrue(t["gap_fill"])
+        self.assertAlmostEqual(t["gap_exit_px"], 4301.0)
+        self.assertAlmostEqual(t["gap_points"], 1.0)
+        self.assertTrue(t["artifact"], "it is also flagged by the far-from-its-own-price rule")
+
+    def test_shorts_and_stops_measure_the_favourable_direction(self):
+        j = self.journal()
+        t0 = ct_ms(DAY, 10)
+        j.submitted("SELL", "short")
+        j.fill(t0, "entry", "SELL", 4300.0, -1)
+        j.bracket(t0 + 100, "BUY", 4301.0, 4298.0)
+        j.fill(t0 + 5_000, "stop", "BUY", 4301.2, 0, order_id="2", stopPrice=4301.0)   # short's stop filled 2 ticks WORSE
+        j.write()
+        t = self.model()["trades"][0]
+        self.assertAlmostEqual(t["exit_off_ticks"], -2.0)
+        self.assertFalse(t["artifact"], "2 ticks of stop slippage is normal")
+
+    def test_execution_cost_section_and_feed_alerts(self):
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        for i, (last, touch, sub, fill) in enumerate([(2, 1, 4, 5), (1, 0, 6, 8), (3, 2, 5, 12)]):
+            j.add({"type": "entry_execution", "t": t + i * 1000, "orderId": str(i), "side": "BUY", "fillPriceTicks": 10,
+                   "slippageVsLastTicks": last, "slippageVsTouchTicks": touch, "spreadTicks": 2,
+                   "signalToSubmitMs": sub, "submitToFillMs": fill})
+        j.add({"type": "FEED_STALE", "reason": "no market data for 21s during the trading window", "seq": 1})
+        j.add({"type": "data_gap", "seq": 2, "startLocalMs": t, "endLocalMs": t + 164000, "durationMs": 164000,
+               "priceBeforeTicks": 67, "priceAfterTicks": 149, "jumpTicks": 82})
+        j.log(t + 2, "FEED_RESUME_FLATTEN target 4302.0 reached/crossed at 4302.5 -- {}")
+        j.log(t + 3, "FEED_RESUME_KEEP price is still between the stop 1 and the target 2")
+        j.write()
+        m = self.model()
+        text = dr.render(m)
+        self.assertIn("## Execution cost (entries)", text)
+        self.assertIn("| fill vs the last-trade price at the signal | 3 | 2.00 | 2 | 3 | 3 |", text)
+        self.assertIn("| order submitted -> fill callback | 3 | 8.33 ms | 8 ms | 12 ms | 12 ms |", text)
+        sev = {a[3]: a[2] for a in m["attention"]}
+        self.assertEqual(sev["FEED_STALE"], "ALERT")
+        self.assertEqual(sev["data_gap"], "WARN")
+        self.assertEqual(sev["FEED_RESUME_FLATTEN"], "ALERT")
+        self.assertEqual(sev["FEED_RESUME_KEEP"], "NOTE")
+        gap = [a for a in m["attention"] if a[3] == "data_gap"][0]
+        self.assertIn("164s without ticks", gap[4])
+        self.assertIn("jump 82", gap[4])
+
+    def test_flatten_verification_lines_are_alerts(self):
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        j.log(t, "FLATTEN_CORRECTING KILL_SWITCH study=-1 account=-1 -- still not flat: {}")
+        j.log(t + 1, "FLATTEN_NOT_CONFIRMED KILL_SWITCH study=-1 account=-1 after 3 looks -- CHECK THE ACCOUNT BY HAND")
+        j.log(t + 2, "POSITION_SOURCES_DISAGREE KILL_SWITCH study=1 account=0 -- no close sent")
+        j.log(t + 3, "FLATTEN_VERIFIED KILL_SWITCH account flat, nothing resting")
+        j.write()
+        sev = {a[3]: a[2] for a in self.model()["attention"]}
+        self.assertEqual(sev["FLATTEN_CORRECTING"], "ALERT")
+        self.assertEqual(sev["FLATTEN_NOT_CONFIRMED"], "ALERT")
+        self.assertEqual(sev["POSITION_SOURCES_DISAGREE"], "ALERT")
+        self.assertEqual(sev["FLATTEN_VERIFIED"], "NOTE")
+
+    def test_gap_range_and_entry_missed_lines_are_classified(self):
+        """F-22/F-23 (2026-09-29, D-120)."""
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        j.log(t, "GAP_RANGE_FLATTEN target 4302.0 reached/crossed at 4302.5 (found in the bar range after the fact) -- {}")
+        j.log(t + 1, "GAP_RANGE_FLATTEN_HELD stop 4299.0 reached/crossed at 4298.9 -- no close sent")
+        j.log(t + 2, "GAP_RANGE_KEEP the historical range [-5,15] ticks never reached the stop 4299.0 or the target 4302.0")
+        j.log(t + 3, "GAP_RANGE_UNAVAILABLE bars covering the outage are not backfilled yet")
+        j.log(t + 4, "ENTRY_MISSED some cancel line")
+        j.write()
+        sev = {a[3]: a[2] for a in self.model()["attention"]}
+        self.assertEqual(sev["GAP_RANGE_FLATTEN"], "ALERT")
+        self.assertEqual(sev["GAP_RANGE_FLATTEN_HELD"], "ALERT")
+        self.assertEqual(sev["GAP_RANGE_KEEP"], "NOTE")
+        self.assertEqual(sev["GAP_RANGE_UNAVAILABLE"], "WARN")
+        self.assertEqual(sev["ENTRY_MISSED"], "WARN")
+
     def test_trade_still_open_is_flagged(self):
         j = self.journal()
         self._entry_long(j)
@@ -298,6 +468,42 @@ class TestTrades(Base):
         self.assertIn("1 win, 1 loss, 1 flat", text)
         self.assertIn("+1.0 points", text)
         self.assertIn("$100.00", text)   # gross +200 - 100 + 0
+
+    def test_partial_entry_fills_merge_into_one_trade(self):
+        # A10: a second order_fill with role=entry and the SAME orderId updates the open trade (cumulative
+        # qty and avgFillPrice) instead of becoming an orphan; entry time stays the first slice's.
+        j = self.journal()
+        t0 = ct_ms(DAY, 10)
+        j.intent(t0, 2, "lvn_fade entered=above zone=[1,2]", 10, 30)
+        j.submitted("BUY", "lvn_fade entered=above zone=[1,2]")
+        j.fill(t0 + 500, "entry", "BUY", 4300.0, 1, order_id="1", filled=1)   # first slice: 1 of 2 filled
+        j.fill(t0 + 700, "entry", "BUY", 4300.5, 2, order_id="1", filled=2)  # second slice: 2 of 2 filled
+        j.bracket(t0 + 900, "SELL", 4298.0, 4303.0)
+        j.fill(t0 + 60_000, "stop", "SELL", 4299.0, 0, order_id="2")
+        j.write()
+        m = self.model()
+        self.assertEqual(len(m["trades"]), 1)
+        self.assertEqual(len(m["orphans"]), 0, "the second slice must not become an orphan")
+        t = m["trades"][0]
+        self.assertEqual(t["qty"], 2, "qty is the LATEST cumulative filled count")
+        self.assertEqual(t["entry_px"], 4300.5, "entry price is the latest avgFillPrice")
+        self.assertEqual(t["entry_t"], t0 + 500, "entry time stays the FIRST slice's")
+
+    def test_entry_fill_with_different_order_id_while_open_is_still_orphan(self):
+        # A10 negative case: unchanged behaviour for a genuinely different order (e.g. a second signal that
+        # slipped through) arriving as an entry fill while a trade is already open.
+        j = self.journal()
+        t0 = self._entry_long(j)  # order_id defaults to "1"
+        j.fill(t0 + 700, "entry", "BUY", 4301.0, 2, order_id="99")  # a different order id while the trade is open
+        j.fill(t0 + 60_000, "stop", "SELL", 4299.0, 0, order_id="2")
+        j.write()
+        m = self.model()
+        self.assertEqual(len(m["trades"]), 1)
+        self.assertEqual(len(m["orphans"]), 1)
+        self.assertEqual(m["orphans"][0]["orderId"], "99")
+        t = m["trades"][0]
+        self.assertEqual(t["qty"], 1, "the original entry is unchanged by the unrelated order id")
+        self.assertEqual(t["entry_px"], 4300.0)
 
     def test_legacy_journal_without_fills_falls_back(self):
         j = self.journal()
@@ -357,6 +563,95 @@ class TestIntentsAndAttention(Base):
         text = dr.render(self.model())
         self.assertIn("REFUSE_TO_ARM", text)
         self.assertIn("Account at activation", text)
+
+    def test_new_attention_prefixes_are_flagged_with_the_right_severity(self):
+        # A5: the newest alert lines (D-99, D-106, B6's "any lost leg") must be caught, with the severities
+        # the finding asked for.
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        j.log(t, "LIVE_ENTRY_PARTIAL_FLATTENED qty=2 filled=1 -- flattening the partial before it completed")
+        j.log(t + 1, "LIVE_ENTRY_PARTIAL_FILL qty=2 filled=1 orderId=1")
+        j.log(t + 2, "LIVE_BRACKET_SIZE_FROM_FILL qty=1 filled=1")
+        j.log(t + 3, "RISK_LOCAL_CONFIG_IGNORED reason=malformed json")
+        j.log(t + 4, "ORDER_REJECTED bp.aa@1 reason=insufficient margin")
+        j.log(t + 5, "LIVE_LEG_LOST role=stop orderId=2 reason=expired unnoticed")
+        j.write()
+        att = self.model()["attention"]
+        by_kind = {a[3]: a[2] for a in att}
+        self.assertEqual(by_kind["LIVE_ENTRY_PARTIAL_FLATTENED"], "ALERT")
+        self.assertEqual(by_kind["LIVE_ENTRY_PARTIAL_FILL"], "WARN")
+        self.assertEqual(by_kind["LIVE_BRACKET_SIZE_FROM_FILL"], "WARN")
+        self.assertEqual(by_kind["RISK_LOCAL_CONFIG_IGNORED"], "ALERT")
+        self.assertEqual(by_kind["ORDER_REJECTED"], "ALERT")
+        self.assertEqual(by_kind["LIVE_LEG_LOST"], "ALERT")
+        text = dr.render(self.model())
+        for kind in ("LIVE_ENTRY_PARTIAL_FLATTENED", "LIVE_ENTRY_PARTIAL_FILL", "LIVE_BRACKET_SIZE_FROM_FILL",
+                     "RISK_LOCAL_CONFIG_IGNORED", "ORDER_REJECTED", "LIVE_LEG_LOST"):
+            self.assertIn(kind, text)
+
+    def test_arm_still_denied_and_dom_backlog_skipped_are_flagged_with_the_right_severity(self):
+        # A6 / E1: ARM_STILL_DENIED (a kill switch/order anomaly already disarmed this instance) is an ALERT;
+        # DOM_BACKLOG_SKIPPED (the event queue fell behind, intermediate DOM snapshots skipped) is only a WARN.
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        j.log(t, "ARM_STILL_DENIED -- a safety rule (daily-loss kill switch or an order anomaly) disarmed this "
+                 "study earlier; remove and re-add the study to arm again")
+        j.log(t + 1, "DOM_BACKLOG_SKIPPED total=3 -- the event queue fell behind; intermediate order-book "
+                     "snapshots were skipped (the latest book is always kept)")
+        j.write()
+        att = self.model()["attention"]
+        by_kind = {a[3]: a[2] for a in att}
+        self.assertEqual(by_kind["ARM_STILL_DENIED"], "ALERT")
+        self.assertEqual(by_kind["DOM_BACKLOG_SKIPPED"], "WARN")
+        text = dr.render(self.model())
+        self.assertIn("ARM_STILL_DENIED", text)
+        self.assertIn("DOM_BACKLOG_SKIPPED", text)
+
+    def test_order_rejected_for_a_bracket_leg_is_still_caught(self):
+        # B6's specific case: a rejected/cancelled bracket LEG, not just an entry.
+        j = self.journal()
+        j.log(ct_ms(DAY, 10), "ORDER_REJECTED bp.aa@2 role=stop reason=price through the market")
+        j.write()
+        att = self.model()["attention"]
+        self.assertTrue(any(a[3] == "ORDER_REJECTED" and a[2] == "ALERT" for a in att))
+
+    def test_lag_blocks_are_aggregated_into_one_warn_line(self):
+        # C2: several risk_verdicts blocked by the lag filter collapse into ONE WARN line per session, not
+        # one line per block.
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        j.intent(t, 1, "entry A", 1, 2, verdict="blocked", filt="lag", why="queue depth 1500 >= 1000")
+        j.intent(t + 3 * 60_000, 1, "entry B", 1, 2, verdict="blocked", filt="lag", why="queue depth 1800 >= 1000")
+        j.intent(t + 7 * 60_000, -1, "entry C", 1, 2, verdict="blocked", filt="lag", why="processing 2500ms >= 2000ms")
+        j.write()
+        att = self.model()["attention"]
+        lag_events = [a for a in att if a[3] == "LAG_GUARD"]
+        self.assertEqual(len(lag_events), 1, "one aggregated line, not one per block")
+        t_, ap, sev, kind, detail = lag_events[0]
+        self.assertEqual(sev, "WARN")
+        self.assertEqual(detail, "lag guard blocked 3 entries (first 10:00 CT, last 10:07 CT)")
+        text = dr.render(self.model())
+        self.assertIn("lag guard blocked 3 entries (first 10:00 CT, last 10:07 CT)", text)
+
+    def test_allowed_verdicts_do_not_trigger_the_lag_line(self):
+        j = self.journal()
+        j.intent(ct_ms(DAY, 10), 1, "entry ok")  # allowed, no filter blocked it
+        j.write()
+        att = self.model()["attention"]
+        self.assertFalse(any(a[3] == "LAG_GUARD" for a in att))
+
+    def test_a_block_whose_first_verdict_is_not_lag_is_not_counted_as_a_lag_block(self):
+        # The rule is specifically "the FIRST non-allowed verdict has filter lag" -- a lag verdict present
+        # later in the list, behind a different blocking filter, does not count.
+        j = self.journal()
+        j.add({"type": "intent_changed", "seq": 1, "eventTimeMs": ct_ms(DAY, 10), "strategyId": "lvn_fade_test",
+               "intentSeq": 1, "targetPosition": 1, "stopPriceTicks": 1, "targetPriceTicks": 2, "reason": "entry X"})
+        j.add({"type": "risk_verdict", "seq": 1, "strategyId": "lvn_fade_test", "intentSeq": 1, "allowed": False,
+               "verdicts": [{"filter": "churn", "allowed": False, "reason": "min dwell not elapsed"},
+                            {"filter": "lag", "allowed": False, "reason": "queue depth 1500 >= 1000"}]})
+        j.write()
+        att = self.model()["attention"]
+        self.assertFalse(any(a[3] == "LAG_GUARD" for a in att))
 
 
 class TestWindowAndSessions(Base):
@@ -595,6 +890,49 @@ class TestDataHealth(Base):
     def test_no_data_directory(self):
         self.journal().heartbeat(ct_ms(DAY, 10)).write()
         self.assertIn("No data directory found", dr.render(self.model()))
+
+
+class TestPerInstrumentDataLayout(Base):
+    """Findings F-1 (2026-09-27): the runtime writes data/<construct>/<symbol>/<sid>.jsonl; older files are flat."""
+
+    def _day_file(self, rel, n=3):
+        f = self.data / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        base = ct_ms(DAY, 10)
+        lines = [json.dumps({"type": "header", "construct": rel.split("/")[0], "intervalSeconds": 1, "t": base})]
+        lines += [json.dumps({"t": base + i * 1000, "v": 1}) for i in range(n)]
+        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_symbol_dir_mirrors_the_java_rule(self):
+        self.assertEqual(dr.symbol_dir("@GC"), "GC")
+        self.assertEqual(dr.symbol_dir("GCZ6"), "GCZ6")
+        self.assertEqual(dr.symbol_dir("A/B:C"), "A_B_C")
+        self.assertEqual(dr.symbol_dir(None), "unknown")
+        self.assertEqual(dr.symbol_dir("@"), "unknown")
+
+    def test_data_file_prefers_the_symbol_folder_and_falls_back_to_the_flat_file(self):
+        sid = dr.session_id_for_day(DAY)
+        self.assertEqual(dr.data_file(self.data, "vwap", sid, "@GC"), self.data / "vwap" / f"{sid}.jsonl",
+                         "nothing exists yet: the old flat path is returned")
+        self._day_file(f"vwap/GC/{sid}.jsonl")
+        self.assertEqual(dr.data_file(self.data, "vwap", sid, "@GC"), self.data / "vwap" / "GC" / f"{sid}.jsonl")
+        self.assertEqual(dr.data_file(self.data, "vwap", sid), self.data / "vwap" / "GC" / f"{sid}.jsonl",
+                         "no symbol given: the default (gold) folder")
+
+    def test_report_reads_the_sessions_instrument_folder_not_another_instruments(self):
+        sid = dr.session_id_for_day(DAY)
+        self._day_file(f"vwap/GC/{sid}.jsonl", n=4)
+        self._day_file(f"vwap/ESZ6/{sid}.jsonl", n=9)         # another instrument, same day
+        self.journal().heartbeat(ct_ms(DAY, 10)).write()      # the journal's session_header says @GC
+        text = dr.render(self.model())
+        self.assertIn("| vwap | ok | 4 |", text, "gold's own file (4 lines), not ES's (9)")
+        self.assertIn(f"data/*/GC/{sid}.jsonl", text)
+
+    def test_old_flat_files_still_read(self):
+        sid = dr.session_id_for_day(DAY)
+        self._day_file(f"vwap/{sid}.jsonl", n=2)
+        self.journal().heartbeat(ct_ms(DAY, 10)).write()
+        self.assertIn("| vwap | ok | 2 |", dr.render(self.model()))
 
 
 class TestCli(Base):

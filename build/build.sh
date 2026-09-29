@@ -24,6 +24,10 @@ rm -rf build/classes/core
 mkdir -p build/classes/core
 "$JAVAC" -encoding UTF-8 -d build/classes/core $(find flow-core/src -name "*.java")
 
+echo "== raw event codec round-trip test (incl. FillEvent, C1/D-120) =="
+"$JAVA" -cp build/classes/core com.flow.core.RawEventCodecTest
+echo "(raw event codec test passed -- see output above)"
+
 echo "== trigger evaluator synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.TriggerEvaluatorTest
 echo "(trigger test passed -- see output above)"
@@ -80,6 +84,30 @@ echo "== sequencer backpressure synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.SequencerTest
 echo "(sequencer test passed -- see output above)"
 
+echo "== instrument guard + per-instrument data layout test (F-1, 2026-09-27) =="
+"$JAVA" -cp build/classes/core com.flow.core.InstrumentAndDataLayoutTest
+echo "(instrument/data layout test passed -- see output above)"
+
+echo "== code-review risk fixes test (B1/A4/A7/B2, 2026-09-27) =="
+"$JAVA" -cp build/classes/core com.flow.core.RiskReviewFixesTest
+echo "(risk fixes test passed -- see output above)"
+
+echo "== account-truth daily loss + pipeline suspend/resume + account watch test (F-1/F-3/F-4, 2026-09-28) =="
+"$JAVA" -cp build/classes/core com.flow.core.AccountTruthTest
+echo "(account-truth test passed -- see output above)"
+
+echo "== alert path test (placeholder log-file channel; Telegram later) =="
+"$JAVA" -cp build/classes/core com.flow.core.AlertDispatcherTest
+echo "(alert path test passed -- see output above)"
+
+echo "== simulated-account-only classifier test (2026-09-28) =="
+"$JAVA" -cp build/classes/core com.flow.core.AccountPolicyTest
+echo "(account policy test passed -- see output above)"
+
+echo "== feed watchdog test (F-19, 2026-09-28) =="
+"$JAVA" -cp build/classes/core com.flow.core.FeedWatchdogTest
+echo "(feed watchdog test passed -- see output above)"
+
 echo "== pipeline exception boundary / kill switch synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.PipelineExceptionBoundaryTest
 echo "(pipeline exception boundary test passed -- see output above)"
@@ -125,12 +153,19 @@ echo "== live order tracker test against the fake broker (D-91) =="
 "$JAVA" -cp "${SDKJAR}${SEP}build/classes/core${SEP}build/classes/runtime" com.flow.rt.LiveOrderTrackerTest
 echo "(live order tracker test passed -- see output above)"
 
+echo "== account watch judgement test (F-3 race fix, 2026-09-28) =="
+"$JAVA" -cp "${SDKJAR}${SEP}build/classes/core${SEP}build/classes/runtime" com.flow.rt.AccountWatchTest
+echo "(account watch test passed -- see output above)"
+
 echo "== daily report tests (python, D-94) =="
 if command -v python >/dev/null 2>&1; then
   python analysis/test_daily_report.py
   python analysis/test_trade_view.py
   python analysis/test_status.py
   echo "(daily report + trade viewer + status tests passed -- see output above)"
+  echo "== watchdog tests (python, ops/) =="
+  python ops/test_watchdog.py
+  echo "(watchdog tests passed -- see output above)"
 else
   echo "(python not found -- daily report tests SKIPPED; the report is an offline tool and does not gate the deploy)"
 fi

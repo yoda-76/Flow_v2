@@ -4199,6 +4199,478 @@ readable rather than being silently rewritten.
   - **Limit**: a *crash* is still `DOWN` only after 5 minutes of silence (D-96's thresholds, unchanged); a
     `DEACTIVATE` without a following `DESTROY` (e.g. MotiveWave killed mid-removal) also reads `STOPPED`.
 
+- **D-110** (2026-09-27) — **Laptop trial, Phase 1 (off-market): the repo is distributable — a fresh clone on a
+  second Windows machine with a different MotiveWave version built, deployed and started up cleanly.** Code: HEAD
+  `f657b7d`, no code changes. Study in `DRY_RUN`, Armed unchecked, throughout; no order was possible.
+  - **The laptop vs the dev machine**: Windows 11 Pro 10.0.26200 (dev: Windows 10 Home); user `SUBRAT` (dev: `MSI`);
+    clone at `D:\yadvendra\FLOW_V2` (not the default `C:\yadvendra\trading\FLOW_V2`); **MotiveWave 7.1.1 with
+    bundled Java 27** (dev: 7.0.28 / Java 26); no JDK installed at all; Python 3.14.6; licence `ORDER_FLOW`;
+    Rithmic already connected when the trial started (runbook §4.2 wanted "Sim Trade Only" first — the user enabled
+    it before the study was added).
+  - **What had to be done** (all now in the runbook): (1) download Temurin **26.0.2.1+1** into
+    `D:\yadvendra\motivewave\tools\jdk-26.0.2.1+1` — the default relative location, so `FLOW_JDK_BIN` was not needed;
+    (2) `setx FLOW_HOME "D:\yadvendra\FLOW_V2"` and a full MotiveWave restart — the log then said
+    `FLOW_HOME root=D:\yadvendra\FLOW_V2 source=environment variable FLOW_HOME`; (3) `MOTIVEWAVE_EXT_DIR` passed on the
+    command line (the `/c/Users/MSI/…` default does not exist there). Nothing else needed a dev-machine path.
+  - **Test sheet (runbook §13.1)** — PASS unless noted:
+    - A1 `FLOW_HOME` PASS (via the variable). A2 extensions path: set explicitly, so the "folder not found" message was
+      **not** exercised. A3 JDK PASS (`env_test.sh` all OK). **A4 PASS: classes built by JDK 26 load in MotiveWave's
+      Java 27.** **A5: 7.1.1 — first time this code has run on it**; the SDK jar compiled cleanly and
+      `SafetyHookReflectionTest` passed (15 `OrderContext` hooks, all overridden — 7.1.1 adds none). A6 full build
+      exit 0, scratch folder then real deploy. A7 Python 3.14.6, all three suites pass. A8 C: 43 GB / D: 103 GB free.
+      **A9 not answered**: MotiveWave was restarted after the deploy anyway (for `FLOW_HOME`), so whether a first deploy
+      needs a restart is still unknown; MotiveWave had already created `MotiveWave Extensions` itself (empty) by then.
+      A10 no Defender prompts reported.
+    - B1 Sim Trade Only enabled and the selector read "simulated" (user). B2 `ORDER_FLOW` PASS. **B3 answered: NO — one Rithmic
+      login cannot run on two machines at once; the user had to exit MotiveWave on the dev machine.** Only one
+      machine runs a session at a time. B4 live depth PASS (99 bid / 100 ask levels per line in
+      `liquidity_map`). **B5 FAIL, then PASS**: the study was first added to an **ESZ6** chart — the log's
+      `SUBSCRIBED_DOM symbol=ESZ6` and the journal's `tickSize 0.25` showed it; moved to `@GC` (tick 0.1). That mix-up
+      exposed findings **F-1** (see below). B6 `ACTIVATE pos=0 cash=100000.0`. B7 checked by the user. B8 clock within
+      1 s of internet time.
+    - C1 all §5 lines in order, incl. the first live sighting of **`LOG_RETENTION hours=0 (keep everything)`**; no
+      `RISK_CONFIG_MISSING`/`_IGNORED`, no exception. C2 `session_header`, `risk_config_loaded` (with
+      `logRetentionHours`, `localOverrideKeys`), `price_anchor`, `arming_state`, heartbeats with `armed`/`runtime`,
+      weekend `SESSION_FLATTEN_DUE`. C3 first live sighting of the **daily feature logs** (`*_feature_2026-09-27.log`).
+      C4 `status.py` `ALIVE … armed: no DRY_RUN … data: ok` exit 0; `daily_report.py --no-file` exit 0. **C5 PASS on a
+      real removal**: `DEACTIVATE` → `DESTROY`, and `status.py` on that journal printed `STOPPED`, exit 1 (D-109 live).
+  - **Chart bar size**: the user then set the `@GC` chart to **20 seconds** (to test everything with more bars);
+    market-structure warm-start confirmed 100 bars 20 s apart. The dev machine and the runbook use 1 minute, so
+    market-structure output is not comparable between the machines until the bar sizes match.
+  - **Finding F-1** (`findings.md`, flagged, not fixed): recorded data files are keyed by trading day only, so the ES
+    session and the gold session were appended to the same `data/<construct>/20722.jsonl`.
+  - **A2 PASS** (checked afterwards): plain `bash build/build.sh` with the `MSI` default stopped before compiling —
+    `MotiveWave extensions folder not found at '/c/Users/MSI/MotiveWave Extensions'; set MOTIVEWAVE_EXT_DIR`, exit 2,
+    deployed files untouched.
+  - **D6 (power) FAIL at first check**: plugged-in sleep was 5 min (battery 3 min); after the user changed it, plugged-in
+    sleep was **45 min** — still not "never", so an idle overnight session would still be cut. The battery reads 4 %
+    while on the charger. Lid-close action could not be read with `powercfg`. **Not a blocker for the planned
+    Phase 2:** the user will run a watched 10–15-minute test in market hours, not a whole day. It must be
+    "never" before any long or unattended run.
+  - **Not verified by this phase** (unchanged): everything that needs ticks or orders — Phase 2.
+  - **Rule change the same day**: the user ended the 2026-09-24 sprint authorization ("continue in regular mode");
+    `CLAUDE.md`'s third exception is marked ended and the second exception's per-session statement applies again.
+    **Corrected 2026-09-27 (user, on the dev machine): this was a misreading — the sprint authorization was NOT
+    ended.** "Regular mode" referred to the model-mode toggle (`REGULAR`/`SUPER`, added on the `code-review-fixes`
+    branch, which the laptop's `main` did not have), not to the Sim pre-authorization. The user: "sim
+    pre-authorisation is still on until I say so". `CLAUDE.md`'s third exception is restored to in force; the real
+    account stays strictly forbidden.
+- **D-111** (2026-09-27) — **Code-review fixes that needed no decision, done off-market.** From `codeReview.md`
+  (D-109's checkpoint review). The user: "what in the review can be fixed off-market … start working on it one by one
+  … leave whatever needs my decision, complete everything else, and don't break the existing code." Work split per
+  the new `SUPER` mode (`CLAUDE.md`): the safety/order code by the main session; the report fixes (A5, A10, C2) and
+  the comment/UI/doc fixes (D1–D3, config rows) by Sonnet subagents, each diff re-read and re-tested here.
+  - **Safety and risk (main session):** A1 kill switch sends orders only in `SIM_LIVE`+Armed and never a close to a
+    flat account (`LiveOrderTracker.onKillSwitch`); B4 kill switch tells the risk chain and the strategy the account
+    is flat and latches until the 17:00 CT reset; B1 a flat intent is never blocked; A4 rate limit counts only real
+    changes; A7 P&L by signed size; B2 a blocked intent is retried at most once a second (silently while still
+    blocked), the strategy is told on every repeat, and `lvn_fade_test` rolls a blocked entry back; B3 runtime
+    refusals of an entry (in flight / resting orders / flip) come back through a new `IntentSink.deliver()` default
+    method and are treated as a block; A2 one monotonic **risk clock** (`MutableMarketState.riskClockMs()` = highest
+    ingest receipt time — the flatten already used this clock) for dwell, rate window, entry and flatten windows,
+    daily reset and retry, and DOM events no longer move `exchangeTimeMs`; A3 the session tracker only moves forward;
+    A6 a safety disarm survives re-activation (`ARM_STILL_DENIED`); A8 thread joins on shutdown; A9 bracket prices
+    on the tick grid; E1 at most 64 order-book snapshots queued (extras skipped and counted, ticks never skipped);
+    E2 past days' data files closed at the day change and pruning continues past a failed delete.
+  - **Behaviour changes to know** (all intended): with `DRY_RUN`+Armed a daily-loss breach now only disarms; after a
+    kill switch no new entry until the 17:00 CT reset **and** no re-arm until the study is re-added; the entry window
+    and the daily reset are judged on this machine's clock rather than the last tick's exchange stamp (~2.3 s apart
+    here — time sync matters, E4); in `DRY_RUN` `lvn_fade_test` now keeps looking for signals after each blocked
+    entry, so a dry-run journal shows many more (blocked) entries than before; a flat intent while not armed now
+    reaches the dry-run reconcile (one extra `reconcile_dry_run` line per exit); the study's label in MotiveWave and
+    the prefix on its log lines changed ("FLOW Runtime (Armed + SIM_LIVE places real orders)").
+  - **Not done — the user's decisions:** B5 (meaning of max reversals), B6 (GTC legs; re-submit vs flatten a lost
+    leg), B8 (bracket from fill price), C1 (account as single truth — also B3's `noop` case and B7), C3 (Sim
+    cash-balance guard). **Not doable off-market:** E3 (measure), E4 (time sync, user), E5 (a roll).
+  - **Tests:** new gate `RiskReviewFixesTest` (B1, A4, A7, B2 incl. the `lvn_fade_test` rollback through a stub
+    volume profile, A2 on the real recording — 0 backward steps, was 74 — and at the pipeline level, A3, E1, E2,
+    B3); new cases in `PipelineExceptionBoundaryTest` (B4 latch) and `LiveOrderTrackerTest` (A1, A9, B3); Python
+    suites now 57 / 25 / 37. Mutation checks: 41 mutants of the Java fixes — 40 caught after tightening five weak
+    tests (the first rounds found a test counting per-filter "allowed" lines, a flag test defeated by the kill check
+    calling the armed supplier, and two ordering accidents); **1 survivor, judged near-equivalent**: pointing the
+    kill check's clock back at exchange time only delays noticing the 17:00 CT reset by an event, because the
+    session tracker is now shared and monotonic. The subagents' Python mutants: 15/15 and 4/4 caught. Full
+    `build.sh` (all 25 Java gates, both replay tests, 3 Python suites) exits 0 against a scratch deploy folder.
+  - **Not verified:** nothing is deployed — the dev machine still runs `c3ef87f` — and nothing has run live. A6 and
+    the study wiring (kill-switch gate call site, B3 sink, E1 skip log) are compiled only. The next live Sim session
+    is the first test of all of it, on either machine.
+
+- **D-112** (2026-09-27) — **Before the live test: only gold may be traded, recorded data gets a per-instrument
+  folder (F-1), 20-second bars for the plumbing test, and the live test runs branch `distribution-test`.** The
+  user's answers after the laptop trial (D-110): "for now only GC is allowed"; "put symbol in path"; "20 sec bars
+  for testing plumbing"; "we will push all the fixes in this new branch and pull the same branch on the other
+  laptop for the live test"; "change the mode to regular"; "sim trade only should be enabled all the time"; and the
+  Sim pre-authorization "is still on until I say so" (the laptop had misread "regular mode" — corrected on the branch).
+  - **Branch:** `distribution-test` = `main` + the laptop trial's three commits (re-authored to the user) + a
+    correction that the Sim pre-authorization is in force + the merged `code-review-fixes` (the review fixes are
+    **D-111**, renumbered from D-110 so the laptop trial keeps D-110) + this entry. `main` is untouched.
+  - **Instrument guard (`InstrumentPolicy`, flow-core):** tradable = root `GC` (`@GC`, or a contract like `GCZ6` /
+    `GCG27`) with tick 0.1. Anything else: `REFUSE_TO_ARM instrument … is not allowed` in the log (the report already
+    ALERTs on `REFUSE_TO_ARM`); the armed flag, live mode and the flatten/kill-switch gate all read false, so **no
+    order of any kind** is sent from that chart; recording still runs into the symbol's own folder.
+    `instrumentAllowed` is journaled in `session_header` and the arming `runtime` detail. Micro gold (`MGC`) is refused
+    on purpose — a different contract.
+  - **F-1 fixed — symbol in the path:** `data/<construct>/<symbol>/<sessionId>.jsonl` (`@GC` → `GC`; the rule is
+    `InstrumentPolicy.symbolDir`, mirrored by `analysis/daily_report.py symbol_dir`), the header line carries
+    `symbol`, `DATA_RECORDER_ON` logs `symbolDir=`, pruning looks one folder deeper. Readers (`status.py`,
+    `daily_report.py`, `trade_view.py`) take the instrument from the session's journal and read the symbol folder
+    first, the old flat file second — so pre-2026-09-27 recordings and the committed replay fixture still work
+    (replay and its tests keep the old layout by design).
+  - **Docs:** runbook §4 reordered (Sim Trade Only **before** Rithmic, as a boxed first step; "stays enabled at all
+    times until the user says otherwise"; one Rithmic login per machine; `@GC` **20-second** chart; only gold);
+    `CLAUDE.md` mode set to **`REGULAR`** with a line that the toggle only picks models and never changes what is
+    authorized, plus the gold-only and Sim-Trade-Only-always rules; `configuration.md` (data layout, instrument);
+    `findings.md` F-1 marked fixed.
+  - **Tests:** new gate `InstrumentAndDataLayoutTest` (policy incl. ES, MGC, silver, wrong tick, contracts;
+    folder names; two instruments on one day in separate files; old flat layout unchanged; pruning inside symbol
+    folders; the header's symbol) and 8 Python tests across the three suites (61 / 27 / 39). Mutation: 9/9 Java and
+    7/7 Python mutants caught. Full `build.sh` passes. The runtime wiring (`FlowRuntimeStudy` gates) is compiled
+    only.
+  - **Not verified live**: all of it, and everything in D-111. The laptop's live test is the first run.
+
+- **D-113** (2026-09-28) — **P0 fixes from the live test (F-1…F-4 of the fix list): the account is the truth for
+  daily loss and for flatten decisions, every flatten is verified, non-study position changes are journaled, and a
+  deactivated study stops deciding.** Built off-market, all gates green, **not deployed, not seen live.** The user
+  said "start fixing the P0 items and ping me if my decision is needed"; the only decisions needed were F-5 and F-6
+  (asked, answered: "Flatten + disarm", "Yes, close it"). Evidence: `liveTest-2026-09-28.md` (L-1, L-2, L-3, L-14),
+  `logAnalysis-2026-09-28.md` (N-2).
+  - **New platform fact (`findings.md` F-2, [DOC] Javadoc):** `OrderContext.getPosition()` is *"the current open
+    position **for this strategy**"*; the **account's** is a separate `getAccountPosition()` (also
+    `getAccountAvgEntryPrice()`, `closeAccountAtMarket()`, `getExecutions()` "since this strategy was activated").
+    `closeAtMarket()` *"closes the position held by **this strategy**… waits until the market order(s) have been
+    filled"*. This explains L-2 (a manual close never reached the study's own position) and shows the earlier
+    "no accessor to the account" search (CLAUDE.md, 2026-09-26) missed the position accessors. Not yet checked live:
+    that `getAccountPosition()` is prompt at the callback/kill-switch instant (the fix reads both and never trusts
+    one alone — below).
+  - **F-1a — daily loss from the account.** `RiskChain.AccountTruth(cash, startCash, position, avgEntryTicks,
+    dollarsPerTick)` from an optional supplier. When present, `checkDailyLoss` = (cash − baseline)/dollarsPerTick
+    (realized, incl. fees) + the account position marked from its real average entry (unrealized); baseline =
+    the balance at the study's first activation, re-based at each 17:00 CT rollover. The runtime supplies it only
+    while SIM_LIVE + Armed (refreshed at every fill callback and about once a second); DRY_RUN/replay, a null or
+    throwing supplier, or a zero tick value keep the signal-price estimate unchanged. Verdict text ends "(account)".
+    Consequence: the daily limit now also counts anything else that moves this account's cash (another study, a
+    manual trade) — deliberately conservative. Restarting MotiveWave resets the baseline (as the old estimate did).
+  - **F-1b — a flatten no longer trusts one stale read.** `LiveOrderTracker.decide()`: a tracked bracket leg that
+    has already filled ⇒ position is closed, send no close (L-1's exact race); study and account positions both
+    non-flat with the same sign ⇒ close; anything else ⇒ **HOLD** — no order, bracket left working,
+    `POSITION_SOURCES_DISAGREE` logged (the report ALERTs). Used by the kill switch and the session flatten (the
+    latter retries every 5 s). `closeAtMarket()` closes the *study's* position, so it is never sent on a
+    disagreement (a manual close + a stale study position would have opened a short).
+  - **F-1c — verification after every position-relative flatten** (kill switch, double-fill correction, partial-entry
+    flatten): looks again at 1.5 s, 3 s, 5 s on a daemon thread (`scheduler` injected; tests drive it by hand).
+    Flat both ways ⇒ `FLATTEN_VERIFIED` (and sweeps stray legs); both readings agree it is non-flat (L-1's wrong-way
+    short) ⇒ `FLATTEN_CORRECTING` sends the close again; disagree ⇒ no order; still not confirmed after the third
+    look ⇒ `FLATTEN_NOT_CONFIRMED … CHECK THE ACCOUNT BY HAND`. All of these are ALERTs in `daily_report.py`.
+  - **F-2 (part) — entries and arming read the account too.** An opening intent is refused when the account holds a
+    position the study's own view does not (`account position is N while the study's own position is flat`, reported
+    to the pipeline as a block, B3); `refuseToArmReason` also looks at `getAccountPosition()`. **The rest of C1
+    (one position truth for strategy/risk chain/tracker) is not attempted** — the two-source rule above is a
+    safety net, not a single source of truth, and is provisional until the account read has been seen live.
+  - **F-3 — account watch.** `Pipeline.attachAccountWatch` (drain thread, ~1 s): the runtime journals
+    `account_position_change` (previous, now, study position, `explainedByFill`, cash, entry ticks) whenever the account
+    position or the (account, study) pair changes, and logs `ACCOUNT_POSITION_CHANGED_UNTRACKED` (ALERT) when the
+    account moved with no fill callback in the last 3 s. `daily_report.py` closes an open trade on such a record
+    (`closed outside the study (manual / platform)`, P&L from the cash change) — the phantom "STILL OPEN" and its
+    `status.py` echo go away for new journals. Old journals (L-3) still show the phantom.
+  - **F-4 — deactivated study.** `Pipeline.suspendTrading()/resumeTrading()`: while suspended the pipeline still
+    ingests, journals and records but does not wake the strategy (N-2: an allowed intent 5 s after DEACTIVATE). A
+    re-activation (only if it had been suspended) forgets the strategy's and risk chain's belief on the next event
+    (`pipeline_resync`, strategy `onFlattened("study re-activation")`, `lastIntent` cleared) and resets the tracker
+    (`resetForReactivation`: legs, in-flight entry, self-cancel set). L-10's misleading journal text reworded.
+  - **F-5 (B6) — a lost bracket leg (user's answer: "Flatten + disarm").** A tracked leg cancelled or rejected by
+    the platform is never judged when its callback arrives — the platform itself cancels the sibling the moment the
+    other leg fills, and that callback comes BEFORE ours (L-7). It is re-examined 1.5 s later (`LEG_ENDED_SEEN` →
+    `confirmLegLost`): benign if the bracket was already resolved, the other leg filled, or account and study are both
+    flat (`LEG_ENDED_BENIGN`); otherwise `LIVE_LEG_LOST` — disarm (`armDenied`), then the same two-source-checked flatten
+    (`LEG_LOST_FLATTEN`, ALERT) and the same verification. A disagreement between the two position readings sends no
+    close and leaves the surviving leg working (`POSITION_SOURCES_DISAGREE LEG_LOST`). Legs stay `DAY` orders (the
+    session-end flatten closes everything before the daily halt; GTC would only add lingering-leg risk) — recorded, not
+    asked. Mutation: 6/6 F-5 mutants caught (18/18 for all of D-113).
+  - **F-6 (L-4) — the "close the running position?" dialog (user's answer: "Yes, close it").** Runbook §6 now says so,
+    and that answering No is untested. No code change: the platform's close is journaled by the F-3 account watch when
+    the study is alive to see it.
+  - **Not done / needs a decision:** C1 in full, C3 (`Order.getAccountId()` exists and could back a real second layer
+    against a non-Simulated account — see `findings.md` F-2; every `order_fill` now journals `accountId` so the next
+    live run shows what it looks like).
+  - **Tests:** new gate `AccountTruthTest` (core; 8 groups); `LiveOrderTrackerTest` +8 groups on `FakeBroker`
+    (which now models `getAccountPosition`/`getAccountAvgEntryPrice` and scripted stale reads); 3 Python tests.
+    Mutation: 12/12 Java mutants caught (leg-filled ignored, close on either reading, verify never corrects, no
+    verification queued, opening guard off, session-flatten HOLD ignored, no NOT_CONFIRMED alert, refuse-to-arm
+    ignores the account, truth sign flipped, no rollover re-base, suspended still wakes, resume without resync).
+    Full `build.sh` passes (scratch deploy).
+  - **Not verified live:** everything. In particular: that `getAccountPosition()`/cash are current at the callback and
+    at the kill-switch instant; that `closeAtMarket()` blocking on the safety thread is fine; the truth path's entry
+    price at the entry-fill callback; the 1 s account watch's cost. The next live Sim run should use a small
+    `dailyLossLimitTicks` (10) to exercise F-1 end to end.
+
+- **D-114** (2026-09-28) — **Slippage-aware brackets, per-trade execution-cost records, and a market-data watchdog
+  (F-7, F-11, F-19, F-20, F-21).** From the 21:53 IST Rithmic disconnect and the latency/slippage measurement in
+  `logAnalysis-2026-09-28.md`. Built off-market, all gates green, **not deployed, not seen live.** User decisions
+  in this round: *"flatten if the price has crossed or reached either sl/tp; if it is still in between keep the
+  order open; the advanced approach (fetch historical bars for the gap, flatten if the range touched a level and
+  came back) later — add it to todo"*.
+  - **Measured first (151 Sim entries):** signal → fill callback median **0 ms** (max ~60 ms); fill vs the last
+    trade **+1.6…+1.9 ticks worse**; fill vs the touch 54–62 % exactly at it, ~a third one tick *better*; quoted
+    spread median 2 ticks. So on Sim the slippage **is the spread**, not latency; real-account latency will come on top.
+  - **F-7 — bracket anchored to the fill.** `Intent` gained `anchorToFill` (default false = absolute levels, so
+    structural stops keep working; a 6-argument constructor keeps every caller). `lvn_fade_test` sets it. The runtime
+    records the signal tick (`SignalInfo`: last, bid, ask, times) at submit; at the entry fill it places the stop and
+    target the strategy's own distances from the **fill** (`LIVE_BRACKET_ANCHORED_TO_FILL signal=… fill=… stop a->b
+    target c->d`). No signal info → falls back to the absolute levels. `marketstructure_lvn_reversal` is unchanged.
+  - **F-21 — never a leg on the wrong side of the fill.** A long's target at/below its fill (or stop at/above) is
+    clamped one tick to the right side (`LIVE_BRACKET_ADJUSTED`, WARN); the bracket is always still placed.
+  - **F-11 — cost records.** `real_order_submitted` now carries its own `t`, the signal last/bid/ask and times; one
+    `entry_execution` record per entry fill: fill ticks, slippage vs last and vs the touch (signed, + = worse),
+    spread, signal→submit and submit→fill milliseconds. `daily_report.py` prints an "Execution cost (entries)" table.
+  - **F-20 — artifact flag.** An exit filling more than 3 ticks from its own stop/limit price is marked ⚠ in the trade
+    table and the summary shows the gross with and without it (the +$820 outage fill is the model case).
+  - **F-19 — feed watchdog** (`feedStaleSeconds` 20, `feedSettleSeconds` 10; 0 = off; `configuration.md`). Local-clock
+    based, only inside the trading window and after the first tick: LIVE → STALE (`FEED_STALE` ALERT, risk filter
+    `feed` blocks entries, flat intents never blocked) → first tick = `data_gap` record (start, end, price before/after,
+    jump) + `FeedListener.onFeedResumed` + SETTLING → `feed_live`. A relapse while settling goes straight back to STALE.
+    Heartbeats carry `feedState`. **Open-position rule (user's):** 1.5 s after the first tick back the tracker compares
+    BOTH the first post-gap price and the current price with the resting stop and target; reached-or-crossed →
+    `FEED_RESUME_FLATTEN` (same two-source-checked, verified flatten as the kill switch; readings disagree →
+    `…_HELD`, nothing sent); strictly between → `FEED_RESUME_KEEP`, orders left working; legs already resolved by the
+    platform → `NOTHING_OPEN`; a position with no tracked bracket → `FEED_RESUME_UNPROTECTED_POSITION` ALERT.
+  - **Deliberately not done:** the "cap" (a marketable limit instead of a market entry, cancel if unfilled); gap
+    ticks are not back-filled into the recorders (only marked by `data_gap`); features are not re-warmed after a gap.
+    Todo F-22 holds the historical-bars refinement.
+  - **Tests:** new gate `FeedWatchdogTest`; `LiveOrderTrackerTest` +5 groups (anchored/absolute/clamped brackets,
+    cost record incl. SELL and price improvement, 9 feed-resume cases incl. exact-level, come-back, short side, readings
+    disagree, nothing open); 3 Python tests (67 total). Mutation: 10/10 new mutants caught. Full `build.sh` passes.
+  - **Not verified live:** all of it. In particular the anchored bracket's prices on the real platform, and that a
+    real outage triggers `FEED_STALE` (the 21:53 disconnect is the case to replay; a live repeat needs a network drop).
+
+- **D-115** (2026-09-28) — **The Simulated-account-only rule is now enforced in code, not just by a checkbox.**
+  User: *"only simulated trades will affect anything related to the system"*; also: the reversal cap, rate limit and
+  daily loss limit stay at their defaults in `config/risk.json` (they are all configurable there, and per machine in
+  the git-ignored `config/risk.local.json` — `maxReversalsPerSession` 20, `rateLimitPerMinute` 6,
+  `dailyLossLimitTicks` 200); Telegram alerts will be added by the user (`.examples.env` lists the two names);
+  memory/soak measured after the first day; the strategy and order-flow rules will be changed by the user before the
+  24/7 run.
+  - **Basis:** every `Order` has `getAccountId()` (Javadoc) and all 400+ Sim fills of 2026-09-28 reported exactly
+    `"simulated"` (`findings.md` F-2). `AccountPolicy.classify`: SIMULATED (exact, case/space-insensitive), OTHER (any
+    other name), UNKNOWN (null/blank).
+  - **Before sending:** `OrderGateway` builds each order, and if its `getAccountId()` names another account it
+    **refuses to submit** (throws; the tracker disarms, locks, logs `NON_SIM_ACCOUNT_EVENT entry refused…`).
+  - **On any callback:** a fill, cancel or rejection naming another account is **not processed**; the runtime disarms,
+    sets a shared **order lock** and journals `non_sim_account_event` (ALERT in the report). Once locked, every sending
+    method in `OrderGateway` — entry, bracket, close, cancel, kill-switch sweep — returns `order_refused` instead. **It
+    never tries to flatten the other account** (that would itself be an order on it). There is no un-lock: fix the
+    account, remove and re-add the study (the lock and the safety-disarm both survive a re-activation).
+  - **Fail-open on UNKNOWN**, by design: a freshly created, unsubmitted order may carry no account yet, and failing
+    closed would halt the system whenever a getter returns nothing. An UNKNOWN id is logged once (`ACCOUNT_ID_UNKNOWN`,
+    WARN); since every real fill has carried the id, a fill without one is still worth a look.
+  - **Still true:** "Sim Trade Only" stays enabled and the human still confirms the account selector — this is a second
+    layer that stops the *system* acting on anything else, not a replacement.
+  - **Tests:** new gate `AccountPolicyTest`; `LiveOrderTrackerTest` +3 groups (a fill/cancel/rejection on another
+    account; entry refused before sending and the lock not clearing itself; unknown id allowed and logged once).
+    Mutation: 6/6 caught (one survivor found and closed with a kill-switch-under-lock test). Full `build.sh` passes.
+  - **Not verified live** (the live account id has only ever been `simulated`, so the refusal paths cannot fire).
+
+- **D-116** (2026-09-28) — **Race fix in the account watch; first live test of the feed watchdog.** The Wi-Fi-off test
+  (`logAnalysis-2026-09-28.md`, last addendum) passed for detection (`FEED_STALE` at 20 s, before MotiveWave's own
+  "Broken" alerts), the entry block, `data_gap`, the settle period (`feed_live` exactly 10 s after the resume) and a
+  clean end state; the flatten branch of the resume rule was not reached (the Sim engine filled the stop first).
+  It also showed **MotiveWave failing to resume market-data delivery after Wi-Fi returned** (~4 min, manual Rithmic
+  disconnect/connect needed) and **Sim filling a stop at its stop price through a 19-tick gap** (N-11, N-12).
+  Code: the F-3 watch was extracted to `AccountWatch` and an unexplained position change is now re-judged 2.5 s later
+  before it is called untracked (a genuine entry fill had been ALERTed because the watcher read the position a few
+  ms before the fill callback ran). New gate `AccountWatchTest` (5 groups incl. that race); mutation 4/4. Full
+  `build.sh` passes; **built, not deployed** (the study was running).
+
+- **D-117** (2026-09-28) — **Alert path with a placeholder channel; gap-fill honesty in the report; EC2 note.**
+  User: *"add a placeholder logger function in place of the Telegram alert, I will add the bot later"*; *"I am
+  planning to use EC2 instances so the internet problem won't be there; if we run into the disconnection issue there
+  as well we will revisit"* (so F-24's recovery plan waits for evidence on EC2; the alert path does not).
+  - **Alert path (flow-core):** `AlertSink` (one method: severity, key, message, time), `AlertPolicy` (which runtime
+    log lines are ALERT / WARN / INFO — mirrors the report's "Needs attention" list, longest prefix first),
+    `AlertDispatcher` (throttle: the same key at most once a minute, the next one that gets through says how many were
+    held back; a failing sink is swallowed), `LogFileAlertSink` (the placeholder: appends to `logs/alerts.log`).
+    Wiring: `FlowRuntimeStudy.logLine` feeds every runtime line through the policy; `Pipeline.attachAlertHook` carries
+    the two events only the pipeline knows (`FEED_STALE`, and `DISARM` from an exception or journal overflow). Swapping
+    in Telegram = a class implementing `AlertSink` at the one place the dispatcher is built; it must not block (the
+    drain thread calls it). New gate `AlertDispatcherTest`; `FeedWatchdogTest` +2 groups.
+  - **F-25 done — gap fills in the report.** A trade open across a `data_gap` whose exit is a stop is re-priced at the
+    first price back when that is worse than the stop; a limit exit is never better than its limit. The summary shows
+    recorded vs realistic gross, and the trade row says "⚠ across a data gap (realistic exit …)". (Model case: the
+    23:17:57 stop recorded −5 ticks, realistic ≈ −16.) 2 new Python tests (69 total).
+  - **Built, deployed for the next live run; not yet seen live** (no alert has fired on the new path).
+
+- **D-118** (2026-09-28) — **An outside-MotiveWave watchdog, the restart policy, and an EC2 runbook.** User: *"implement the
+  outside watcher; implement the restart policy; write the EC2 runbook; leave the tests that are done; big-trade Min Size
+  is configurable [it is a study setting]; keep strategy/order-flow rules pending; discuss C1 and F-22/F-23; holidays and
+  the contract roll when we reach them; on EC2 only the Sim account runs."*
+  - **`ops/watchdog.py`** (stdlib Python, run every minute): reads only the tail of the newest `decisions.jsonl` and the
+    process list. Alerts on: journal silent > 90 s (MotiveWave/study crashed or froze), clean stop while a 24/7 run is
+    expected, runtime DISARMED by a safety rule, `healthy=false`, `feedState` not LIVE, no MotiveWave process, free disk
+    < 5 GB; **forwards new lines of `logs/alerts.log` to the same channel** (so Telegram works with no Java-side sink);
+    appends `logs/watchdog_metrics.csv` (journal age, feed state, MotiveWave memory, disk) — the soak record. (A
+    second, brief `FEED_STALE` happened live at 23:56:55 IST — 21 s, self-recovered, no manual reconnect needed; the
+    placeholder alert file caught it correctly, the watchdog was built after and was not yet running for it.) Quiet by
+    state: alert on start, repeat every 30 min while it lasts, "…_RECOVERED" when it clears. Channel: `logs/alerts.log`
+    always, Telegram if `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are in the environment or in `<repo>/.env` (read by the
+    script when the user runs it; Claude never reads `.env`). Read-only toward MotiveWave, the study, orders and the
+    account. `--dry-run`, `--test-alert`, `--loop`. 22 unit tests (`ops/test_watchdog.py`, in `build.sh`); run once
+    against the live journals: OK.
+  - **Restart policy = scripts + a test to run, not magic:** `ops/register_tasks.ps1` registers FLOW-Watchdog (every
+    minute) and FLOW-Start-MotiveWave (at logon, starts MotiveWave if it is not running); `ops/harden_windows.ps1`
+    (dry run by default) sets no-sleep / no forced update reboot / time sync check. Both parse cleanly; neither has been
+    run elevated on a fresh machine. **What MotiveWave does after a restart (auto-connect, workspace, study
+    re-activation, Armed) is unknown and must be tested once on EC2** (`runbook-ec2.md` §8). The runtime's own guards
+    apply whatever comes back: refuse-to-arm over a position or resting orders (D-24), the Simulated-only lock.
+  - **`docs/runbook-ec2.md`** written: decisions (size/region/OS/access), AWS side, Windows preparation, MotiveWave and FLOW
+    set-up on the instance, alerts, backups, the restart procedure, the daily timetable in CT/IST, the first-24-hours
+    checklist and the list of unknowns. Everything unverified is marked [CHECK].
+  - **Deferred by the user, recorded in `todo.md`:** the ES-chart and refuse-to-arm tests, the feed-resume flatten and
+    account-refusal live tests (Sim cannot produce the fault), the Telegram Java sink (the watchdog covers it), holidays
+    and the December contract roll, strategy and order-flow rules ("pending, review later"), C1, F-22/F-23 (to discuss).
+
+- **D-119** (2026-09-29) — **First unattended multi-hour run: the daily halt, the day roll, and F-26's feed-resume
+  flatten branch all verified live, no intervention needed for 10.5 hours.** The user left the study running
+  overnight ("I'll keep the strategy running"); checked next at 10:08 IST. Full numbers and evidence:
+  `logAnalysis-2026-09-28.md`'s final addendum. Session `lvn_fade_test_1790618732366_inst909684115`, 23:35 IST →
+  overnight.
+  - **The 16:00–17:00 CT halt worked exactly as designed:** entries stopped 02:15:26 IST (`NO_NEW_ENTRIES`), the
+    flatten window entered 02:25:00 IST (`SESSION_FLATTEN_DUE`, account already flat — nothing to close), reopened
+    03:30:00 IST, first new entry 03:30:09. **Zero false `FEED_STALE` inside the halt** (877 records — heartbeats,
+    liquidity snapshots — kept flowing through the quiet window; the watchdog's `marketExpectedOpen()` check did its
+    job). **The day roll worked:** a new `data/*/GC/20724.jsonl` file appeared at the reopen; one `price_anchor` for
+    the whole session (unaffected by the roll, as designed).
+  - **F-26 (2026-09-28's todo item) closed — both feed-resume branches now live-verified:** 113
+    `FEED_RESUME_NOTHING_OPEN`, 6 `FEED_RESUME_KEEP` (price stayed between the stop and target, orders left working),
+    and **1 `FEED_RESUME_FLATTEN`** (03:35:31 IST: long 1, target reached/crossed during a 25 s outage → the verified
+    two-source-checked flatten fired, filled +0.4 pts, `FLATTEN_VERIFIED` 1.5 s later) — exactly the user's rule
+    from 2026-09-28 ("flatten if crossed/reached, keep if still between") and exactly D-114's design, working
+    end to end on a real outage for the first time.
+  - **F-7 (bracket anchored to the fill) confirms itself at scale:** all 210 overnight brackets measured exactly
+    5/5 ticks from the fill (one 6/4 from the wrong-side clamp) — the old lopsided 7-stop/3-target bracket (N-1) has
+    not recurred since the fix. Avg win +5.85 ticks vs avg loss −5.58 (a real 1:1 R:R), against a 31% win rate
+    (`lvn_fade_test` has no edge — still a losing plumbing test, as expected).
+  - **Nothing went wrong:** no kill switch, no disarm, no `LIVE_LEG_LOST`, no non-simulated-account event, no
+    exception, in 210 round trips over 10.5 h. Guards worked as designed: 433 intents blocked (churn 189, rate_limit
+    138, `session_open` 94 for the halt, `feed` 12 during outages) — no entry got through on a stale feed.
+  - **N-14 (network, not code):** 120 feed outages overnight (20–75 s each), clustered right after the reopen —
+    almost certainly this machine's home connection (MotiveWave's own log shows only 30 connection events and 13
+    "no quotes" warnings, so most of the 120 were brief and self-recovered with no manual reconnect, unlike the two
+    deliberate drops the night before). Supports moving to EC2 rather than fixing this machine's network.
+  - **Still not live-verified:** the account-refusal paths (D-115 — the account id has only ever been
+    `"simulated"`), the ES-chart / refuse-to-arm-over-a-position tests, a machine reboot, anything on EC2 itself.
+
+- **D-120** (2026-09-29) — **C1 closed (the strategy now hears about real fills); F-22 (historical-bar gap check)
+  and F-23 (entry slippage cap, off by default) built.** User: *"let's complete 3 and 4"* (C1, and F-22/F-23),
+  after choosing **"wire real fills to the strategy"** for C1's scope and **"build it, off by default"** for F-23.
+  Built off-market (the study was running on Sim throughout, deployed only for earlier pieces of the night, not
+  this round), all gates green, **not deployed, not seen live.**
+  - **C1 — FillEvent, finally wired.** The account side was already the truth (D-113: the kill switch and every
+    flatten read the account, not the strategy's belief); the remaining gap was the STRATEGY's own bookkeeping —
+    it tracked stop/target from the SIGNAL price even after F-7 anchored the real bracket to the FILL, so its
+    own virtual exit could diverge from the real one (the L-5 finding). `FillEvent` (a placeholder since the
+    walking-skeleton days) now carries `orderId, role(ENTRY/STOP/TARGET/OTHER), isBuy, fillPriceTicks, quantity,
+    positionAfter`; `LiveOrderTracker.recordFill()` publishes one through the sequencer (`Sequencer.publish`, same
+    path as every event) for every entry/stop/target fill of the CURRENT bracket — never for an "untracked" fill,
+    which is a manual/platform action, not the strategy's own, and stays F-3's job. `Pipeline.handle()` routes a
+    `FillEvent` straight to `strategy.onFill()` — a notification, not a wake, so it never itself asks for a new
+    decision — gated by the same `suspended`/`healthy` checks as everything else. `FlowStrategy.onFill()` (dead
+    code since D-91's own comment noted "no caller anywhere") finally has one. `RawEventCodec` extended to encode
+    it (raw.jsonl now records real fills going forward).
+    `LvnFadeTestStrategy.onFill()`: on an ENTRY, re-anchors its own stop/target to the fill using the exact math
+    `LiveOrderTracker` uses (a fixed offset either side of the signal, so re-deriving from the fill reproduces the
+    real bracket's levels exactly); on a STOP/TARGET fill, drops the position immediately rather than waiting for
+    the next price tick's own check to notice the same thing independently. `MarketStructureLvnReversalStrategy` is
+    untouched (it never set `anchorToFill`, so this gap never applied to it) — left for whenever the user's planned
+    strategy rework reaches it.
+  - **F-22 — the historical bar range across a gap, one delayed look.** The tick-only feed-resume check (D-114)
+    only sees the price the instant data resumed and the price now; a spike that reached or crossed a level and
+    came back inside that 1.5 s window is invisible to it. When that quick check says KEEP, `LiveOrderTracker`
+    schedules one further look 5 s later (`GAP_RANGE_CHECK_DELAY_MS`) at the bar range MotiveWave has (by then)
+    backfilled for the gap (`DataSeries`, read via `FlowRuntimeStudy.lookupGapRange`, captured from `onTick`'s
+    `DataContext`) — if the range's low or high reached/crossed a level, flattens via the same verified,
+    two-source-checked path as everything else (`GAP_RANGE_FLATTEN`); if the platform hasn't backfilled by then,
+    says so (`GAP_RANGE_UNAVAILABLE`) and leaves KEEP standing rather than retrying forever.
+    `LiveOrderTracker`'s side of the mechanism (the scheduling, the crossing logic, the two-source safety) is fully
+    unit-tested with a fake `GapRangeLookup`.
+    **Live-verified 2026-09-29, 14:53 IST** (deployed session `lvn_fade_test_1790671651021_inst1423988965`, 8 feed
+    outages in ~47 min, one with a position open): quick check → `FEED_RESUME_KEEP price is still between the stop
+    4174.0 and the target 4175.0`; 5 s later → `GAP_RANGE_KEEP the historical range [20,27] ticks never reached the
+    stop 4174.0 or the target 4175.0` — MotiveWave's bar backfill had landed by the 5 s mark and
+    `lookupGapRange`/`DataSeries` read correctly. The flatten branch itself (a range that DOES cross a level) has
+    still not fired live — this run's one case happened to confirm KEEP, not correct a miss.
+  - **F-23 — entry slippage cap, `entrySlippageCapTicks` (0 = off, the shipped default).** When > 0 and the
+    signal carries a bid/ask, the entry is a marketable LIMIT at the touch plus the cap instead of a bare market
+    order; unfilled after `ENTRY_LIMIT_TIMEOUT_MS` (5 s) it is cancelled (self-cancel-marked, so the callback
+    doesn't disarm) and journaled `entry_missed` — the strategy tries again on its own next signal, nothing
+    retries automatically. No signal, or a signal with no touch, falls back to the existing plain market order
+    unchanged. `OrderGateway.submitRealLimitEntry` mirrors `submitRealEntry` but returns the `Order` reference too
+    (needed for the timeout to cancel the right one). Measured 2026-09-28: on Sim a market order already fills at
+    the touch with ~0 latency, so this is built for a real account or a slower venue, not turned on by the default.
+  - **Tests:** `RawEventCodecTest` (new); `RiskReviewFixesTest` +3 groups (the anchor-to-the-fill proof compares the
+    SAME test price with and without `onFill()` having run, both directions; the immediate STOP/TARGET drop;
+    ignored while not in a position); `AccountTruthTest` +2 groups (`FillEvent` reaches the strategy but is never a
+    wake; gated by suspended/healthy, an exception from `onFill()` is not swallowed by `Pipeline` itself); `LiveOrderTrackerTest` +11 groups (fills published with the right role/side/price/qty; untracked fills are
+    never published; publishing is optional; the gap-range spike-and-return case in both directions, low and high;
+    a flattened account is left alone even with legs still referenced; unavailable/keep/already-resolved/disagree
+    cases; the slippage cap off by default, on with the right capped price each side, filling normally, the
+    timeout giving up and not disarming on its own late cancel, a race with an already-resolved entry, a stale
+    superseded timeout, and falling back to market with no signal/no touch). 2 new Python tests (report
+    classification). Mutation: 4/5 (C1), 3/3 + 2 documented-equivalent (F-22), 4/4 + 2 documented-equivalent
+    (F-23) — every survivor traced to a genuine redundancy elsewhere in the code (`decide()`'s own flat check,
+    a leg-fill always flattening position in this codebase, a resolved order never staying "active"), not a gap.
+  - **Not done:** `MarketStructureLvnReversalStrategy`'s own `onFill` (never needed `anchorToFill`); C1's fuller
+    form (strategies still decide from their OWN belief, not a single shared position — deliberately left for the
+    strategy rework rather than redone twice).
+
+- **D-121** (2026-09-29) — **`distribution-test` merged into `main`.** User: *"document the progress and since this
+  branch is tested and safe, merge it with main."* Everything below has been live-verified on the Simulated account
+  on the dev machine (except where marked); nothing has ever touched a real account; `main` now carries all of it.
+
+  **The arc, in one paragraph:** the laptop trial (D-105/D-108/D-110) proved the repo builds and runs on a second,
+  bare machine; the 2026-09-27 code review (`codeReview.md`) found the plumbing gaps that a real live run would
+  hit; the first live Sim sessions on 2026-09-27/28 (`liveTest-2026-09-28.md`, findings L-1…L-18) found them for
+  real — most seriously, the kill switch racing a bracket fill and leaving the account **short, unprotected**
+  (L-1), and the risk chain computing P&L from the strategy's belief instead of the account (L-14). Fixing that
+  properly turned into the bulk of this branch: D-113 through D-120, four+ overlapping night/day sessions.
+
+  **What actually changed, by theme:**
+  - **The account, not the strategy, is now the truth for anything safety-critical (D-113, D-120/C1).** The daily-
+    loss check reads the account's cash and position live; every kill-switch/session-end/feed-resume flatten reads
+    BOTH the study's and the account's position and refuses to act on a disagreement; every such flatten is
+    verified 1.5/3/5 s later and self-corrects a wrong-way fill. The strategy itself now hears real fills
+    (`FillEvent`/`onFill`, previously dead code) and re-anchors its own belief to them.
+  - **Execution quality is measured and no longer silently lopsided (D-114/D-120).** The real bracket — and now the
+    strategy's own virtual one — is anchored to the FILL, not the signal (measured: signal-anchoring cost ~1.6-1.9
+    ticks a trade, confirmed fixed at scale over 210 overnight trades, all landing exactly on the intended distance
+    from the fill). Every entry's slippage/latency is journaled; the report shows it and flags a Sim-artifact fill.
+    A slippage-capped limit entry exists, off by default (F-23).
+  - **A dead market-data feed is detected and handled, not silently trusted (D-114/D-119/D-120).** A watchdog
+    inside the runtime notices a stale feed before MotiveWave's own connection alerts do, blocks new entries, and
+    on resume judges an open bracket against both the immediate price and (new, D-120) the historical bar range
+    across the whole outage — both branches (keep / flatten) now confirmed live.
+  - **Only the Simulated account can affect anything, enforced in code (D-115).** Every order and fill carries an
+    account id; one naming anything else is refused/ignored and locks the study — on top of, not instead of, the
+    "Sim Trade Only" checkbox and the human confirming the selector.
+  - **Something now tells a human (D-117/D-118).** Runtime alerts (`logs/alerts.log`, throttled) for the kill
+    switch, disarms, a stale feed, a non-Sim account, a lost leg. An outside watchdog (`ops/watchdog.py`, forwards
+    to Telegram once the user adds a bot) catches MotiveWave/the study dying outright, which nothing inside the
+    process could ever notice about itself.
+  - **A path to an unattended cloud machine exists (D-118).** `docs/runbook-ec2.md`, `ops/harden_windows.ps1`,
+    `ops/register_tasks.ps1` — none run for real yet, all UNVERIFIED where marked.
+  - **Live-verified for real, not just unit-tested:** the kill switch at the right P&L with no naked position; two
+    real+one deliberate feed outages with clean recovery; a 10.5 h unattended overnight run through the full
+    16:00-17:00 CT halt and day roll with zero false alerts; F-26's feed-resume flatten firing correctly on its
+    own; F-22's historical-bar read landing correctly on its own.
+  - **Still open, unchanged by this merge:** the strategy/order-flow rules themselves (the user's to redesign —
+    `lvn_fade_test` is a plumbing stress test, not a strategy with an edge); C1's fuller form (one shared position
+    truth across strategy/risk-chain/tracker, deliberately left for that redesign); C3's cash-balance guard idea;
+    the account-refusal paths, ES-chart refusal, and a real reboot (all need a fault Sim won't produce on its own,
+    or hardware Claude doesn't have — EC2 is where these get their turn).
+
+  **Numbers for the record:** 8 decisions (D-113…D-120) landed ~40 new/extended test groups across 6 new test
+  classes, every one mutation-checked with every survivor traced to a documented equivalent (a redundant check
+  elsewhere, never a real gap); the full `build.sh` (every gate) passed before each of the 6 commits in this
+  stretch; nothing was deployed or merged with a failing gate at any point.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

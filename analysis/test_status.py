@@ -294,6 +294,52 @@ class TestFields(Base):
         line = self.line()[0]
         self.assertTrue(line.startswith("ALIVE ALERTS 1 |"), line)
 
+    def test_new_alert_prefixes_increase_the_alert_count(self):
+        # A5: the newest ALERT-severity lines must bump status.py's count too, via the report's model.
+        j = self.journal()
+        j.heartbeat(NOW - 2000)
+        j.log(NOW - 60_000, "LIVE_ENTRY_PARTIAL_FLATTENED qty=2 filled=1")
+        j.log(NOW - 50_000, "RISK_LOCAL_CONFIG_IGNORED reason=malformed json")
+        j.log(NOW - 40_000, "ORDER_REJECTED bp.aa@1 reason=insufficient margin")
+        j.log(NOW - 30_000, "LIVE_LEG_LOST role=stop orderId=2 reason=expired")
+        self.write(j)
+        line = self.line()[0]
+        self.assertTrue(line.startswith("ALIVE ALERTS 4 |"), line)
+        self.assertIn("alerts today: 4", line)
+
+    def test_warn_only_prefixes_do_not_bump_the_alert_count(self):
+        # Negative case: the WARN-severity siblings of the above must NOT count as alerts.
+        j = self.journal()
+        j.heartbeat(NOW - 2000)
+        j.log(NOW - 60_000, "LIVE_ENTRY_PARTIAL_FILL qty=2 filled=1 orderId=1")
+        j.log(NOW - 50_000, "LIVE_BRACKET_SIZE_FROM_FILL qty=1 filled=1")
+        self.write(j)
+        line = self.line()[0]
+        self.assertTrue(line.startswith("ALIVE |"), line)
+        self.assertIn("alerts today: 0", line)
+
+    def test_arm_still_denied_raises_the_alert_count(self):
+        # A6: a kill switch / order anomaly already disarmed this instance -- must count as an alert.
+        j = self.journal()
+        j.heartbeat(NOW - 2000)
+        j.log(NOW - 60_000, "ARM_STILL_DENIED -- a safety rule (daily-loss kill switch or an order anomaly) "
+                             "disarmed this study earlier; remove and re-add the study to arm again")
+        self.write(j)
+        line = self.line()[0]
+        self.assertTrue(line.startswith("ALIVE ALERTS 1 |"), line)
+        self.assertIn("alerts today: 1", line)
+
+    def test_dom_backlog_skipped_does_not_raise_the_alert_count(self):
+        # E1: a WARN, not an ALERT -- the event queue fell behind but the latest book is always kept.
+        j = self.journal()
+        j.heartbeat(NOW - 2000)
+        j.log(NOW - 60_000, "DOM_BACKLOG_SKIPPED total=3 -- the event queue fell behind; intermediate "
+                             "order-book snapshots were skipped (the latest book is always kept)")
+        self.write(j)
+        line = self.line()[0]
+        self.assertTrue(line.startswith("ALIVE |"), line)
+        self.assertIn("alerts today: 0", line)
+
     def test_an_old_journal_does_not_leak_into_todays_counts(self):
         y = self.journal(name="y_old_inst1", start=t.ct_ms(t.DAY, 9) - 3 * 86_400_000)
         y.log(NOW - 3 * 86_400_000, "POSITION_MISMATCH_DETECTED x")
@@ -349,6 +395,33 @@ class TestData(Base):
     def test_no_data_directory(self):
         self._alive()
         self.assertIn("data: n/a (no data dir)", self.line()[0])
+
+
+class TestPerInstrumentDataLayout(Base):
+    """F-1: status reads the running session's instrument folder, data/<construct>/<symbol>/<sid>.jsonl."""
+
+    def _touch(self, rel, ago_s):
+        f = self.data / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("{}\n", encoding="utf-8")
+        m = (NOW - ago_s * 1000) / 1000
+        os.utime(f, (m, m))
+
+    def test_fresh_files_in_the_symbol_folder_are_ok(self):
+        j = self.journal()
+        j.heartbeat(NOW - 2000)
+        self.write(j)
+        sid = dr.session_id_for_day(t.DAY)
+        self._touch(f"liquidity_map/GC/{sid}.jsonl", 3)
+        self.assertIn("data: ok", self.line()[0])
+
+    def test_another_instruments_fresh_file_does_not_count(self):
+        j = self.journal()
+        j.heartbeat(NOW - 2000)
+        self.write(j)
+        sid = dr.session_id_for_day(t.DAY)
+        self._touch(f"liquidity_map/ESZ6/{sid}.jsonl", 3)
+        self.assertIn("data: CHECK: liquidity_map missing", self.line()[0])
 
 
 class TestCli(Base):

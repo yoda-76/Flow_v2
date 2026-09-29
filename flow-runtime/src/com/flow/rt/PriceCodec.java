@@ -32,6 +32,11 @@ final class PriceCodec {
     }
   }
 
+  /** True once the first price has fixed the anchor -- toTicks() before that would SET it from whatever price is passed. */
+  boolean hasAnchor() {
+    return anchor != null;
+  }
+
   synchronized int toTicks(double price) {
     if (anchor == null) {
       anchor = price;

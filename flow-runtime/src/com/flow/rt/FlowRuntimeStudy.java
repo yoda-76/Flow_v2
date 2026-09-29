@@ -50,10 +50,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * The runtime (README "What this is"): one deployed Strategy hosting
- * interchangeable strategy plug-ins. Walking skeleton only -- registers
- * just NullStrategy, dry-run only (no order-submission code exists in
- * this class tree at all -- see OrderGateway), built to prove the
- * sequencer/journal/pipeline plumbing before any real feature.
+ * interchangeable strategy plug-ins. Registers whichever `FlowStrategy` is
+ * named by the Strategy Id setting (`StrategyRegistrations`) and runs it
+ * through the sequencer/pipeline/risk-chain/journal plumbing. `DRY_RUN`
+ * (the default) never places an order -- it only journals what would
+ * happen. With Mode `SIM_LIVE` and Armed checked, an intent the risk chain
+ * allows is placed and managed as a real order on the Simulated account
+ * via `OrderGateway`/`LiveOrderTracker` (CLAUDE.md's second exception,
+ * D-82/Q-11) -- entries, brackets, the daily-loss kill switch and the
+ * session-end flatten all go through that same path.
  *
  * HARD RULE (../../CLAUDE.md, ../../motivewave/CLAUDE.md): every
  * OrderContext-taking hook inherited from Study is explicitly overridden
@@ -71,8 +76,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
     namespace = "com.flow.rt",
     id = "FLOW_RUNTIME",
     name = "FLOW Runtime",
-    label = "FLOW Runtime (walking skeleton, dry-run only)",
-    desc = "Hosts FlowStrategy plug-ins. No order-submission code exists yet; armed has no effect.",
+    label = "FLOW Runtime (Armed + SIM_LIVE places real orders)",
+    desc = "Hosts FlowStrategy plug-ins. DRY_RUN (the default) never places an order. With Mode SIM_LIVE and Armed checked it places and closes orders automatically on the account selected in MotiveWave -- Simulated account only, with Sim Trade Only enabled.",
     menu = "FLOW",
     overlay = true,
     strategy = true,
@@ -140,13 +145,13 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // All three roots hang off com.flow.core.FlowHome (system property flow.home,
   // env FLOW_HOME, else the historic C:/yadvendra/trading/FLOW_V2).
   private static final Path LOG_ROOT = com.flow.core.FlowHome.logs();
-  // D-61: hand-edited by the user, runtime only ever reads it (README
-  // "External inputs and config") -- not a secret like .env, so it's a
-  // plain repo path, not gitignored.
   // D-88: retained per-construct data (1s footprint candles, VWAP, big
   // trades, liquidity map), rolling window of trading days, own writer thread.
   private static final Path DATA_ROOT = com.flow.core.FlowHome.data();
   private volatile com.flow.journal.ConstructDataStore dataStore;
+  // D-61: hand-edited by the user, runtime only ever reads it (README
+  // "External inputs and config") -- not a secret like .env, so it's a
+  // plain repo path, not gitignored.
   private static final Path RISK_CONFIG_PATH = com.flow.core.FlowHome.riskConfig();
   private static final Path RISK_LOCAL_CONFIG_PATH = com.flow.core.FlowHome.riskLocalConfig(); // D-106, optional, git-ignored
 
@@ -155,11 +160,17 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
 
   private volatile Sequencer sequencer;
   private volatile Pipeline pipeline;
+  // 2026-09-28: operator alerts. PLACEHOLDER channel for now -- a line in logs/alerts.log; the user will add a Telegram
+  // bot later by swapping the sink here (AlertSink is the whole interface). Throttled: one message per alert key a minute.
+  private final com.flow.core.AlertDispatcher alerts = new com.flow.core.AlertDispatcher(
+      new com.flow.core.LogFileAlertSink(LOG_ROOT.resolve("alerts.log")), System::currentTimeMillis,
+      com.flow.core.AlertDispatcher.DEFAULT_THROTTLE_MS);
   private volatile JournalWriter journal;
   private volatile ScheduledExecutorService clockExecutor;
   private volatile PriceCodec priceCodec;
   private volatile OrderGateway gateway;
   private volatile Instrument instrument;
+  private volatile DataContext lastDataContext; // F-22: for the gap-range bar lookup, refreshed on every tick
   private volatile SdkVolumeProfileFeature volumeProfile;
   private volatile SdkFootprintFeature footprint;
   private volatile com.flow.flow.BigTradeFeature bigTrades;
@@ -179,6 +190,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   private volatile com.flow.flow.LiquidityMapFeature liquidityMap;
   private volatile java.io.PrintWriter domLog;
   private volatile long lastDomLogTime = 0;
+  private volatile long lastReportedSkippedDom = 0; // E1
+  private volatile long lastSkippedDomLogMs = 0;    // E1
   private static final long DOM_LOG_INTERVAL_MS = 1000;
   // D-60: unreviewed rule resolutions, see docs/dynamic/marketStructureRulesTemp.md
   private volatile com.flow.flow.MarketStructureFeature marketStructure;
@@ -193,17 +206,111 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       java.util.Collections.synchronizedList(new java.util.ArrayList<>());
   private static final int MAX_ENTRY_SIGNALS = 200;
   // D-61: refuse-to-arm (D-24) overrides the raw ARMED_KEY setting --
-  // set once in onActivate, never cleared for the life of this instance
-  // (clearing the position/orders manually and reactivating creates a
-  // fresh instance anyway, per the zombie-instance discussion elsewhere).
+  // set in onActivate, either at that moment (an existing position/orders
+  // found, D-24) or carried forward from an earlier disarm this instance
+  // already suffered (A6, see disarmedBySafetyRule below) -- once true it
+  // is never cleared for the life of this instance (clearing the position/
+  // orders manually and reactivating creates a fresh instance anyway, per
+  // the zombie-instance discussion elsewhere).
   private volatile boolean armDenied = false;
+  // Code review A6: set when a SAFETY rule disarmed this session (daily-loss kill switch; an order anomaly such as a
+  // rejected/cancelled entry or a double fill). onActivate() used to clear armDenied whenever the account was flat,
+  // so deactivating and re-activating the strategy re-enabled trading the same day. Now only removing and re-adding
+  // the study (a fresh instance) clears it.
+  private volatile boolean disarmedBySafetyRule = false;
+  // 2026-09-27 (user: "for now only GC is allowed"): the study runs on whatever chart it is added to -- the laptop
+  // trial first added it to an ES chart by mistake. Non-null = this chart's instrument may not be traded
+  // (InstrumentPolicy): the runtime never arms and never sends an order (not even a flatten or kill switch).
+  // Recording still runs, into that symbol's own data folder (F-1). Set once per session, never cleared.
+  private volatile String instrumentRefusal = null;
   private volatile boolean refusedAtActivation = false; // D-92: a position/orders were already there at activation -- never flatten those
   private volatile long sessionStartMs;
   // D-91: the automatic-real-order state machine (in-flight entry, pending bracket, resting legs,
   // self-cancel bookkeeping), extracted so a FakeBroker can drive it. Declared after gateway/
   // priceCodec/armDenied, which its suppliers read.
   private final LiveOrderTracker liveOrders =
-      new LiveOrderTracker(() -> gateway, () -> priceCodec, this::logLine, this::journalDecision, () -> armDenied = true);
+      new LiveOrderTracker(() -> gateway, () -> priceCodec, this::logLine, this::journalDecision, this::denyArmBySafetyRule);
+  // 2026-09-28: set the moment an order/fill on a non-simulated account is seen; shared with every OrderGateway.
+  private final java.util.concurrent.atomic.AtomicBoolean orderLock = new java.util.concurrent.atomic.AtomicBoolean(false);
+  {
+    liveOrders.setAfterFillHook(this::onFillCallbackSeen);
+    liveOrders.setScheduler(this::scheduleSafetyTask);
+    liveOrders.setLockAction(() -> orderLock.set(true));
+    // C1 (2026-09-29, D-120): publish real fills into the normal event stream so the strategy learns about them
+    // (FlowStrategy.onFill) in order with everything else it sees, instead of never hearing about them at all.
+    liveOrders.setPublishFill((eventTimeMs, factory) -> {
+      Sequencer s = sequencer;
+      if (s != null) s.publish(factory, eventTimeMs);
+    });
+  }
+
+  // F-1 (2026-09-28): the ACCOUNT's numbers for the risk chain's daily-loss check (RiskChain.AccountTruth). Written on
+  // the order-callback / drain / safety threads, read on the drain thread -- an immutable record in a volatile.
+  private volatile com.flow.core.RiskChain.AccountTruth accountTruth = null;
+  private volatile double sessionStartCash = Double.NaN; // the account balance when this study instance first activated
+  // F-3: journals every change of the ACCOUNT's position and whether a fill callback of this study explains it
+  // (judged after a short grace period -- see AccountWatch for the race that made a plain check raise a false alert).
+  private final AccountWatch accountWatch = new AccountWatch(new AccountWatch.Sink() {
+    @Override public void journal(String jsonLine) { journalDecision(jsonLine); }
+    @Override public void alert(String message) { logLine(message); }
+    @Override public void later(Runnable task, long delayMs) { scheduleSafetyTask(task, delayMs); }
+  }, System::currentTimeMillis);
+  private volatile boolean deactivatedBefore = false; // F-4: onActivate after an onDeactivate = a re-activation
+  private final Object safetyLock = new Object(); // not `this`: the platform's Study base class may lock on itself
+  private ScheduledExecutorService safetyExecutor;    // F-1: post-flatten verification, off every hot thread; guarded by safetyLock
+
+  /** F-1: run a safety task later on its own daemon thread (never the drain thread, whose clock events must not stall). */
+  private void scheduleSafetyTask(Runnable task, Long delayMs) {
+    synchronized (safetyLock) {
+      if (safetyExecutor == null) {
+        safetyExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+          Thread t = new Thread(r, "flow-runtime-safety-inst" + instanceId);
+          t.setDaemon(true);
+          return t;
+        });
+      }
+      safetyExecutor.schedule(task, delayMs, TimeUnit.MILLISECONDS);
+    }
+  }
+
+  /** F-1: after every fill callback -- note the time and refresh the risk chain's account snapshot from the just-updated balance. */
+  private void onFillCallbackSeen() {
+    accountWatch.onFillCallback();
+    refreshAccountTruth();
+  }
+
+  private void refreshAccountTruth() {
+    OrderGateway gw = gateway;
+    PriceCodec codec = priceCodec;
+    if (gw == null) return;
+    if (Double.isNaN(sessionStartCash)) {
+      Double c = gw.cashBalance();
+      if (c == null) return;
+      sessionStartCash = c;
+    }
+    com.flow.core.RiskChain.AccountTruth t = gw.accountTruth(codec, sessionStartCash);
+    if (t != null) accountTruth = t;
+  }
+
+  /**
+   * F-3 (drain thread, about once a second): watch the ACCOUNT's position for changes the study did not cause -- a
+   * manual close, MotiveWave's own "close the running position?" dialog (L-3/L-4). Journals `account_position_change`
+   * whenever the account position or the (account, study) pair changes, flagged explainedByFill when a fill callback ran
+   * within the last 3 s. Read-only: it never places anything. Also keeps the risk chain's account snapshot fresh.
+   */
+  private void watchAccount() {
+    OrderGateway gw = gateway;
+    if (gw == null) return;
+    refreshAccountTruth();
+    accountWatch.observe(gw.accountPosition(), gw.currentPosition(), gw.cashBalance(),
+        accountTruth == null ? null : accountTruth.avgEntryTicks());
+  }
+
+  /** A safety rule disarmed this session (A6): stays denied across re-activation, until the study is re-added. */
+  private void denyArmBySafetyRule() {
+    disarmedBySafetyRule = true;
+    armDenied = true;
+  }
 
   // Redraw throttling -- called from onTick, a MotiveWave-invoked
   // callback thread, never a spawned one (see VolumeProfileSnapshot's
@@ -253,6 +360,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   private void startSession(DataContext ctx) {
     instrument = ctx.getInstrument();
     priceCodec = new PriceCodec(instrument.getTickSize());
+    instrumentRefusal = com.flow.core.InstrumentPolicy.refuseReason(instrument.getSymbol(), instrument.getTickSize());
 
     String strategyId = getSettings().getString(STRATEGY_ID_KEY);
     StrategyRegistry registry = StrategyRegistrations.buildDefault();
@@ -269,6 +377,9 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     }
     journal.start();
     logLine("FLOW_HOME root=" + com.flow.core.FlowHome.root() + " source=" + com.flow.core.FlowHome.source());
+    if (instrumentRefusal != null) {
+      logLine("REFUSE_TO_ARM " + instrumentRefusal); // the nightly report flags REFUSE_TO_ARM as an ALERT
+    }
     final JournalWriter anchorJournal = journal;
     final double anchorTickSize = instrument.getTickSize();
     priceCodec.onAnchor(a -> anchorJournal.writeDecision(0, Json.object()
@@ -287,6 +398,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         // The live values, and every change, are journaled by Pipeline as arming_state / on each heartbeat.
         .field("mode", String.valueOf(getSettings().getString(MODE_KEY)))
         .field("armedSetting", getSettings().getBoolean(ARMED_KEY))
+        .field("instrumentAllowed", instrumentRefusal == null)
         .build());
 
     // D-75: raw-log retention (com.flow.journal.LogRetention, flow-core
@@ -340,6 +452,11 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     bigTradeLogger = new BigTradeFileLogger(priceCodec, btMinSize, btAggPeriodMs);
     bigTrades = new com.flow.flow.BigTradeFeature(
         com.flow.flow.BigTradeView.FEATURE_ID, btMinSize, btAggPeriodMs, bigTradeLogger);
+    // 2026-09-29: these are per-chart MotiveWave STUDY settings, not in risk.json -- unlike risk_config_loaded's
+    // values they were never journaled anywhere, so a past session's actual Big Trade Min Size (etc.) could not be
+    // confirmed from the logs after the fact (the user changed it on this machine and asked for this).
+    logLine("STUDY_SETTINGS vpRangeTicks=" + rangeTicks + " fpRangeTicks=" + fpRangeTicks
+        + " bigTradeMinSize=" + btMinSize + " bigTradeAggPeriodMs=" + btAggPeriodMs);
     // D-56: order-id repeat tracking, kept alive alongside big trades (not
     // merged into it) for future iceberg/hidden-liquidity analysis -- see
     // OrderRepeatView's javadoc. No settings/drawing yet, log-only.
@@ -428,8 +545,13 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         .field("fileLastModifiedMs", riskConfig.fileLastModifiedMs())
         .field("sessionStartMs", sessionStartMs) // staleness: compare against fileLastModifiedMs (README "traceable... not silently assumed current")
         .build());
-    com.flow.core.RiskChain riskChain = new com.flow.core.RiskChain(riskConfig);
-    java.util.function.BooleanSupplier armedSupplier = () -> getSettings().getBoolean(ARMED_KEY) && !armDenied;
+    // F-1: while genuinely live (SIM_LIVE + Armed) the daily-loss check uses the ACCOUNT's balance and position, not the
+    // signal-price estimate; in DRY_RUN there is no account activity, so the supplier says "none" and the estimate stays.
+    com.flow.core.RiskChain riskChain = new com.flow.core.RiskChain(riskConfig,
+        () -> isLiveModeRequested() ? accountTruth : null);
+    liveOrders.setEntrySlippageCapTicks(riskConfig.entrySlippageCapTicks()); // F-23, off by default
+    java.util.function.BooleanSupplier armedSupplier =
+        () -> getSettings().getBoolean(ARMED_KEY) && !armDenied && instrumentRefusal == null;
     java.util.function.IntSupplier queueDepthSupplier = () -> {
       Sequencer s = sequencer;
       return s == null ? 0 : s.queueDepth();
@@ -438,24 +560,28 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     // requirement): a blunt, deliberate exception to every other real-order
     // path here being surgical (cancel by reference, close only what's
     // asked). Disarms first so no new automatic entry can race the flatten.
+    // Code review A1: the account side lives in LiveOrderTracker.onKillSwitch and only sends orders in SIM_LIVE+Armed.
     java.util.function.Consumer<String> killSwitch = reason -> {
-      armDenied = true;
-      liveOrders.resetForKillSwitch();
-      OrderGateway gw = gateway;
-      if (gw == null) {
-        logLine("KILL_SWITCH_TRIGGERED reason=" + reason + " (no gateway -- nothing to flatten)");
-        return;
-      }
-      logLine("KILL_SWITCH_TRIGGERED " + gw.cancelAllAndClose(reason));
+      denyArmBySafetyRule();
+      liveOrders.onKillSwitch(reason, isLiveModeRequested());
     };
 
-    IntentSink sink = this::onIntentChanged;
+    IntentSink sink = new IntentSink() {
+      @Override public void onIntentChanged(Intent intent, Event e) { FlowRuntimeStudy.this.onIntentChanged(intent, e); }
+      // B3: report back when live mode refused to act on an entry, so the strategy and risk chain are told.
+      @Override public String deliver(Intent intent, Event e) {
+        boolean live = isLiveModeArmed() && gateway != null;
+        FlowRuntimeStudy.this.onIntentChanged(intent, e);
+        return live ? liveOrders.lastEntryRefusal() : null;
+      }
+    };
     // D-97 (attached after the Pipeline is built, below): what to journal about arming besides the effective flag.
     java.util.function.Supplier<String> runtimeStatus = () -> Json.object()
         .field("mode", String.valueOf(getSettings().getString(MODE_KEY)))
         .field("armedSetting", getSettings().getBoolean(ARMED_KEY))
         .field("armDenied", armDenied)
         .field("refusedAtActivation", refusedAtActivation)
+        .field("instrumentAllowed", instrumentRefusal == null)
         .build();
     // D-92 session-end flatten: only when this session is explicitly armed for live Sim trading, and never
     // for a position that was already there at activation (D-24 -- not ours to close). armDenied is
@@ -467,7 +593,21 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     pipeline = new Pipeline(strategy, journal, sink, features, priceCodec::fromTicks,
         riskChain, armedSupplier, queueDepthSupplier, killSwitch, sessionFlatten);
     pipeline.attachRuntimeStatus(runtimeStatus);
-    com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT);
+    pipeline.attachAccountWatch(this::watchAccount); // F-3
+    pipeline.attachAlertHook(alerts::record); // FEED_STALE, DISARM: events only the pipeline sees
+    // F-19: market data is back after an outage -> the tracker judges an open bracket against where price jumped to.
+    pipeline.attachFeedListener(gap -> {
+      logLine("FEED_RESUMED after " + (gap.durationMs() / 1000) + "s: price " + gap.priceBeforeTicks() + " -> "
+          + gap.priceAfterTicks() + " ticks");
+      liveOrders.onFeedResumed(gap.startLocalMs(), gap.endLocalMs(), gap.priceAfterTicks(), () -> {
+        Pipeline p = pipeline;
+        return p == null ? null : p.marketState().lastPriceTicks();
+      });
+    });
+    liveOrders.setGapRangeLookup(this::lookupGapRange); // F-22
+    // F-1: one folder per instrument, so a session on another chart never shares a day file with gold's.
+    com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT,
+        com.flow.core.InstrumentPolicy.symbolDir(instrument.getSymbol()));
     ds.start();
     dataStore = ds;
     com.flow.core.DataRecorder dataRecorder = new com.flow.core.DataRecorder(ds, features, priceCodec::fromTicks,
@@ -477,7 +617,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     // just now (after warm-start), so warm-up itself is not written as state changes.
     dataRecorder.recordMarketStructureWarmStart(warmBars, System.currentTimeMillis());
     pipeline.attachDataRecorder(dataRecorder);
-    logLine("DATA_RECORDER_ON root=" + DATA_ROOT + " dataIntervalSec=" + riskConfig.dataIntervalSeconds()
+    logLine("DATA_RECORDER_ON root=" + DATA_ROOT + " symbolDir=" + ds.symbolDir()
+        + " dataIntervalSec=" + riskConfig.dataIntervalSeconds()
         + " liquidityIntervalSec=" + riskConfig.liquidityIntervalSeconds()
         + " keepTradingDays=" + riskConfig.dataKeepTradingDays());
 
@@ -514,13 +655,62 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     if (gw == null) {
       journal.writeDecision(triggeringEvent.seq(), Json.object()
           .field("type", "reconcile_skipped")
-          .field("reason", "OrderGateway not yet constructed (onActivate has not fired)")
+          .field("reason", "OrderGateway not available (onActivate has not fired yet, or the study was deactivated)") // L-10
           .field("seq", triggeringEvent.seq())
           .build());
       return;
     }
-    String line = isLiveModeArmed() ? liveOrders.reconcileLive(intent, gw) : gw.reconcileDryRun(intent);
+    String line = isLiveModeArmed() ? liveOrders.reconcileLive(intent, gw, signalOf(triggeringEvent)) : gw.reconcileDryRun(intent);
     journal.writeDecision(triggeringEvent.seq(), line);
+  }
+
+  /**
+   * F-22 (2026-09-29, D-121): the historical bar range covering [startMs, endMs] via the chart's own DataSeries --
+   * MotiveWave backfills bars automatically after a reconnect (seen live), so this needs no fetch of its own, only
+   * a read. UNVERIFIED LIVE: DataSeries.findIndex()'s exact out-of-range behaviour is undocumented, so every step
+   * here is defensive and returns null (== "not available yet, KEEP stands") rather than guess. Includes the
+   * currently-forming bar (index size()-1) deliberately -- unlike the market-structure warm-start, which excludes
+   * it on purpose (D-90), this wants the freshest high/low, settled or not.
+   */
+  private int[] lookupGapRange(long startMs, long endMs) {
+    try {
+      DataContext ctx = lastDataContext;
+      PriceCodec codec = priceCodec;
+      if (ctx == null || codec == null) return null;
+      DataSeries series = ctx.getDataSeries();
+      if (series == null || series.size() == 0) return null;
+      int hi = series.size() - 1;
+      if (series.getEndTime(hi) < endMs) return null; // the series hasn't caught up to the gap's end yet
+      int startIdx = series.findIndex(startMs);
+      int endIdx = series.findIndex(endMs);
+      int lo = Math.max(0, Math.min(startIdx < 0 ? 0 : startIdx, endIdx < 0 ? hi : endIdx));
+      int top = Math.min(hi, Math.max(startIdx, endIdx));
+      if (top < lo) return null;
+      float low = Float.MAX_VALUE, high = -Float.MAX_VALUE;
+      for (int i = lo; i <= top; i++) {
+        low = Math.min(low, series.getLow(i));
+        high = Math.max(high, series.getHigh(i));
+      }
+      if (!(low <= high)) return null; // NaN or an empty/garbage read
+      return new int[] {codec.toTicks(low), codec.toTicks(high)};
+    } catch (RuntimeException e) {
+      return null;
+    }
+  }
+
+  /**
+   * F-7/F-11: what the tick that fired this intent looked like. A TickEvent carries last, bid and ask; any other
+   * trigger falls back to the pipeline's last traded price (bid/ask left null). Runs on the drain thread.
+   */
+  private LiveOrderTracker.SignalInfo signalOf(Event e) {
+    long nowLocal = System.currentTimeMillis();
+    if (e instanceof com.flow.core.TickEvent t) {
+      return new LiveOrderTracker.SignalInfo(t.priceTicks(), t.bidPriceTicks(), t.askPriceTicks(), t.eventTimeMs(), nowLocal);
+    }
+    Pipeline p = pipeline;
+    Integer last = Event.priceOf(e);
+    if (last == null && p != null) last = p.marketState().lastPriceTicks();
+    return new LiveOrderTracker.SignalInfo(last, null, null, e.eventTimeMs(), nowLocal);
   }
 
   /**
@@ -533,12 +723,13 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
    * rate-limit/churn/lag all passed for this intent.
    */
   private boolean isLiveModeRequested() {
-    return "SIM_LIVE".equals(getSettings().getString(MODE_KEY)) && getSettings().getBoolean(ARMED_KEY);
+    return "SIM_LIVE".equals(getSettings().getString(MODE_KEY)) && getSettings().getBoolean(ARMED_KEY)
+        && instrumentRefusal == null; // a non-gold chart never gets an order of any kind, not even a flatten
   }
 
   private boolean isLiveModeArmed() {
     return "SIM_LIVE".equals(getSettings().getString(MODE_KEY))
-        && getSettings().getBoolean(ARMED_KEY) && !armDenied;
+        && getSettings().getBoolean(ARMED_KEY) && !armDenied && instrumentRefusal == null;
   }
 
   /**
@@ -563,6 +754,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
 
   @Override
   public void onTick(DataContext ctx, Tick tick) {
+    lastDataContext = ctx; // F-22: the freshest DataContext, for the gap-range bar lookup (a MotiveWave-invoked thread, never a spawned one)
     Sequencer s = sequencer;
     PriceCodec codec = priceCodec;
     if (s == null || codec == null) return;
@@ -622,9 +814,17 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     int bestAskTicks = minPriceAtOrAbove(askRows, ref);
     double bestAskSize = sizeAtMin(askRows, bestAskTicks);
     long now = System.currentTimeMillis();
-    s.publish((seq, et, rt) -> new com.flow.core.DomEvent(seq, et, rt,
+    // E1: skipped (not queued) if a backlog of order-book snapshots is already waiting -- the next one replaces it.
+    s.publishDom((seq, et, rt) -> new com.flow.core.DomEvent(seq, et, rt,
         bestBidTicks, bestBidSize, bestAskTicks, bestAskSize, bidRows, askRows), now);
     maybeLogDom(bidRows, askRows, bestBidTicks, bestAskTicks);
+    long skipped = s.skippedDomCount();
+    if (skipped > lastReportedSkippedDom && now - lastSkippedDomLogMs >= 60_000L) {
+      lastSkippedDomLogMs = now;
+      logLine("DOM_BACKLOG_SKIPPED total=" + skipped + " -- the event queue fell behind; intermediate order-book "
+          + "snapshots were skipped (the latest book is always kept)");
+      lastReportedSkippedDom = skipped;
+    }
   }
 
   /**
@@ -1175,6 +1375,12 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       ce.shutdownNow();
       clockExecutor = null;
     }
+    synchronized (safetyLock) {
+      if (safetyExecutor != null) { // F-1: a pending post-flatten check must not outlive the instance
+        safetyExecutor.shutdownNow();
+        safetyExecutor = null;
+      }
+    }
     Sequencer s = sequencer;
     if (s != null) {
       s.stop();
@@ -1249,15 +1455,31 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
 
   @Override
   public void onActivate(OrderContext ctx) {
-    gateway = new OrderGateway(ctx);
-    logLine("ACTIVATE pos=" + ctx.getPosition() + " cash=" + ctx.getCashBalance()
+    gateway = new OrderGateway(ctx, orderLock);
+    logLine("ACTIVATE pos=" + ctx.getPosition() + " accountPos=" + ctx.getAccountPosition() + " cash=" + ctx.getCashBalance()
         + " -- CONFIRM: is this the Simulated account? (Sim Trade Only must stay enabled)");
+    accountWatch.baseline(ctx.getAccountPosition(), ctx.getPosition()); // F-3: only changes after this are journaled
+    if (deactivatedBefore) {
+      // F-4: a re-activation. Forget everything held across the gap (legs, in-flight entry, the strategy's and risk
+      // chain's belief -- Pipeline does its half on the next event); the arming checks below decide whether it may trade.
+      liveOrders.resetForReactivation();
+      logLine("REACTIVATED -- tracker and pipeline state reset");
+    }
+    Pipeline p = pipeline;
+    if (p != null) p.resumeTrading();
+    refreshAccountTruth();
 
     String refuseReason = gateway.refuseToArmReason();
     if (refuseReason != null) {
       armDenied = true;
       refusedAtActivation = true;
       logLine("REFUSE_TO_ARM " + refuseReason);
+    } else if (disarmedBySafetyRule) {
+      // A6: a kill switch / order anomaly earlier in this instance's life -- re-activation does not re-arm.
+      armDenied = true;
+      refusedAtActivation = false;
+      logLine("ARM_STILL_DENIED -- a safety rule (daily-loss kill switch or an order anomaly) disarmed this study "
+          + "earlier; remove and re-add the study to arm again");
     } else {
       armDenied = false;
       refusedAtActivation = false;
@@ -1267,7 +1489,11 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   @Override
   public void onDeactivate(OrderContext ctx) {
     logLine("DEACTIVATE pos=" + ctx.getPosition());
+    Pipeline p = pipeline;
+    if (p != null) p.suspendTrading(); // F-4: no strategy wakes while there is no gateway to act on them
+    deactivatedBefore = true;
     gateway = null;
+    accountTruth = null;
   }
 
   @Override
@@ -1347,6 +1573,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
 
   private void logLine(String s) {
     info("FLOW_RUNTIME: " + s);
+    alerts.onLogLine(s); // operator alert (placeholder log-file channel), if this line is one
     JournalWriter j = journal;
     if (j != null) {
       j.writeDecision(0, Json.object().field("type", "log").field("t", System.currentTimeMillis()).field("msg", s).build());

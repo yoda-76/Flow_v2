@@ -85,6 +85,12 @@ final class FakeBroker {
 
   private final String symbol;
   private int position;
+  // F-2 (2026-09-28): getPosition() is the STUDY's position, getAccountPosition() the ACCOUNT's (SDK javadoc). Either can be
+  // overridden to script a stale read (L-1/L-2: the strategy position lagged a leg fill and a manual close).
+  private Integer strategyPositionReported;  // null = report the real position
+  private Integer accountPositionReported;   // null = report the real position
+  private float accountAvgEntry;             // price of the last position-opening fill
+  private String accountId = "simulated";    // what every order's getAccountId() reports (changeable mid-test)
   private double cash = 50_000;
   private float marketPrice = 4300f; // fill price used by fill(o) for a MARKET order
   private int nextId = 1;
@@ -112,6 +118,18 @@ final class FakeBroker {
 
   /** Arrange a pre-existing position (e.g. "MotiveWave restarted with a position open"). */
   void setPosition(int p) { position = p; }
+
+  /** Script a stale getPosition() (the study's own view): report p instead of the real position; null = real. */
+  void reportStrategyPosition(Integer p) { strategyPositionReported = p; }
+
+  /** Script a stale getAccountPosition(): report p instead of the real position; null = real. */
+  void reportAccountPosition(Integer p) { accountPositionReported = p; }
+
+  /** Script the account id every order reports (default "simulated", what MotiveWave's Sim account reports); null = none. */
+  void setAccountId(String id) { accountId = id; }
+
+  /** Arrange the account's average entry price the fake reports. */
+  void setAccountAvgEntry(float p) { accountAvgEntry = p; }
 
   /** Ordered log of every mutating call the code under test made, e.g. "submitOrders MARKET BUY 1 #1". */
   List<String> calls() { return Collections.unmodifiableList(calls); }
@@ -167,7 +185,9 @@ final class FakeBroker {
     o.filled += qty;
     o.fillPrice = price;
     o.fillTimeMs = timeMs;
+    int before = position;
     position += "BUY".equals(o.action) ? qty : -qty;
+    if (Math.abs(position) > Math.abs(before)) accountAvgEntry = price; // a position-opening fill sets the entry
     // Cash/PnL are not modelled: cash only changes via setCash().
   }
 
@@ -215,7 +235,13 @@ final class FakeBroker {
       Class<?>[] pt = m.getParameterTypes();
       switch (n) {
         case "getPosition":
-          if (pt.length == 0) return position;
+          if (pt.length == 0) return strategyPositionReported != null ? strategyPositionReported : position;
+          throw unmodelled("OrderContext", m);
+        case "getAccountPosition":
+          if (pt.length == 0) return accountPositionReported != null ? accountPositionReported : position;
+          throw unmodelled("OrderContext", m);
+        case "getAccountAvgEntryPrice":
+          if (pt.length == 0) return accountAvgEntry;
           throw unmodelled("OrderContext", m);
         case "getInstrument": return instrument;
         case "getCashBalance": return cash;
@@ -278,6 +304,7 @@ final class FakeBroker {
     public Object invoke(Object proxy, Method m, Object[] args) {
       switch (m.getName()) {
         case "getOrderId": return o.id;
+        case "getAccountId": return accountId;
         case "getQuantity": return o.qty;
         case "getFilled": return o.filled;
         case "getAvgFillPrice":

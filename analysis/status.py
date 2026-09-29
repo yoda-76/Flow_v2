@@ -128,13 +128,13 @@ def stopped_cleanly(session):
     return False
 
 
-def data_state(data_root: Path, day, now_ms):
+def data_state(data_root: Path, day, now_ms, symbol=None):
     sid = dr.session_id_for_day(day)
     if not data_root.exists():
         return "n/a (no data dir)"
     problems = []
     for name in MUST_EXIST_FRESH + FRESH_IF_PRESENT:
-        f = data_root / name / f"{sid}.jsonl"
+        f = dr.data_file(data_root, name, sid, symbol)  # F-1: data/<construct>/<symbol>/<sid>.jsonl, or the old path
         if not f.exists():
             if name in MUST_EXIST_FRESH:
                 problems.append(f"{name} missing")
@@ -181,7 +181,7 @@ def status_line(logs: Path, data: Path, now_ms: int):
              session.strategy, f"armed: {armed_state(session, now_ms)}",
              f"position: {position_state(session)}" + (f" ({open_n} open trade)" if open_n else ""),
              last_trade, f"alerts today: {alerts}",
-             "data: " + (data_state(data, day, now_ms) if state in ("ALIVE", "STALE") else "n/a (not running)")]
+             "data: " + (data_state(data, day, now_ms, session.header.get("symbol")) if state in ("ALIVE", "STALE") else "n/a (not running)")]
     return " | ".join(parts), code
 
 

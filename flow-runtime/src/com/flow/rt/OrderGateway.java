@@ -26,9 +26,44 @@ import com.motivewave.platform.sdk.order_mgmt.OrderContext;
  */
 final class OrderGateway {
   private final OrderContext ctx;
+  // 2026-09-28 (user: "only simulated trades will affect anything related to the system"): set the moment an order
+  // or fill on a NON-simulated account is seen. Shared across gateways (the Study builds a new one at each
+  // activation), and once set NOTHING is sent: entries, brackets, closes and cancels all refuse. There is no
+  // un-lock -- remove and re-add the study, and fix the account, first.
+  private final java.util.concurrent.atomic.AtomicBoolean orderLock;
 
   OrderGateway(OrderContext ctx) {
+    this(ctx, new java.util.concurrent.atomic.AtomicBoolean(false));
+  }
+
+  OrderGateway(OrderContext ctx, java.util.concurrent.atomic.AtomicBoolean orderLock) {
     this.ctx = ctx;
+    this.orderLock = orderLock;
+  }
+
+  boolean locked() { return orderLock.get(); }
+
+  void lockOrders() { orderLock.set(true); }
+
+  /**
+   * The Simulated-only rule at the point of sending: refuses (throws) if the lock is set, or if any of these
+   * not-yet-submitted orders already names an account other than the simulated one. An order that names no account
+   * yet is let through (AccountPolicy: UNKNOWN); the fill callback re-checks with the account the platform reports.
+   */
+  private void requireSimulated(Order... orders) {
+    if (orderLock.get()) throw new IllegalStateException("order lock: a non-simulated account was seen -- no orders are sent");
+    for (Order o : orders) {
+      String id = safe(o::getAccountId);
+      if (com.flow.core.AccountPolicy.classify(id) == com.flow.core.AccountPolicy.Kind.OTHER) {
+        orderLock.set(true);
+        throw new IllegalStateException("REFUSING to submit: the order's account is '" + id + "', not the simulated account");
+      }
+    }
+  }
+
+  private static String refusedLine(String what) {
+    return Json.object().field("type", "order_refused").field("what", what)
+        .field("reason", "order lock: a non-simulated account was seen").build();
   }
 
   /**
@@ -50,7 +85,8 @@ final class OrderGateway {
         .field("role", role)
         .field("orderId", String.valueOf(safe(order::getOrderId)))
         .field("instrument", inst == null ? "?" : String.valueOf(safe(inst::getSymbol)))
-        .field("action", Boolean.TRUE.equals(safe(order::isBuy)) ? "BUY" : "SELL");
+        .field("action", Boolean.TRUE.equals(safe(order::isBuy)) ? "BUY" : "SELL")
+        .field("accountId", String.valueOf(safe(order::getAccountId))); // F-2 probe (C3): what the platform calls the account -- read-only evidence for a future real-account guard
     Integer quantity = safe(order::getQuantity);
     Integer filled = safe(order::getFilled);
     Long lastFillTimeMs = safe(order::getLastFillTime);
@@ -72,6 +108,18 @@ final class OrderGateway {
         .fieldOrNull("pointValue", pointValue)
         .fieldOrNull("tickSize", tickSize);
     return j.build();
+  }
+
+  /**
+   * Code review A9: a price snapped to the instrument's tick grid, for an order about to be sent. The codec's anchor
+   * carries float noise (e.g. 4322.900098); a float cast happened to round it away on gold, but a real exchange
+   * rejects an off-tick price. Falls back to the raw price if the platform cannot round it.
+   */
+  float roundToTick(float price) {
+    com.motivewave.platform.sdk.common.Instrument inst = safe(ctx::getInstrument);
+    if (inst == null) return price;
+    Float r = safe(() -> inst.round(price));
+    return r == null ? price : r;
   }
 
   private static <T> T safe(java.util.function.Supplier<T> s) {
@@ -103,17 +151,53 @@ final class OrderGateway {
   @SuppressWarnings("unchecked") // getActiveOrders() returns a raw List in this jar, same T-6-class mismatch as other raw-List SDK returns
   String refuseToArmReason() {
     int position = ctx.getPosition();
+    int accountPosition = ctx.getAccountPosition(); // F-2: the ACCOUNT's, which the study's own getPosition() can miss
     java.util.List activeOrders = ctx.getActiveOrders();
     int orderCount = activeOrders == null ? 0 : activeOrders.size();
-    if (position != 0 || orderCount > 0) {
-      return "existing position=" + position + " activeOrders=" + orderCount + " -- clear manually before arming";
+    if (position != 0 || accountPosition != 0 || orderCount > 0) {
+      return "existing position=" + position + " accountPosition=" + accountPosition + " activeOrders=" + orderCount
+          + " -- clear manually before arming";
     }
     return null;
   }
 
-  /** D-82/Q-11: the account's actual position, for reconcileLive()'s diff -- never the strategy's own belief. */
+  /**
+   * The STUDY's own position (SDK getPosition(): "the current open position for this strategy"). Not the account's:
+   * F-2 (2026-09-28) found the SDK has a separate getAccountPosition(), and that this one did not show a manual close
+   * for two minutes (L-2) and lagged a leg fill by milliseconds (L-1). Use accountPosition() alongside it.
+   */
   int currentPosition() {
     return ctx.getPosition();
+  }
+
+  /** F-2: the ACCOUNT's position for the chart instrument (SDK getAccountPosition()) -- includes trades the study did not place. */
+  int accountPosition() {
+    return ctx.getAccountPosition();
+  }
+
+  /**
+   * F-1: the account's own numbers for the risk chain's daily-loss check -- see RiskChain.AccountTruth. Read at fill
+   * callbacks and once a second. Null if the instrument's tick value is unavailable. The average entry is only
+   * converted to ticks when the price anchor already exists (toTicks would otherwise fix the anchor from it).
+   */
+  com.flow.core.RiskChain.AccountTruth accountTruth(PriceCodec codec, double startCash) {
+    com.motivewave.platform.sdk.common.Instrument inst = safe(ctx::getInstrument);
+    Double pointValue = inst == null ? null : safe(inst::getPointValue);
+    Double tickSize = inst == null ? null : safe(inst::getTickSize);
+    Double cash = safe(ctx::getCashBalance);
+    Integer position = safe(ctx::getAccountPosition);
+    if (pointValue == null || tickSize == null || cash == null || position == null) return null;
+    Integer entryTicks = null;
+    if (position != 0 && codec != null && codec.hasAnchor()) {
+      Float entry = safe(ctx::getAccountAvgEntryPrice);
+      if (entry != null && !entry.isNaN() && entry != 0f) entryTicks = codec.toTicks(entry);
+    }
+    return new com.flow.core.RiskChain.AccountTruth(cash, startCash, position, entryTicks, pointValue * tickSize);
+  }
+
+  /** The account's cash balance now, or null if the platform cannot say (used to fix the session's starting balance). */
+  Double cashBalance() {
+    return safe(ctx::getCashBalance);
   }
 
   /** D-82/Q-11: same existing-order check refuseToArmReason() uses, reused as a stacking guard before every automatic real entry. */
@@ -128,9 +212,11 @@ final class OrderGateway {
    * position and returns a journal line describing what would happen,
    * including the bracket (stop/target) that would accompany a real
    * entry (Q-06's "sizing and brackets"). This method itself never calls
-   * anything order-submitting -- reporting only. submitRealEntry()/
-   * submitRealBracket() below do the real thing, but nothing routes an
-   * automatic intent to them (see the class javadoc).
+   * anything order-submitting -- reporting only. Called from
+   * FlowRuntimeStudy.onIntentChanged() whenever the session is NOT live-armed
+   * (DRY_RUN, or Mode != SIM_LIVE); when it is, LiveOrderTracker.reconcileLive()
+   * is called instead, which does route to submitRealEntry()/submitRealBracket()
+   * below (see the class javadoc).
    */
   String reconcileDryRun(Intent intent) {
     int currentPosition = ctx.getPosition();
@@ -151,14 +237,15 @@ final class OrderGateway {
   }
 
   // ------------------------------------------------------------------
-  // Real order submission (2026-09-19). Written, but deliberately NOT
-  // called from anywhere in the automatic intent/pipeline path -- no
-  // caller exists yet. CLAUDE.md's hard rule requires the exact
-  // account/instrument/side/quantity/order-type stated and one last
-  // explicit confirmation *immediately before* submitting, which an
-  // automatic per-tick strategy loop cannot satisfy on its own once
-  // wired in. The first real call site gets added deliberately, in the
-  // same conversation turn as that final confirmation -- not before.
+  // Real order submission (2026-09-19). Called automatically now, under
+  // CLAUDE.md's second exception (D-82/Q-11: session-scoped Sim arming,
+  // no per-order confirmation) -- submitRealEntry()/submitRealBracket()
+  // are invoked from LiveOrderTracker.reconcileLive()/onOrderFilled(),
+  // which FlowRuntimeStudy.onIntentChanged() calls whenever the session
+  // is live-armed (Mode=SIM_LIVE, Armed checked, not denied). The kill
+  // switch and the session-end flatten go through cancelAllAndClose()/
+  // cancelAllOrders() below instead (LiveOrderTracker.onKillSwitch() /
+  // flattenForSessionEnd()), not through this pair.
   // ------------------------------------------------------------------
 
   /**
@@ -175,10 +262,20 @@ final class OrderGateway {
    * submitted from it (below) filled/cancelled correctly as an OCO pair.
    */
   String submitRealEntry(boolean isBuy, int qty, String reason) {
+    return submitRealEntry(isBuy, qty, reason, null, 0L);
+  }
+
+  /**
+   * F-11 (2026-09-28): the same submission, with the journal record now carrying WHEN it was sent (local clock) and
+   * what the signal tick looked like (last, bid, ask, exchange time) -- without these, entry latency and slippage
+   * could only be inferred afterwards. submitLocalMs is read by the caller just before this call.
+   */
+  String submitRealEntry(boolean isBuy, int qty, String reason, LiveOrderTracker.SignalInfo signal, long submitLocalMs) {
     int positionBefore = ctx.getPosition();
     Order entry = OrderAdapter.marketOrder(ctx, isBuy, qty);
+    requireSimulated(entry);
     ctx.submitOrders(entry);
-    return Json.object()
+    Json j = Json.object()
         .field("type", "real_order_submitted")
         .field("orderType", "MARKET")
         .field("instrument", ctx.getInstrument().getSymbol())
@@ -186,8 +283,51 @@ final class OrderGateway {
         .field("qty", qty)
         .field("positionBefore", positionBefore)
         .field("cashBalance", ctx.getCashBalance())
-        .field("reason", reason)
-        .build();
+        .field("reason", reason);
+    if (submitLocalMs > 0) j.field("t", submitLocalMs);
+    if (signal != null) {
+      j.fieldOrNull("signalPriceTicks", signal.priceTicks())
+          .fieldOrNull("signalBidTicks", signal.bidTicks())
+          .fieldOrNull("signalAskTicks", signal.askTicks())
+          .field("signalEventTimeMs", signal.eventTimeMs())
+          .field("signalReceivedLocalMs", signal.receivedLocalMs());
+    }
+    return j.build();
+  }
+
+  /**
+   * F-23 (2026-09-29, D-122, off by default -- see ExternalConfig.entrySlippageCapTicks): the same entry as
+   * submitRealEntry(), but a LIMIT at a capped price instead of a bare market order, so slippage past that price is
+   * refused rather than accepted. Returns the Order reference too (submitRealEntry() does not) so the caller can
+   * cancel it on a timeout if it never fills -- see LiveOrderTracker.onEntryTimeout().
+   */
+  record EntryOrder(Order order, String journalLine) {}
+
+  EntryOrder submitRealLimitEntry(boolean isBuy, int qty, float limitPrice, String reason,
+      LiveOrderTracker.SignalInfo signal, long submitLocalMs) {
+    int positionBefore = ctx.getPosition();
+    Order entry = OrderAdapter.limitOrder(ctx, isBuy, qty, limitPrice);
+    requireSimulated(entry);
+    ctx.submitOrders(entry);
+    Json j = Json.object()
+        .field("type", "real_order_submitted")
+        .field("orderType", "LIMIT")
+        .field("limitPrice", limitPrice)
+        .field("instrument", ctx.getInstrument().getSymbol())
+        .field("side", isBuy ? "BUY" : "SELL")
+        .field("qty", qty)
+        .field("positionBefore", positionBefore)
+        .field("cashBalance", ctx.getCashBalance())
+        .field("reason", reason);
+    if (submitLocalMs > 0) j.field("t", submitLocalMs);
+    if (signal != null) {
+      j.fieldOrNull("signalPriceTicks", signal.priceTicks())
+          .fieldOrNull("signalBidTicks", signal.bidTicks())
+          .fieldOrNull("signalAskTicks", signal.askTicks())
+          .field("signalEventTimeMs", signal.eventTimeMs())
+          .field("signalReceivedLocalMs", signal.receivedLocalMs());
+    }
+    return new EntryOrder(entry, j.build());
   }
 
   /**
@@ -214,6 +354,7 @@ final class OrderGateway {
   BracketOrders submitRealBracket(boolean closingIsBuy, int qty, float stopPrice, float targetPrice, String reason) {
     Order stop = OrderAdapter.stopOrder(ctx, closingIsBuy, qty, stopPrice);
     Order target = OrderAdapter.limitOrder(ctx, closingIsBuy, qty, targetPrice);
+    requireSimulated(stop, target);
     ctx.submitOrders(stop, target);
     String line = Json.object()
         .field("type", "real_bracket_submitted")
@@ -238,14 +379,20 @@ final class OrderGateway {
    * only rework -- reconcileLive() used to call this on every strategy-
    * detected stop/target hit, which is exactly what caused two live
    * near-misses (racing the real bracket closing the same position a
-   * different way). Kept, not deleted: it's genuine, proven-safe
-   * infrastructure for a future universal-flatten case that legitimately
-   * wants "close the position" independent of the bracket (e.g. the
-   * still-unbuilt session-end auto-flatten, D-29's stated default) --
-   * unlike cancelTrackedLegs()'s old per-position surgical cancellation,
-   * which was deleted outright since nothing else needed that shape.
+   * different way). The session-end auto-flatten that was still-unbuilt
+   * when this was written now exists (D-92, LiveOrderTracker.flattenForSessionEnd()),
+   * but it goes through cancelAllAndClose()/cancelAllOrders() below, not
+   * this method -- same "don't race a resting bracket leg" reasoning:
+   * those two also cancel whatever is still resting in the same call,
+   * which a bare closeAtMarket() does not. Kept, not deleted: it's
+   * genuine, proven-safe infrastructure (exercised by OrderGatewayTest)
+   * for a future case that legitimately wants "close the position"
+   * with nothing resting to also cancel -- unlike cancelTrackedLegs()'s
+   * old per-position surgical cancellation, which was deleted outright
+   * since nothing else needed that shape.
    */
   String closeAtMarket(String reason) {
+    if (orderLock.get()) return refusedLine("closeAtMarket");
     int positionBefore = ctx.getPosition();
     ctx.closeAtMarket();
     return Json.object()
@@ -268,6 +415,7 @@ final class OrderGateway {
     if (order == null || !order.isActive()) {
       return null;
     }
+    if (orderLock.get()) return refusedLine("cancel " + legName);
     ctx.cancelOrders(order);
     return Json.object()
         .field("type", "real_leg_cancelled")
@@ -282,6 +430,7 @@ final class OrderGateway {
    * sending closeAtMarket() to a flat account, whose behaviour there is unconfirmed.
    */
   String cancelAllOrders(String reason) {
+    if (orderLock.get()) return refusedLine("cancelAllOrders");
     ctx.cancelOrders();
     return Json.object()
         .field("type", "session_orders_cancelled")
@@ -301,6 +450,7 @@ final class OrderGateway {
    * FlowRuntimeStudy's kill-switch callback).
    */
   String cancelAllAndClose(String reason) {
+    if (orderLock.get()) return refusedLine("cancelAllAndClose");
     int positionBefore = ctx.getPosition();
     ctx.closeAtMarket();
     ctx.cancelOrders();

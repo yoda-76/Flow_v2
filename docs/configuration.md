@@ -40,10 +40,10 @@ Loaded once, when the study is activated (`FlowRuntimeStudy.startSession`).
 |---|---|---|
 | `fixedContracts` | 1 | Contracts per trade (D-30). Passed to the strategy. |
 | `maxContracts` | = `fixedContracts` | Size cap in the risk chain: an intent whose target exceeds it is blocked. |
-| `dailyLossLimitTicks` | 200 | Realized + open loss (ticks) at which the **kill switch** fires: flatten, cancel everything, disarm for the rest of the session. Reset at the 17:00 CT session rollover. |
-| `rateLimitPerMinute` | 6 | Max position *changes* in any rolling 60 s. |
+| `dailyLossLimitTicks` | 200 | Realized + open loss (ticks) at which the **kill switch** fires: flatten, cancel everything, disarm. In `DRY_RUN` it still disarms and journals, but sends no order — there is nothing to flatten. Once it fires, re-arming is refused (`ARM_STILL_DENIED`) for the rest of this study *instance* — deactivating/reactivating does **not** clear it (code review A6); only removing and re-adding the study does (see the safety-rules note below). The realized-P&L figure the kill switch checks resets at the 17:00 CT session rollover, same as `maxReversalsPerSession`, but that rollover does **not** by itself clear a kill-switch disarm already in force. P&L scales with the actual position size (code review A7), not just its sign. |
+| `rateLimitPerMinute` | 6 | Max **real position changes** in any rolling 60 s — a strategy re-asserting the same target (e.g. repeating "holding") never counts against this and is never blocked by it (code review A4). An intent to go flat is never blocked by this or any other filter (B1). |
 | `minDwellMs` | 5000 | Minimum time in a position before another change (churn guard). |
-| `maxReversalsPerSession` | 20 | Max direction changes per 17:00-CT-to-17:00-CT session. |
+| `maxReversalsPerSession` | 20 | Every change of *target* position after the session's first counts as one reversal — entries **and** exits both count, so 20 ≈ 10 round trips, not 20 round trips. (Code review B5: what this limit *should* mean — round trips vs. individual position changes — is awaiting the user's decision.) |
 | `lagQueueDepthThreshold` | 1000 | If the event queue backs up this deep, new entries are blocked (lag guard). |
 | `lagProcessingMsThreshold` | 2000 | Same, if one event takes this long to process. |
 
@@ -56,10 +56,18 @@ Friday 16:00 CT → Sunday 17:00 CT.
 |---|---|---|
 | `flattenLeadMinutes` | 5 | Minutes before the 16:00 CT halt at which any open position is flattened → **15:55 CT**. On Fridays the flatten window lasts all weekend. **0 (or negative) switches session-end flatten *and* the entry block off entirely.** Clamped to 600. |
 | `noEntryLeadMinutes` | 15 | Minutes before the halt at which **new entries stop** → **15:45 CT**. Never less than `flattenLeadMinutes` (raised to it if so). Clamped to 600. |
+| `feedStaleSeconds` | 20 | **Feed watchdog (F-19, 2026-09-28).** Seconds without a tick, inside the trading window, after which market data counts as stale: a `FEED_STALE` ALERT is journaled and **new entries are blocked** (risk filter `feed`). Silent during the daily halt and the weekend, and before the first tick of a session. `0` switches the watchdog off. |
+| `feedSettleSeconds` | 10 | After ticks resume (a `data_gap` record is journaled and an open bracket is judged against where price jumped to — see runbook), seconds of continuous data required before entries are allowed again (`feed_live`). |
+| `entrySlippageCapTicks` | **0 = off** | **F-23 (2026-09-29, D-120), off by default.** When > 0, an entry is a marketable LIMIT capped at the touch plus this many ticks (buy: ask + cap; sell: bid − cap) instead of a bare market order; if it hasn't filled after `LiveOrderTracker.ENTRY_LIMIT_TIMEOUT_MS` (5 s, not itself configurable) it is cancelled and journaled `entry_missed` — the next signal tries again, nothing retries automatically. Needs a signal that carries a bid/ask (a `TickEvent`); without one it falls back to a plain market order regardless of this setting. On Sim (measured 2026-09-28) a market order already fills at the touch with ~0 latency, so this mainly matters for a real account or a slower venue. |
 
 The flatten only sends orders when the study is **Mode `SIM_LIVE` and Armed**
 and did not refuse to arm at activation; in `DRY_RUN` it never touches an
 order. Holidays and early closes are **not modelled** (a decision — D-93).
+
+> **All of this is judged on this machine's own clock**, not an exchange
+> feed's time: the entry-block window, the flatten window and the daily
+> P&L/reversal reset all read the local clock (code review A2). Keep
+> Windows time sync turned on.
 
 > **Testing the flatten during a watched session.** The real 15:55 CT is
 > ~02:25 IST. To make the window start earlier, raise the lead: e.g.
@@ -74,7 +82,7 @@ order. Holidays and early closes are **not modelled** (a decision — D-93).
 |---|---|---|
 | `dataIntervalSeconds` | 1 | Write interval for footprint candles, VWAP and big trades under `data/`. Raise if storage or load demands it. |
 | `liquidityIntervalSeconds` | 1 | Liquidity-map snapshot interval, tunable separately (the heaviest: ≈ 4–5 KB/s at 1 s ≈ 3 GB per 7 trading days). |
-| `dataKeepTradingDays` | 7 | Rolling window of trading days kept under `data/`; the oldest is deleted when a new one starts. |
+| `dataKeepTradingDays` | 7 | Files are `data/<construct>/<symbol>/<sessionId>.jsonl` (the symbol folder since findings F-1, e.g. `GC` for `@GC`; recordings made before 2026-09-27 are flat `data/<construct>/<sessionId>.jsonl`, still read by the tools). Rolling window of trading days kept under `data/`; the oldest is deleted when a new one starts. About 0.45 GB per trading day (mostly the liquidity map) — disk per retention in `docs/runbook.md` §11a. |
 
 ### Log retention (D-106)
 
@@ -143,6 +151,12 @@ re-add it.
 
 ### Strategy and trading
 
+**Instrument:** only gold (`@GC` or a `GC` contract, tick 0.1) may be traded, for now (user, 2026-09-27). On any
+other chart the study logs `REFUSE_TO_ARM instrument … is not allowed` and never arms or sends an order, whatever
+*Armed* and *Mode* say; it still records into that instrument's own data folder. Journaled as
+`instrumentAllowed` in `session_header` and in the heartbeat/arming `runtime` detail. Not a setting — widening
+it is a code change (`InstrumentPolicy.ALLOWED_ROOTS`), with the strategies and limits re-checked.
+
 | Setting (key) | Default | Read | Meaning |
 |---|---|---|---|
 | Strategy Id (`FLOW_STRATEGY_ID`) | `level_zone_observer` | at activation | Which strategy runs. Registered ids: `null_strategy`, `level_zone_observer`, `lvn_fade_test`, `market_structure_lvn_reversal`. |
@@ -154,7 +168,10 @@ account is strictly forbidden. "Sim Trade Only" must stay enabled in
 MotiveWave. During the 2026-09-24 sprint Sim arming is pre-authorized; after
 it ends, the bounds must be stated out loud and confirmed before checking
 Armed, every session. If the `ACTIVATE` log line ever shows an account that is
-not the Simulated one, stop.
+not the Simulated one, stop. A kill-switch or order-anomaly disarm (code
+review A6) survives deactivating and reactivating the study — the log shows
+`ARM_STILL_DENIED` on every reactivation attempt after one; remove and
+re-add the study (a fresh instance) to arm again.
 
 ### Constructs (calculated and recorded regardless of the draw flags)
 

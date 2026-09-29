@@ -37,6 +37,7 @@ FLOW_V2/
 ├── docs/dynamic/      decisions.md, findings.md — working record for THIS system
 ├── data/              retained per-construct data, rolling 7 trading days (D-88), gitignored
 ├── analysis/          offline Python report/status/viewer scripts (read-only over logs/ and data/)
+├── ops/               watchdog.py (alerts from OUTSIDE MotiveWave) + Windows scheduled-task / hardening scripts (docs/runbook-ec2.md)
 ├── config/            risk.json — hand-edited limits; docs/configuration.md explains every key
 ├── reports/           generated report pages, gitignored
 ├── flow-core/         core logic — compiles without mwave_sdk.jar on the classpath (D-09)
@@ -208,6 +209,10 @@ order: `docs/working-agreements.md` (how the user works), the **"LAPTOP TRIAL HA
   session.** Claude reads logs and journals, runs the `analysis/` scripts, builds and tests — it does **not** check
   *Armed*, switch *Mode* to `SIM_LIVE`, or place any order on its own initiative there. The Simulated-account-only /
   real-account-forbidden line is identical everywhere.
+- **Update 2026-09-28 (D-115): there is now a second, code-level layer.** Every order/fill carries `getAccountId()`
+  (always `"simulated"` on Sim); an order or fill naming any other account is refused/ignored, disarms the runtime and
+  locks all order sending. The statement below that there is *no code-level check* is therefore no longer the whole
+  story — but the checkbox and the human check still stand, and the layer fails open on a missing id.
 - **"Sim Trade Only" is a per-installation MotiveWave setting and a fresh install must be assumed to have it OFF**
   (it was off on the first machine's fresh install). **There is no code-level check that the active account is the
   Simulated one** — the SDK exposes an `Account` type but no accessor to it (searched 2026-09-26) — so this single
@@ -215,10 +220,58 @@ order: `docs/working-agreements.md` (how the user works), the **"LAPTOP TRIAL HA
   a real-account order. On any new machine it must be enabled **before the study is added**, and confirmed at every
   activation. If anything indicates a non-Simulated account, **stop and tell the user** (safety stop, not a
   consent request).
+- **Only gold (`@GC` / a `GC` contract) may be traded, for now** (user, 2026-09-27). The runtime enforces it
+  (`InstrumentPolicy`: `REFUSE_TO_ARM` on any other chart, and no order of any kind there).
+- **"Sim Trade Only" stays enabled at all times, on every machine, until the user explicitly says otherwise**
+  (user, 2026-09-27) — enable it before Rithmic is connected (`docs/runbook.md` §4).
 - **Per-machine differences go in `config/risk.local.json`** (git-ignored, optional; D-106), never in the tracked
   `config/risk.json`. For an "identical to the first machine" trial, leave it absent.
 - **Claude cannot drive MotiveWave's GUI.** The user adds/removes/activates the study; Claude reads MotiveWave's log
   (`%APPDATA%\MotiveWave\output\`) and the journal afterwards.
 - Push/commit only when the user asks (`docs/working-agreements.md` §6).
+
+## Model mode toggle (added 2026-09-27)
+
+**CURRENT MODE: `REGULAR`**   ← the switch. Change this one word (`REGULAR` or `SUPER`) to change how work is split.
+The user picks the session's own model with `/model`; this section says who does *which work*.
+**The toggle only chooses models. It never changes what is authorized** — the Sim pre-authorization (third
+exception) and every hard rule stay exactly as written, whatever the mode. "Regular mode" / "super mode" in
+the user's words means this toggle *(2026-09-27: a session on the laptop misread "regular mode" as ending the
+sprint authorization; it did not)*.
+
+| Mode | Who works | Rule |
+|---|---|---|
+| **`REGULAR`** | **Sonnet 5 only** | One model does everything. No delegating to other models. |
+| **`SUPER`** | **Opus 5.5 decides; Sonnet 5 does the grunt work; Haiku 4.5 does the trivial calls** | Below. |
+
+**In `SUPER` mode — the session runs on Opus 5.5, and Opus is *not* used for everything.**
+- **Opus 5.5 (the main session) keeps:** decisions and design, deciding *what* to change and why, reviewing
+  findings, anything touching safety or order handling (`RiskChain`, `Pipeline`, `LiveOrderTracker`, `OrderGateway`,
+  the kill switch, the flatten, the Sim-only guard), reading a subagent's result critically, writing decision
+  entries, and the final say before any commit.
+- **Sonnet 5 (`Agent` with `model: "sonnet"`) gets** simple code changes and other grunt work once Opus has said
+  exactly what to do: mechanical edits and renames, writing tests from a stated spec, routine doc updates,
+  running/mutation-sweeping tests and reporting results, refactors with a precise description, log/journal digging.
+- **Haiku 4.5 (`Agent` with `model: "haiku"`) gets** genuinely trivial calls: reading one file, listing or counting
+  things, a single grep, calling an MCP tool, fetching a value — anything a person would call "just look it up".
+- **Do not** hand a whole open-ended task to a cheaper model; delegate the *bounded* piece. **Do not** run
+  everything through Opus either — if a step is simple enough to describe in a sentence and check in a glance, it is
+  not Opus's job.
+
+**Guardrails that do not change with the mode**
+- **Every hard rule in this file applies to every model and every subagent, unchanged** — no orders (real or Sim)
+  as a side effect, never touch `.env`, Sim-only, strategies never import the SDK. Subagents are told these rules in
+  their prompt; a subagent never places, modifies or cancels an order, and never runs `build.sh` against the real
+  MotiveWave folder.
+- **Delegation is not a review.** A subagent starts cold and reports what it *believes* it did: Opus reads the actual
+  diff / output before relying on it, and re-runs the tests itself. Safety-critical code changes are never accepted
+  on a subagent's word.
+- **Give the subagent everything it needs** (files, the exact change, the constraint, how to verify) — it has none of
+  this conversation.
+- Commit/push only when the user asks (`docs/working-agreements.md` §6); a subagent never commits.
+- **If the mode is `SUPER` but the session is not running on Opus 5.5** (or is `REGULAR` on something other than
+  Sonnet 5), say so once at the start and carry on in the mode as far as the current model allows.
+- *Naming:* the user wrote "Sonnet 5.5"; the models available here are Sonnet 5, Opus 5.5 and Haiku 4.5, so the
+  middle tier means **Sonnet 5**.
 
 No other standing rules recorded yet.

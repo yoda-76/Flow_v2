@@ -100,6 +100,40 @@ def trading_day_window(day: date):
     return ct_to_utc_ms(day - timedelta(days=1), 17), ct_to_utc_ms(day, 17)
 
 
+DEFAULT_SYMBOL = "@GC"  # the only instrument allowed to trade for now (InstrumentPolicy); used when no journal says
+
+
+def symbol_dir(symbol) -> str:
+    """The folder name for a symbol under data/<construct>/ (findings F-1). Mirrors Java's
+    InstrumentPolicy.symbolDir(): "@GC" -> "GC", unsafe characters -> "_", empty -> "unknown"."""
+    if symbol is None:
+        return "unknown"
+    s = str(symbol).strip()
+    if s.startswith("@"):
+        s = s[1:]
+    s = re.sub(r"[^A-Za-z0-9._-]", "_", s)
+    return s or "unknown"
+
+
+def data_file(data_root: Path, construct: str, sid: int, symbol=None) -> Path:
+    """A construct's day file. Since F-1 (2026-09-27) the runtime writes data/<construct>/<symbol>/<sid>.jsonl;
+    recordings made before that (and the committed replay fixture) use data/<construct>/<sid>.jsonl. The symbol
+    folder wins when it exists; otherwise the old flat path is returned (which may not exist either)."""
+    new = data_root / construct / symbol_dir(symbol or DEFAULT_SYMBOL) / f"{sid}.jsonl"
+    if new.exists():
+        return new
+    return data_root / construct / f"{sid}.jsonl"
+
+
+def session_symbol(sessions):
+    """The instrument of the newest session that has a header, else DEFAULT_SYMBOL."""
+    for s in reversed(sessions):
+        sym = s.header.get("symbol")
+        if sym:
+            return sym
+    return DEFAULT_SYMBOL
+
+
 def session_id_for_day(day: date) -> int:
     """data/<construct>/<sessionId>.jsonl: the epoch-day of the 17:00 CT START of the session."""
     return (day - timedelta(days=1) - date(1970, 1, 1)).days
@@ -115,6 +149,13 @@ def fmt_ist(ms) -> str:
     if ms is None:
         return "?"
     return datetime.fromtimestamp((ms + IST_OFFSET_MS) / 1000, UTC).strftime("%H:%M") + " IST"
+
+
+def fmt_ct_hm(ms) -> str:
+    """Short CT time (no date/seconds), for a summary line that aggregates several records."""
+    if ms is None:
+        return "?"
+    return ct_local(ms).strftime("%H:%M") + " CT"
 
 
 def fmt_dur(ms) -> str:
@@ -207,17 +248,64 @@ def load_sessions(logs_root: Path):
 # ---------------------------------------------------------------------------
 
 # log-message prefixes that need a human's attention, with a severity.
+# Ordering note: matching is by startswith() and stops at the first hit, so a longer prefix must be listed
+# before any shorter prefix it starts with. Checked for every entry below (codeReview.md A5): none of the
+# new prefixes is a prefix of, or prefixed by, an existing one.
+# F-20: an exit that filled more than this many ticks away from its own stop/limit price is flagged as a probable
+# Sim artifact (normal stop slippage seen live: <= 2 ticks; a limit improving by 1).
+ARTIFACT_TICKS = 3
+
 ATTENTION = OrderedDict([
     ("KILL_SWITCH_TRIGGERED", "ALERT"),
     ("POSITION_MISMATCH_DETECTED", "ALERT"),
     ("POSITION_MISMATCH_CORRECTED", "ALERT"),
     ("LIVE_ENTRY_CANCELLED_DISARMING", "ALERT"),
     ("LIVE_ENTRY_REJECTED_DISARMING", "ALERT"),
+    ("LIVE_ENTRY_PARTIAL_FLATTENED", "ALERT"),  # D-99: a partial entry fill flattened before it completed
+    ("LIVE_ENTRY_PARTIAL_FILL", "WARN"),        # D-99: an entry filled in slices (informational unless it never completes)
     ("REFUSE_TO_ARM", "ALERT"),
+    ("ARM_STILL_DENIED", "ALERT"),               # A6: a kill switch / order anomaly already disarmed this instance
     ("ORDER_FILL_RECORD_FAILED", "ALERT"),
+    ("ORDER_REJECTED", "ALERT"),                # any order rejection, including a bracket leg (B6)
     ("RISK_CONFIG_MISSING", "ALERT"),
+    ("RISK_LOCAL_CONFIG_IGNORED", "ALERT"),     # D-106: a malformed override silently means "no pruning"
     ("LIVE_BRACKET_SKIPPED", "ALERT"),
+    ("LIVE_BRACKET_SIZE_FROM_FILL", "WARN"),    # D-99: bracket sized from the actual fill, not the intended qty
     ("LIVE_FILL_NO_BRACKET", "WARN"),
+    ("LIVE_LEG_LOST", "ALERT"),                 # future runtime line: a protective leg cancelled/rejected/expired on its own
+    # 2026-09-28 P0 fixes (F-1/F-2/F-3): account-truth position watch and the post-flatten verification.
+    ("ACCOUNT_POSITION_CHANGED_UNTRACKED", "ALERT"),  # the account position moved without an order this study placed
+    ("POSITION_SOURCES_DISAGREE", "ALERT"),           # the study's position and the account's differ at a flatten decision
+    ("FLATTEN_NOT_CONFIRMED", "ALERT"),               # three looks after a flatten and the account was not confirmed flat
+    ("FLATTEN_CORRECTING", "ALERT"),                  # a flatten left a position (L-1's wrong-way fill) and was corrected
+    ("NON_SIM_ACCOUNT_EVENT", "ALERT"),               # 2026-09-28: an order/fill on a non-simulated account: disarmed, order sending locked
+    ("ACCOUNT_ID_UNKNOWN", "WARN"),                   # the platform reported no account id on an order event
+    ("NON_SIM_RECORD_FAILED", "WARN"),
+    ("FEED_RESUME_FLATTEN_HELD", "ALERT"),            # F-19: outage over, a level was crossed, but the readings disagreed: no close sent
+    ("FEED_RESUME_FLATTEN", "ALERT"),                 # F-19: outage over and a stop/target was reached or crossed -> flattened
+    ("FEED_RESUME_UNPROTECTED_POSITION", "ALERT"),
+    ("FEED_RESUME_CHECK_FAILED", "ALERT"),
+    ("FEED_RESUME_UNCHECKABLE", "WARN"),
+    ("FEED_RESUME_KEEP", "NOTE"),
+    ("FEED_RESUME_NOTHING_OPEN", "NOTE"),
+    ("GAP_RANGE_FLATTEN_HELD", "ALERT"),               # F-22: the bar range across the gap crossed a level, but the readings disagreed
+    ("GAP_RANGE_FLATTEN", "ALERT"),                    # F-22: found ONLY in the historical bar range, after the quick check said keep
+    ("GAP_RANGE_CHECK_FAILED", "ALERT"),
+    ("GAP_RANGE_UNAVAILABLE", "WARN"),                 # the bars covering the gap had not backfilled yet
+    ("GAP_RANGE_KEEP", "NOTE"),
+    ("ENTRY_MISSED", "WARN"),                          # F-23: a capped limit entry never filled and was given up on
+    ("ENTRY_TIMEOUT_CHECK_FAILED", "ALERT"),
+    ("FEED_RESUMED", "NOTE"),
+    ("LIVE_BRACKET_ADJUSTED", "WARN"),                # F-21: a bracket leg was on the wrong side of the fill and was clamped
+    ("ENTRY_EXECUTION_RECORD_FAILED", "WARN"),
+    ("LEG_LOST_FLATTEN", "ALERT"),                    # F-5: a bracket leg was lost on its own; the position is being flattened
+    ("LEG_LOST_CHECK_FAILED", "ALERT"),
+    ("FLATTEN_VERIFY_FAILED", "ALERT"),
+    ("FLATTEN_VERIFY_DISAGREE", "WARN"),
+    ("FLATTEN_VERIFIED", "NOTE"),
+    ("AFTER_FILL_HOOK_FAILED", "WARN"),
+    ("REACTIVATED", "NOTE"),                          # F-4: the study was re-activated, tracker/pipeline state reset
+    ("DOM_BACKLOG_SKIPPED", "WARN"),            # E1: the event queue fell behind and skipped intermediate DOM snapshots
     ("SESSION_FLATTEN", "NOTE"),
     ("ACTIVATE", "NOTE"),
     ("DEACTIVATE", "NOTE"),
@@ -226,6 +314,9 @@ ATTENTION = OrderedDict([
 ATTENTION_TYPES = {
     "DISARM": "ALERT", "KILL_SWITCH": "ALERT", "data_recorder_disabled": "ALERT",
     "SESSION_FLATTEN_DUE": "NOTE",
+    "non_sim_account_event": "ALERT", "order_refused": "ALERT",
+    "FEED_STALE": "ALERT",   # F-19: no ticks for feedStaleSeconds during the trading window
+    "data_gap": "WARN",      # F-19: the first tick after such a gap (price before/after, duration)
 }
 
 
@@ -248,9 +339,18 @@ def build_trades(recs):
     open_t = None
     last_submit = None
     since_entry = set()
+    anchor, anchor_tick = None, 0.1    # the session's tick-offset origin, to turn data_gap ticks back into prices
     for r in recs:
         typ = r.get("type")
-        if typ == "real_order_submitted":
+        if typ == "price_anchor":
+            anchor, anchor_tick = r.get("price"), r.get("tickSize") or 0.1
+        elif typ == "data_gap":
+            # F-25: a stretch without market data while a trade is open. Remember where price was when data came
+            # back -- the Sim engine fills stops at their own price even through a gap (2026-09-28: a 19-tick gap
+            # recorded as a 5-tick stop), so the report can say what a real stop-market would likely have done.
+            if open_t is not None and anchor is not None and r.get("priceAfterTicks") is not None:
+                open_t["gap_after"] = round(anchor + r["priceAfterTicks"] * anchor_tick, 4)
+        elif typ == "real_order_submitted":
             last_submit = r
         elif typ == "KILL_SWITCH":
             since_entry.add("kill switch")
@@ -268,6 +368,23 @@ def build_trades(recs):
                 since_entry.add("session-end flatten")
             elif msg.startswith("POSITION_MISMATCH_CORRECTED"):
                 since_entry.add("double-fill correction")
+        elif typ == "account_position_change":
+            # F-3 (2026-09-28): the ACCOUNT's position moved with no fill callback for an order this study placed -- a
+            # manual close, or MotiveWave's own "close the running position?" dialog (L-3/L-4). Without this the
+            # trade stayed "STILL OPEN" in every report. No exit price is journaled for it, so the P&L is the cash
+            # change since the entry (indicative: the platform may update cash after the fact).
+            if open_t is not None and r.get("accountPosition") == 0 and not r.get("explainedByFill"):
+                pv = open_t["point_value"]
+                cash_after = r.get("cashBalance")
+                cash_delta = None if cash_after is None or open_t["cash_before"] is None \
+                    else round(cash_after - open_t["cash_before"], 2)
+                pts = None if cash_delta is None or not pv else round(cash_delta / (pv * open_t["qty"]), 4)
+                open_t.update(exit_t=r.get("t") or r["_t"], exit_px=None,
+                              exit_via="closed outside the study (manual / platform)",
+                              points=pts, gross=cash_delta, cash_delta=cash_delta)
+                trades.append(open_t)
+                open_t = None
+                since_entry = set()
         elif typ == "order_fill":
             role = r.get("role")
             if role == "entry" and open_t is None:
@@ -277,9 +394,19 @@ def build_trades(recs):
                     "entry_t": r.get("lastFillTimeMs") or r["_t"], "entry_px": r.get("avgFillPrice"),
                     "point_value": r.get("pointValue"), "reason": (last_submit or {}).get("reason", "?"),
                     "cash_before": (last_submit or {}).get("cashBalance"),
+                    "order_id": r.get("orderId"),
                     "stop": None, "target": None,  # filled in by the LIVE_BRACKET_SUBMITTED line that follows this fill
+                    "exit_off_ticks": None, "artifact": False,
+                    "gap_after": None, "gap_fill": False, "gap_exit_px": None, "gap_points": None, "gap_gross": None,
                 }
                 since_entry = set()
+            elif role == "entry" and open_t is not None and r.get("orderId") == open_t.get("order_id"):
+                # A10: another slice of the SAME entry order filling further (D-99 partial fill). Update the
+                # open trade's qty/price to the cumulative figures the fill carries; the entry time stays the
+                # first slice's. A different order id while a trade is open still falls through to "orphan".
+                open_t["qty"] = r.get("filled") or r.get("quantity") or open_t["qty"]
+                open_t["entry_px"] = r.get("avgFillPrice")
+                open_t["point_value"] = r.get("pointValue") or open_t["point_value"]
             elif open_t is not None:
                 if r.get("positionAfter") == 0 or role in ("stop", "target"):
                     if role in ("stop", "target"):
@@ -296,8 +423,28 @@ def build_trades(recs):
                     cash_after = r.get("cashBalance")
                     cash_delta = None if cash_after is None or open_t["cash_before"] is None \
                         else round(cash_after - open_t["cash_before"], 2)
+                    # F-20: how far from its OWN order price the exit filled, in ticks, + = better for us. A stop or
+                    # limit filling many ticks through its price is the Sim engine matching on the first tick after a
+                    # data outage, not something a real exchange would do.
+                    order_px = r.get("limitPrice") if role == "target" else r.get("stopPrice") if role == "stop" else None
+                    tick = r.get("tickSize") or 0.1
+                    off = None if px is None or order_px is None else round((px - order_px) / tick * d, 1)
                     open_t.update(exit_t=r.get("lastFillTimeMs") or r["_t"], exit_px=px, exit_via=via,
-                                  points=pts, gross=gross, cash_delta=cash_delta)
+                                  points=pts, gross=gross, cash_delta=cash_delta, exit_off_ticks=off,
+                                  artifact=off is not None and abs(off) > ARTIFACT_TICKS)
+                    # F-25: the realistic exit if this trade crossed a data gap: a stop fills at the first price back
+                    # when that is worse than the stop; a limit fills at its own price, never better.
+                    ga = open_t.get("gap_after")
+                    if ga is not None and px is not None and open_t["entry_px"] is not None and role in ("stop", "target"):
+                        honest = px
+                        if role == "stop":
+                            honest = min(px, ga) if d > 0 else max(px, ga)
+                        elif order_px is not None:
+                            honest = min(px, order_px) if d > 0 else max(px, order_px)
+                        if abs(honest - px) > 1e-9:
+                            gpts = round((honest - open_t["entry_px"]) * d, 4)
+                            open_t.update(gap_fill=True, gap_exit_px=honest, gap_points=gpts,
+                                          gap_gross=None if pv is None else round(gpts * pv * open_t["qty"], 2))
                     trades.append(open_t)
                     open_t = None
                     since_entry = set()
@@ -351,11 +498,18 @@ def intent_analysis(recs):
 
 
 def attention_events(recs):
+    """One tuple (t, approx, severity, kind, detail) per attention-worthy record -- except lag-guard blocks
+    (C2), which are aggregated into a single WARN line for the whole session/journal rather than one per
+    block, so a slow machine doesn't flood 'Needs attention' with a line per blocked entry."""
     out = []
+    lag_blocks = []
     for r in recs:
         typ = r.get("type")
         if typ in ATTENTION_TYPES:
             detail = r.get("reason") or r.get("msg") or ""
+            if typ == "data_gap":
+                detail = (f"{(r.get('durationMs') or 0) / 1000:.0f}s without ticks; price {r.get('priceBeforeTicks')} -> "
+                          f"{r.get('priceAfterTicks')} ticks (jump {r.get('jumpTicks')}) -- recordings and features have a hole here")
             out.append((r["_t"], r["_approx"], ATTENTION_TYPES[typ], typ, str(detail)))
         elif typ == "log":
             msg = r.get("msg", "")
@@ -365,6 +519,15 @@ def attention_events(recs):
                     break
         elif typ == "heartbeat" and r.get("healthy") is False:
             out.append((r["_t"], r["_approx"], "ALERT", "unhealthy heartbeat", str(r.get("lastIntentReason"))))
+        elif typ == "risk_verdict" and r.get("allowed") is False:
+            v = next((vv for vv in r.get("verdicts", []) if not vv.get("allowed")), None)
+            if v is not None and v.get("filter") == "lag":
+                lag_blocks.append((r["_t"], r["_approx"]))
+    if lag_blocks:
+        first_t, first_ap = lag_blocks[0]
+        last_t, _ = lag_blocks[-1]
+        detail = f"lag guard blocked {len(lag_blocks)} entries (first {fmt_ct_hm(first_t)}, last {fmt_ct_hm(last_t)})"
+        out.append((first_t, first_ap, "WARN", "LAG_GUARD", detail))
     return out
 
 
@@ -438,13 +601,13 @@ DENSE = {"vwap": 1, "liquidity_map": 1}
 EVENT_DRIVEN = ("footprint", "vwap", "big_trades", "bars")
 
 
-def data_health(data_root: Path, day: date):
+def data_health(data_root: Path, day: date, symbol=None):
     sid = session_id_for_day(day)
     rows = []
     if not data_root.exists():
         return sid, rows
     for d in sorted(p for p in data_root.iterdir() if p.is_dir()):
-        f = d / f"{sid}.jsonl"
+        f = data_file(data_root, d.name, sid, symbol)
         if not f.exists():
             rows.append({"construct": d.name, "present": False})
             continue
@@ -474,6 +637,7 @@ def build_model(sessions, day, data_root):
     window = trading_day_window(day)
     per_session = []
     all_trades, all_orphans, all_attention, all_legacy = [], [], [], []
+    all_exec = []   # F-11 entry_execution records
     arming = []   # (session, records, armed_ms)
     intent_totals = {"changes": 0, "allowed_entries": 0, "entries_blocked_by_armed": 0,
                      "blocked_counts": Counter(), "blocked_entries_listed": []}
@@ -488,6 +652,7 @@ def build_model(sessions, day, data_root):
         if not any(r.get("type") == "order_fill" for r in recs):
             all_legacy += entries_without_fills(recs)
         all_attention += attention_events(recs)
+        all_exec += [r for r in recs if r.get("type") == "entry_execution"]
         a_recs, a_ms, a_known = arming_timeline(s, window)
         arming.append((s, a_recs, a_ms, a_known))
         ia = intent_analysis(recs)
@@ -497,9 +662,11 @@ def build_model(sessions, day, data_root):
         intent_totals["blocked_entries_listed"] += ia["blocked_entries_listed"]
     all_trades.sort(key=lambda t: t["entry_t"] or 0)
     all_attention.sort(key=lambda a: a[0] or 0)
-    sid, data_rows = data_health(data_root, day)
-    return {"day": day, "window": window, "sessions": per_session, "trades": all_trades, "orphans": all_orphans,
+    symbol = session_symbol([s for s, _, _ in per_session]) if per_session else DEFAULT_SYMBOL
+    sid, data_rows = data_health(data_root, day, symbol)
+    return {"day": day, "data_symbol": symbol, "window": window, "sessions": per_session, "trades": all_trades, "orphans": all_orphans,
             "attention": all_attention, "legacy_entries": all_legacy, "intents": intent_totals, "arming": arming,
+            "executions": all_exec,
             "data_session_id": sid, "data": data_rows}
 
 
@@ -551,6 +718,22 @@ def render(model) -> str:
                  f"fill records (D-94) — no prices or PnL available.")
     else:
         L.append("- **Trades:** none.")
+    artifacts = [t for t in closed if t.get("artifact")]
+    if artifacts:
+        art_gross = sum(t["gross"] for t in artifacts if t["gross"] is not None)
+        all_gross = sum(t["gross"] for t in closed if t["gross"] is not None)
+        L.append(f"- ⚠ **{len(artifacts)} exit(s) filled more than {ARTIFACT_TICKS} ticks away from their own stop/limit price** "
+                 f"(probable Sim artifact, typically the first tick after a data outage): they contributed **{_money(art_gross)}**; "
+                 f"gross **without them {_money(all_gross - art_gross)}**. Marked ⚠ in the trade table.")
+    gapped = [t for t in closed if t.get("gap_fill")]
+    if gapped:
+        rec_g = sum(t["gross"] for t in gapped if t["gross"] is not None)
+        real_g = sum(t["gap_gross"] for t in gapped if t["gap_gross"] is not None)
+        all_g = sum(t["gross"] for t in closed if t["gross"] is not None)
+        L.append(f"- ⚠ **{len(gapped)} exit(s) filled across a data gap.** The Simulated engine cannot match orders while data is down and "
+                 f"fills them at their own price afterwards; a real stop-market would have filled near the first price back. "
+                 f"Recorded on those trades {_money(rec_g)}, realistic estimate **{_money(real_g)}** — gross for the day "
+                 f"{_money(all_g)} recorded, **{_money(all_g - rec_g + real_g)}** realistic.")
     if open_trades:
         L.append(f"- **{len(open_trades)} trade(s) STILL OPEN at the end of the journal** — check the account.")
     ia = model["intents"]
@@ -593,8 +776,11 @@ def render(model) -> str:
         for i, t in enumerate(model["trades"], 1):
             held = fmt_dur(t["exit_t"] - t["entry_t"]) if t["exit_t"] and t["entry_t"] else "?"
             pts = "n/a" if t["points"] is None else f"{t['points']:+.1f}"
+            via = t["exit_via"] + (f" ⚠ ({t['exit_off_ticks']:+.0f} ticks vs its order price)" if t.get("artifact") else "")
+            if t.get("gap_fill"):
+                via += f" ⚠ across a data gap (realistic exit {_num(t['gap_exit_px'])}, {t['gap_points']:+.1f} pts)"
             L.append(f"| {i} | {t['side']} {t['qty']} | {fmt_ct(t['entry_t'])} | {fmt_ist(t['entry_t'])} | {held} | "
-                     f"{_num(t['entry_px'])} | {_num(t['exit_px'])} | {t['exit_via']} | {pts} | {_money(t['gross'])} | "
+                     f"{_num(t['entry_px'])} | {_num(t['exit_px'])} | {via} | {pts} | {_money(t['gross'])} | "
                      f"{_money(t['cash_delta'])} | {t['reason']} |")
             if t["stop"] is not None:
                 L.append(f"|  | ↳ bracket | stop {_num(t['stop'])} · target {_num(t['target'])} |  |  |  |  |  |  |  |  |  |")
@@ -610,6 +796,34 @@ def render(model) -> str:
     else:
         L.append("No trades.")
     L.append("")
+
+    # ---- F-11: what getting in cost
+    ex = model.get("executions") or []
+    if ex:
+        def stat(key):
+            vals = sorted(e[key] for e in ex if e.get(key) is not None)
+            if not vals:
+                return None
+            return {"n": len(vals), "mean": sum(vals) / len(vals), "median": vals[len(vals) // 2],
+                    "p90": vals[min(len(vals) - 1, int(len(vals) * 0.9))], "max": vals[-1]}
+        L.append("## Execution cost (entries)")
+        L.append("")
+        L.append("Signed in ticks, **+ = worse for us**. Measured from the tick that fired the signal to the entry fill.")
+        L.append("")
+        L.append("| measure | n | mean | median | p90 | worst |")
+        L.append("|---|--:|--:|--:|--:|--:|")
+        for key, label, unit in (("slippageVsLastTicks", "fill vs the last-trade price at the signal", ""),
+                                 ("slippageVsTouchTicks", "fill vs the touch (buy: ask, sell: bid)", ""),
+                                 ("spreadTicks", "quoted spread at the signal", ""),
+                                 ("signalToSubmitMs", "signal received -> order submitted", " ms"),
+                                 ("submitToFillMs", "order submitted -> fill callback", " ms")):
+            st_ = stat(key)
+            if st_:
+                L.append(f"| {label} | {st_['n']} | {st_['mean']:.2f}{unit} | {st_['median']}{unit} | {st_['p90']}{unit} | {st_['max']}{unit} |")
+        L.append("")
+        L.append("On the Simulated account the round trip is ~0 ms and the slippage is essentially the spread; on a real account "
+                 "latency and queue position come on top of it, which is why these are journaled per trade.")
+        L.append("")
 
     # ---- intents
     L.append("## What the risk chain blocked")
@@ -682,7 +896,7 @@ def render(model) -> str:
                  f"{h['heartbeats']} | {gap}{flag} |")
     L.append("")
     L.append("Heartbeats come from the runtime's own clock (every ~10 s), so a long gap means the *system* stalled — "
-             "not that the market was quiet (the system deliberately does not watch for a silent feed, D-93).")
+             "not that the market was quiet (a silent MARKET-DATA feed is a separate thing, caught by the feed watchdog: `FEED_STALE` / `data_gap` in 'Needs attention', F-19).")
     errs = sum(h["parse_errors"] for _, h, _ in model["sessions"])
     if errs:
         L.append("")
@@ -714,7 +928,7 @@ def render(model) -> str:
         L.append("")
 
     # ---- data health
-    L.append(f"## Recorded data (data/*/{model['data_session_id']}.jsonl)")
+    L.append(f"## Recorded data (data/*/{symbol_dir(model.get('data_symbol'))}/{model['data_session_id']}.jsonl)")
     L.append("")
     if model["data"]:
         L.append("| construct | file | lines | size | first → last (CT) | longest gap |")

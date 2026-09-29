@@ -14,9 +14,9 @@ It is a how-to, not a decision record: *why* things are the way they are lives i
 | **[UNKNOWN]** | Nobody has checked. Do not assume — test it before relying on it. |
 | **[YOU]** | Only you can decide or supply this (credentials, provider, alert channel…). Left blank on purpose. |
 
-**Not yet done by anyone: a full setup on a second machine.** Every "install"
-step below is reconstructed from this machine and the scripts; the first real
-cloud setup is the test of this runbook, so expect to correct it.
+**Done once on a second machine: the spare laptop, Phase 1, 2026-09-27 (D-110).** It went from a fresh clone to
+a verified start-up. The corrections it produced are folded in below and marked *(laptop, D-110)*. The cloud
+machine is still untested, so expect more corrections.
 
 ---
 
@@ -64,9 +64,9 @@ Order matters; each step says what to check.
    re-verify — §1). Enable the **Order Flow** edition on the licence **[YOU:
    licence — whether it can be moved to the cloud machine, and any per-machine
    limit, is unknown]**. Start it once so it creates its own folders.
-   **[UNKNOWN]:** whether it creates `%USERPROFILE%\MotiveWave Extensions`
-   by itself; `build.sh` refuses to run if that folder is missing, and says so
-   before compiling anything (D-100).
+   It creates `%USERPROFILE%\MotiveWave Extensions` by itself (empty) **[VERIFIED, laptop, D-110]**;
+   `build.sh` refuses to run if that folder is missing, and says so before compiling
+   anything (D-100).
 2. **Get the code**: clone the FLOW_V2 repo. `config/risk.json` and
    `docs/configuration.md` come with it; `logs/`, `data/`, `reports/` are
    git-ignored and start empty.
@@ -74,6 +74,11 @@ Order matters; each step says what to check.
    `../motivewave/tools/jdk-26.0.2.1+1` (this machine's layout) **or** put it
    anywhere and set `FLOW_JDK_BIN` to its `bin` folder (§3). Check:
    `<bin>/java -version` says 26.
+   A fresh machine has **no** JDK. What worked *(laptop, D-110)*, in Git Bash, from the folder that holds the
+   clone:
+   `mkdir -p motivewave/tools && cd motivewave/tools && curl -sSL -o jdk26.zip "https://api.adoptium.net/v3/binary/version/jdk-26.0.2.1%2B1/windows/x64/jdk/hotspot/normal/eclipse" && unzip -q jdk26.zip && rm jdk26.zip`
+   This puts the JDK in the default location next to the clone, so no variable is needed. A JDK
+   **older** than MotiveWave's bundled Java is fine: JDK 26 classes load in 7.1.1's Java 27 **[VERIFIED, laptop]**.
 4. **Git Bash and Python 3** on `PATH`. Check `python --version`.
 5. **Tell the scripts where MotiveWave is**, only if it isn't in the default
    places: `MWAVE_SDK_JAR`, `MOTIVEWAVE_EXT_DIR` (§3).
@@ -97,7 +102,7 @@ Order matters; each step says what to check.
 
 | Variable | Read by | Default | Details |
 |---|---|---|---|
-| `FLOW_HOME` | the runtime (JVM) and the Python tools | runtime: `C:/yadvendra/trading/FLOW_V2`; tools: the current directory | project root: `logs/`, `data/`, `config/risk.json`, `reports/`. Runtime reads it **once at MotiveWave start** — restart MotiveWave to change it, and set an environment variable *before* MotiveWave launches. (`-Dflow.home=…` on MotiveWave's JVM also works; how to pass JVM options to MotiveWave is **[UNKNOWN]**, so prefer the environment variable.) |
+| `FLOW_HOME` | the runtime (JVM) and the Python tools | runtime: `C:/yadvendra/trading/FLOW_V2`; tools: the current directory | project root: `logs/`, `data/`, `config/risk.json`, `reports/`. Runtime reads it **once at MotiveWave start** — restart MotiveWave to change it, and set an environment variable *before* MotiveWave launches. What worked *(laptop, D-110)*: `setx FLOW_HOME "D:\yadvendra\FLOW_V2"` (PowerShell or cmd), then **quit MotiveWave completely and start it again from the Start menu**. The log then says `source=environment variable FLOW_HOME`. (`-Dflow.home=…` on MotiveWave's JVM also works; how to pass JVM options to MotiveWave is **[UNKNOWN]**, so prefer the environment variable.) |
 | *(file)* `config/risk.local.json` | the runtime | none — optional, git-ignored | **per-machine override** of any `risk.json` key. On the **cloud machine create it with `{ "logRetentionHours": 48 }`**; on the dev machine leave it out (keep all logs). Details and failure behaviour: `configuration.md` ("Log retention", "Per-machine overrides"). |
 | `FLOW_JDK_BIN` | `build/*.sh` | `../motivewave/tools/jdk-26.0.2.1+1/bin`, then `PATH` | set-but-wrong is an error, never a silent fall-back |
 | `MWAVE_SDK_JAR` | `build.sh` | `C:/Program Files (x86)/MotiveWave/lib/mwave_sdk.jar` | |
@@ -115,34 +120,51 @@ default, with `RISK_CONFIG_MISSING` in MotiveWave's log.)
 I cannot drive the MotiveWave GUI; these are things **you** do. Items already
 seen working are marked.
 
-1. **Connect Rithmic** **[YOU]** — credentials live in MotiveWave's own connection
-   settings. They never go in this repo, in `.env` (nothing in FLOW_V2 reads
-   `.env`), in a chat, or in a doc. Never paste them anywhere Claude can read.
-   MotiveWave's startup log shows a Rithmic alert
-   `get_order_book … permission denied` for the contract's *historical* order book.
-   That is MotiveWave's own backfill, is harmless, and does not affect live depth
-   **[VERIFIED — the live DOM subscription and liquidity-map recording worked
-   alongside it, 2026-09-26; see the motivewave sibling repo's findings]**. Whether
-   your data tier on the new machine has depth permissions is **[UNKNOWN]**.
-2. **Enable the Simulated Account and "Sim Trade Only"** — *Configure → Settings →
+> **Do these in this order on every new machine — the order is the safety guard** *(reordered 2026-09-27 after
+> the laptop trial connected Rithmic before enabling Sim Trade Only)*:
+> 1. Install and start MotiveWave **without** connecting Rithmic.
+> 2. **Enable the Simulated Account and "Sim Trade Only"** (step 1 below) and check the account selector reads
+>    "simulated".
+> 3. Only then connect Rithmic (step 2), open the `@GC` chart (step 3) and add the study (step 4).
+>
+> **"Sim Trade Only" stays enabled at all times, on every machine, until the user explicitly says otherwise**
+> (user, 2026-09-27). It is never switched off for a test, a check or a restart.
+
+1. **Enable the Simulated Account and "Sim Trade Only"** — *Configure → Settings →
    General → Simulated Account tab → Enabled*, and the **Sim Trade Only**
    checkbox on that same panel **[FROM MOTIVEWAVE DOCS; seen enabled and confirmed
-   via the account selector reading "simulated", 2026-09-12]**. This is the
+   via the account selector reading "simulated", 2026-09-12; again on the laptop, 2026-09-27]**. This is the
    platform-wide guarantee that no order can reach a real account
    (`CLAUDE.md`, README "Safety"). **Confirm it on every new machine and every
    activation**; a past confirmation does not carry over. If the account shown is
    anything other than the Simulated one, **stop** — that is a safety stop, not a
    preference.
-   **On a fresh install, do this FIRST — before connecting Rithmic and before adding
-   the study.** The setting is **per installation**; a new machine must be assumed to
-   have it **OFF**. **There is no code-level backstop:** the runtime cannot tell which
+   The setting is **per installation**; a new machine must be assumed to
+   have it **OFF**. **There is no code-level backstop for the account:** the runtime cannot tell which
    account is active (the SDK has an `Account` type with `getName()` but nothing in
    the SDK hands one out — searched 2026-09-26), so this checkbox plus a human reading
    the selector is the *entire* guard against a real-account order. Do not arm anything
    until both are confirmed on that machine.
-3. **Open an `@GC` (continuous gold) 1-minute chart.** The market-structure feature
+2. **Connect Rithmic** **[YOU]** — credentials live in MotiveWave's own connection
+   settings. They never go in this repo, in `.env` (nothing in FLOW_V2 reads
+   `.env`), in a chat, or in a doc. Never paste them anywhere Claude can read.
+   **One Rithmic login runs on one machine at a time** — exit MotiveWave on the other machine first
+   **[VERIFIED, laptop, D-110]**.
+   MotiveWave's startup log shows a Rithmic alert
+   `get_order_book … permission denied` for the contract's *historical* order book.
+   That is MotiveWave's own backfill, is harmless, and does not affect live depth
+   **[VERIFIED — the live DOM subscription and liquidity-map recording worked
+   alongside it, 2026-09-26 and on the laptop 2026-09-27]**.
+3. **Open an `@GC` (continuous gold) chart with 20-second bars.** *(2026-09-27, user: 20-second bars while the
+   plumbing is being tested — more bars, faster. Use the same bar size on every machine so their market-structure
+   output is comparable; the dev machine's older sessions used 1 minute.)* The market-structure feature
    warm-starts from **100 historical bars** of that chart at activation
-   (`FLOW_MS_WARMSTART_BARS`), so the chart must have loaded at least that many.
+   (`FLOW_MS_WARMSTART_BARS`) — about 33 minutes at 20 s — so the chart must have loaded at least that many.
+   **Only gold may be traded** *(2026-09-27, user: "for now only GC is allowed")*: on any other chart the runtime
+   logs `REFUSE_TO_ARM instrument … is not allowed` and never arms or sends an order, even if *Armed* is ticked
+   (`InstrumentPolicy`; `@GC` and explicit gold contracts such as `GCZ6` are allowed). It still records, into that
+   instrument's own data folder (`data/<construct>/<symbol>/…`, findings F-1). After activating, check the log says
+   `SUBSCRIBED_DOM symbol=@GC` and has no `REFUSE_TO_ARM`.
 4. **Add the study**: on the chart, **FLOW menu → FLOW Runtime**; open its
    **Runtime** tab. Settings and what each does: `configuration.md` §2.
    For a first start: Strategy Id `level_zone_observer`, **Mode `DRY_RUN`,
@@ -163,14 +185,14 @@ seen working are marked.
 
 Verified on this machine 2026-09-26 (market closed — the order book and the clock
 still flow, so start-up is testable without ticks; D-102). After activating, the
-newest file in `C:\Users\MSI\AppData\Roaming\MotiveWave\output\` (`output (<date time>).txt`)
+newest file in `%APPDATA%\MotiveWave\output\` (`output (<date time>).txt`)
 must show, in order:
 
 ```
 FLOW_HOME root=<your path> source=<built-in default | environment variable FLOW_HOME | system property flow.home>
 [RISK_LOCAL_CONFIG path=… overrides=[…]]          <- only if config/risk.local.json exists
 LOG_RETENTION hours=<0 = keep everything | 48> rawJsonlDeleted=<n> featureLogsDeleted=<n>
-DATA_RECORDER_ON root=<…>\data dataIntervalSec=1 liquidityIntervalSec=1 keepTradingDays=7
+DATA_RECORDER_ON root=<…>\data symbolDir=GC dataIntervalSec=1 liquidityIntervalSec=1 keepTradingDays=7
 SUBSCRIBED_DOM symbol=@GC
 SESSION_START strategyId=level_zone_observer symbol=@GC
 ACTIVATE pos=0 cash=<balance> -- CONFIRM: is this the Simulated account? …
@@ -222,6 +244,13 @@ batch in `todo.md` §2 is the plan for those.
   growing number means the *system* stopped, not a quiet market.
 - **Evening review (1–2 h):** `python analysis/daily_report.py`, then
   `python analysis/trade_view.py --date D --trade N` for any trade needing a "why".
+- **Removing the study while a position is open (user's answer, 2026-09-28, L-4/F-6): answer "Yes"** to MotiveWave's
+  "close the running position?" dialog. The platform then flattens the account itself, outside the study: the
+  journal records it as `account_position_change` (`explainedByFill:false`) + an `ACCOUNT_POSITION_CHANGED_UNTRACKED`
+  ALERT if the study is still alive to see it, and the report closes the trade as "closed outside the study". If the
+  study is already destroyed nothing is journaled — check the account by hand. Even better, wait until the study is
+  flat (`status.py` → `position: flat`) before removing it. Answering **No** is untested (bracket keeps working? does
+  a re-added study refuse to arm, D-24?) — don't, until it has been tried on purpose.
 - **A position is open when MotiveWave/the machine restarts:** the runtime **refuses to
   arm** and journals what it found; it does not adopt or flatten it. You clear it by
   hand (README "Restart with a live position"). Whether `onActivate` sees the live
@@ -256,6 +285,8 @@ see §9. **[YOU]:** whether you want the chart/UI in a particular zone.
 
 ## 9. Unattended running — almost all of this is [UNKNOWN]
 
+> **Cloud (EC2) plan: [`runbook-ec2.md`](runbook-ec2.md)** — instance choice, AWS set-up, Windows hardening, alerts/watchdog, restart policy, first-24-hours checklist. This section keeps the general reasoning.
+
 Nothing in this section has been tried. Do not rely on any of it until it has been.
 
 - **A desktop session that stays logged in.** MotiveWave is a GUI app and needs one.
@@ -269,13 +300,29 @@ Nothing in this section has been tried. Do not rely on any of it until it has be
   a running time-sync service (the system trusts the local clock). **[YOU]**
 - **Soak:** nothing has run longer than one session; memory over days is unmeasured
   (todo Phase 3). The first 24/7 run *is* the soak test — watch memory.
-- **Feed loss / Rithmic disconnects:** deliberately not watched (D-93). A position
-  open through a disconnect is protected only by its resting stop/target legs.
+- **Feed loss / Rithmic disconnects (F-19, D-114, 2026-09-28):** watched now. No tick for
+  `feedStaleSeconds` (20) inside the trading window → `FEED_STALE` ALERT and new entries
+  blocked; the first tick after → a `data_gap` record and, if a bracket is open, a check
+  1.5 s later: price **reached or crossed** the stop/target (on the first tick back or now)
+  → flatten; still strictly between → orders left working. Entries stay blocked for
+  `feedSettleSeconds` (10) of continuous data. **On the Simulated account a position open
+  through a disconnect is NOT protected** (the local engine cannot fill a stop without
+  ticks — 2026-09-28: a resting target filled 8 points through its price the moment data
+  came back); a real account's resting orders live at the exchange, but the trading
+  connection is down too, so neither the kill switch nor a flatten can send anything until it is back.
 - **Remote monitoring** **[YOU]**: how you look at the machine (remote desktop, a
   VPN, a shared folder, …) is undecided. What exists: `status.py` and the report,
   which read files. Running them *on* the machine and looking at the output is the
   only supported way today.
-- **Alerts** **[YOU]**: nothing tells you when the system disarms itself, trips the
+- **Alerts (placeholder built 2026-09-28, D-117):** the runtime now raises operator alerts
+  (`AlertDispatcher`, throttled to one per alert key per minute) for the kill switch, disarms,
+  `FEED_STALE`, a non-simulated account, a lost bracket leg, position-source disagreements, an
+  unconfirmed flatten, and start/stop notes. **The only channel today is a placeholder: a line in
+  `logs/alerts.log`** (`2026-09-28T23:13:18+05:30 [ALERT] FEED_STALE: ...`). The Telegram bot is the
+  user's to add — a `TelegramAlertSink` implementing `AlertSink`, swapped in where `FlowRuntimeStudy`
+  builds the dispatcher; credentials only in `.env` (names in `.examples.env`). Still unalerted: the
+  disk filling, and a crash of MotiveWave itself (nothing is left running to notice — that needs an
+  outside watcher). Original note: nothing tells you when the system disarms itself, trips the
   daily-loss kill switch, loses the feed, or the disk fills. That needs a delivery
   channel (email, phone push, chat) chosen first — todo §4. Until then the daily
   report's "Needs attention" section and the status line are the only signals.
@@ -303,11 +350,94 @@ Nothing in this section has been tried. Do not rely on any of it until it has be
 - **Not in git, yours:** MotiveWave's own settings and workspace
   (`%APPDATA%\MotiveWave\`), the Rithmic credentials, the licence. **[YOU]**
 
+## 11a. Cloud machine sizing — system requirements (worked out 2026-09-27)
+
+Written so the numbers don't have to be re-derived. **Measured** figures are from the dev machine; everything else is
+an estimate and says so. Re-measure during the first live sessions (see "How to get the real numbers" below) and
+update this section.
+
+### Measured on the dev machine
+
+| What | Value | Source |
+|---|---|---|
+| Dev machine | Intel i5-11400H, 6 cores / 12 threads, 7.7 GB RAM, Windows 10 Home | [VERIFIED 2026-09-27] |
+| MotiveWave Java heap cap | **1,974 MB** — the default (≈ ¼ of RAM) because `MAX_HEAP=` is empty in `%APPDATA%\MotiveWave\startup.ini` | startup log line `Max Memory: 1974 MB` |
+| MotiveWave memory, study running, **market closed** | ~175 MB working set, **768 MB peak** | `Get-Process MotiveWave` |
+| MotiveWave memory, **live market, ~45 min trading + recording** (2026-09-28, dev machine) | **605 MB working set, 747 MB peak**, 448 s CPU over ~1 h 45 min; 0 lag blocks, heartbeat gaps ≤ 10 s; liquidity map ≈ 13 MB/h | `Get-Process MotiveWave`, `liveTest-2026-09-28.md` |
+| MotiveWave memory, **busy live market, multi-day** | **not measured** (no soak test yet) — the volume-profile rotation (E-3) was sized to keep its own peak ~150–180 MB | — |
+| Raw tick journal (`raw.jsonl`, ticks + top-of-book) | **~28 MB/hour** ≈ 0.7 GB/day | `decisions.md` (raw-tier measurement) |
+| Liquidity map recording (`data/liquidity_map/`, 1 s, ±100 ticks) | **~4–5 KB/s** ≈ **0.4 GB per trading day** — most of `data/` | D-88 measurement, 2026-09-24 |
+| Other recorded constructs (footprint, VWAP, big trades, bars, market structure) | small next to the liquidity map | D-88 |
+| `decisions.jsonl` (kept forever) | up to **~20 MB** for a long busy session (mostly the old 10 s `liquidity_snapshot`) | §10 |
+| Full per-order DOM (NOT recorded, for reference) | ~31.5 GB/hour raw | D-35 — why it is not stored |
+
+### Recommendation
+
+| | Minimum | **Recommended for 24/7 recording + forward testing** |
+|---|---|---|
+| CPU | 2 vCPU | **4 vCPU** |
+| RAM | 8 GB | **16 GB**, and set `MAX_HEAP=4096` in MotiveWave's `startup.ini` (restart MotiveWave after) |
+| Disk | 60 GB SSD | **250 GB SSD** (see the retention table) |
+| OS | Windows with a desktop | **Windows Server 2022 (Desktop Experience) or Windows 11 Pro** — not Home (forced update restarts). Whether MotiveWave behaves on a *server* OS is **[UNKNOWN]**. |
+| Region | any | **US Central (Chicago)** — closest to Rithmic / CME |
+| GPU | not needed | not needed — MotiveWave would fall back to software rendering on a GPU-less VM **[UNKNOWN] how well** |
+| Network | stable broadband | the full-depth feed is ~33 updates/s of the whole book — probably a few Mbps, **not measured** |
+
+### Disk for research (how long to keep recorded data)
+
+`data/` keeps **7 trading days** by default (`dataKeepTradingDays`). To build a large research dataset on the cloud
+machine, raise it in that machine's git-ignored `config/risk.local.json`. At ≈ 0.45 GB per trading day:
+
+| Keep `data/` for | `dataKeepTradingDays` | Disk for `data/` |
+|---|---|---|
+| 1 week (default) | 7 | ~3 GB |
+| 1 month | ~21 | ~10 GB |
+| 6 months | ~126 | ~60 GB |
+| 1 year | ~252 | ~115 GB |
+
+Plus: Windows + MotiveWave + its history (~30–40 GB), `logs/` (with `logRetentionHours: 48` raw journals stay ~1.5 GB;
+`decisions.jsonl` grows ~0.5 GB/month), headroom. **250 GB ≈ a year of recordings with room to spare.** Back `data/`
+up off the machine (e.g. a nightly copy to cloud storage) — a disk failure would otherwise take the research data
+with it.
+
+Example cloud `config/risk.local.json` for research + 24/7:
+
+```json
+{ "logRetentionHours": 48, "dataKeepTradingDays": 252 }
+```
+
+### Settings for an unattended machine
+
+- **Turn chart drawing off** in the study's settings (heatmap, footprint, market structure, big trades, entry
+  arrows): nobody watches the chart, and drawing runs on MotiveWave's tick thread every second (codeReview.md E3).
+  Recording and trading do not depend on drawing.
+- **Keep Windows time sync on.** Since D-111 every risk rule (entry window, flatten, daily reset, dwell) runs on the
+  machine's own clock; the dev machine's clock was ~2.3 s off the exchange (codeReview.md E4).
+- Power/updates/auto-login: §9.
+
+### How to get the real numbers (do this in the first live sessions)
+
+Every hour or so during a live session, in PowerShell:
+
+```powershell
+Get-Process MotiveWave | Select @{n='MB';e={[int]($_.WorkingSet64/1MB)}}, @{n='PeakMB';e={[int]($_.PeakWorkingSet64/1MB)}}, CPU
+```
+
+and at the end of a trading day: `du -sh data/* logs` (Git Bash). Write the results into the "Measured" table above
+with the date. If the peak approaches the heap cap (1,974 MB by default), raise `MAX_HEAP` before going 24/7.
+
+### Still unknown (check before paying for a long rental)
+
+- Memory and CPU on a busy market over several days (soak test, todo Phase 3).
+- MotiveWave on Windows Server and on a GPU-less VM.
+- Whether the MotiveWave licence and the Rithmic login may run on a cloud machine (and on two machines at once).
+- The feed's real bandwidth.
+
 ## 12. Left for you to fill in
 
 | Decision / value | Your answer |
 |---|---|
-| Cloud provider and machine size (RAM matters: MotiveWave + a 24/7 study) | |
+| Cloud provider and machine size | Sizing worked out in **§11a** (recommended: 4 vCPU, 16 GB RAM, 250 GB SSD, US Central). Provider: |
 | OS of the cloud machine (the whole repo has only run on Windows 10) | |
 | How you reach it (remote desktop / VPN / …) | |
 | How the desktop session stays logged in and MotiveWave auto-starts | |
@@ -366,6 +496,12 @@ safe by construction (`DRY_RUN`, Armed unchecked), Phase 2 is the only time an o
 
 **What a pass looks like:** the scratch build exits 0; (with MotiveWave) the §5 lines appear and
 `status.py` prints `ALIVE … data: ok`; nothing needed a path or file that only exists on this machine.
+
+**Result — Phase 1 on the laptop, 2026-09-27: PASS** (D-110 has the filled-in sheet). Still open after it: A9
+(whether a first deploy needs a MotiveWave restart), all of section D (Phase 2), and findings F-1 (data files
+keyed by day only). **B3 answered: one Rithmic login cannot be used on two machines at once** — exit MotiveWave on
+one before starting the other. **D6**: check the power plan with `powercfg /q SCHEME_CURRENT SUB_SLEEP STANDBYIDLE`;
+the plugged-in value must be `0x00000000` (never). The laptop's first setting was 5 min, and the next was 45 min.
 
 ### 13.1 Doubts and needs this trial must answer (the test sheet)
 

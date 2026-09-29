@@ -58,6 +58,12 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   private final AtomicLong clockEventCount = new AtomicLong(0);
   private final AtomicBoolean killSwitchTripped = new AtomicBoolean(false);
   private volatile Intent lastIntent;
+  // Code review B2 (drain-thread-only): whether lastIntent was BLOCKED by the risk chain, and when it was last
+  // re-evaluated. A blocked intent that the strategy keeps repeating used to be dropped forever as "unchanged".
+  private boolean lastIntentBlocked = false;
+  private long lastBlockedRetryMs = Long.MIN_VALUE;
+  /** How often a repeated, still-blocked intent is re-evaluated (silently, unless it becomes allowed). */
+  static final long BLOCKED_RETRY_MS = 1_000L;
   // D-92 (drain-thread-only): whether we are inside a flatten window, and when the flatten callback last ran in it.
   private boolean flattenWindowActive = false;
   private long lastFlattenAttemptMs = Long.MIN_VALUE;
@@ -71,6 +77,66 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   private String lastRuntimeJournaled = null;  // drain-thread-only
   /** How often (in ~100 ms clock events) the arming state is compared with the last journaled one: ~1 s. */
   static final long ARMING_CHECK_EVERY_CLOCK_EVENTS = 10;
+  // F-4 (2026-09-28, live finding N-2): while the study is deactivated the pipeline keeps ingesting and journaling
+  // but must not wake the strategy (tonight a fresh long intent was ALLOWED 5 s after DEACTIVATE, with no gateway to
+  // act on it), and on re-activation -- MotiveWave reuses the instance (A6) -- the strategy and risk chain must not
+  // carry a stale belief about a position across the gap.
+  private volatile boolean suspended = false;
+  private final AtomicBoolean resyncRequested = new AtomicBoolean(false);
+  // F-3: optional, called from the drain thread about once a second (on ClockEvents); the runtime uses it to watch
+  // the ACCOUNT's position for changes the study did not cause (a manual close, the platform's own close dialog).
+  private volatile Runnable accountWatch;
+
+  // F-19 (2026-09-28, the 21:53 IST Rithmic disconnect): a feed watchdog. If no tick arrives for feedStaleSeconds
+  // during the trading window the feed is STALE (ALERT, new entries blocked by the risk chain's "feed" filter); the
+  // first tick after that journals a `data_gap`, tells the listener (the runtime decides what to do with an open
+  // bracket) and starts SETTLING; feedSettleSeconds of continuous ticks later it is LIVE and entries are allowed again.
+  private enum FeedState { LIVE, STALE, SETTLING }
+  private FeedState feedState = FeedState.LIVE;        // drain-thread-only
+  private long lastTickLocalMs = Long.MIN_VALUE;       // local clock of the last tick handled
+  private Integer lastTickPriceTicks = null;
+  private long staleSinceLocalMs = 0;
+  private Integer priceBeforeGap = null;
+  private long settleUntilLocalMs = 0;
+  private volatile FeedListener feedListener;
+
+  /** A stretch of missing market data, as seen when the first tick after it arrives. */
+  public record FeedGap(long startLocalMs, long endLocalMs, Integer priceBeforeTicks, Integer priceAfterTicks) {
+    public long durationMs() { return endLocalMs - startLocalMs; }
+  }
+
+  /** The runtime's hook for "market data is back after an outage" (called on the drain thread, guarded). */
+  public interface FeedListener {
+    void onFeedResumed(FeedGap gap);
+  }
+
+  public void attachFeedListener(FeedListener l) {
+    this.feedListener = l;
+  }
+
+  /**
+   * 2026-09-28: the operator-alert hook (AlertDispatcher in the runtime). Called for the events only the pipeline
+   * knows about -- the feed going stale and the pipeline disarming itself. Failure-proof: a hook that throws is ignored.
+   */
+  public interface AlertHook {
+    void alert(String severity, String key, String message);
+  }
+
+  private volatile AlertHook alertHook;
+
+  public void attachAlertHook(AlertHook h) {
+    this.alertHook = h;
+  }
+
+  private void raise(String severity, String key, String message) {
+    AlertHook h = alertHook;
+    if (h == null) return;
+    try {
+      h.alert(severity, key, message);
+    } catch (RuntimeException ignored) {
+      // an alert channel must never disturb the drain thread
+    }
+  }
 
   /**
    * features is required explicitly (an empty Map.of() is fine, but
@@ -168,6 +234,35 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     this.runtimeStatus = status;
   }
 
+  /** F-3: see accountWatch. Call before the first event is published. */
+  public void attachAccountWatch(Runnable watch) {
+    this.accountWatch = watch;
+  }
+
+  /**
+   * F-4: the study was deactivated -- keep ingesting and journaling, stop invoking the strategy (the kill switch and
+   * the session flatten above the healthy check are unaffected, and no-op without a gateway).
+   */
+  public void suspendTrading() {
+    suspended = true;
+  }
+
+  /**
+   * F-4: the study was re-activated. Only if it had been suspended: on the next event the strategy and the risk chain
+   * are told the account is flat (re-activation refuses to arm over a position, D-24, so flat is the only state that
+   * can trade) and the last intent is forgotten, exactly like the session-end flatten does.
+   */
+  public void resumeTrading() {
+    if (suspended) {
+      resyncRequested.set(true); // before the flag drops, so the drain thread cannot wake the strategy on stale state first
+      suspended = false;
+    }
+  }
+
+  public boolean suspended() {
+    return suspended;
+  }
+
   public MarketState marketState() {
     return marketState;
   }
@@ -195,9 +290,20 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           && (lastArmedJournaled == null || count % ARMING_CHECK_EVERY_CLOCK_EVENTS == 0)) {
         journalArmingChange(e);
       }
+      Runnable watch = accountWatch;
+      if (watch != null && count % ARMING_CHECK_EVERY_CLOCK_EVENTS == 0) {
+        try {
+          watch.run();
+        } catch (RuntimeException ex) {
+          journal.writeDecision(e.seq(), Json.object()
+              .field("type", "account_watch_failed").field("reason", String.valueOf(ex)).field("seq", e.seq()).build());
+        }
+      }
       if (count % HEARTBEAT_EVERY_CLOCK_EVENTS == 0) heartbeat(e);
       if (count % DOM_SNAPSHOT_EVERY_CLOCK_EVENTS == 0) maybeDomSnapshot(e);
     }
+
+    if (riskChain != null) checkFeed(e);
 
     DataRecorder rec = dataRecorder;
     if (rec != null) {
@@ -219,6 +325,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           .field("reason", "decisions journal queue overflow")
           .field("seq", e.seq())
           .build());
+      raise("ALERT", "DISARM", "DISARM pipeline disarmed: decisions journal queue overflow");
     }
 
     // Daily-loss kill switch (2026-09-21, user's explicit "no matter what"
@@ -237,19 +344,28 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     if (riskChain != null) {
       RiskChain.Context killCtx = new RiskChain.Context(
           armedSupplier.getAsBoolean(), true, marketState.lastPriceTicks(),
-          marketState.exchangeTimeMs(), 0, 0L);
+          marketState.riskClockMs(), 0, 0L); // A2: the one monotonic risk clock
       boolean breached = riskChain.dailyLossBreached(killCtx);
       if (breached) {
-        if (killSwitchTripped.compareAndSet(false, true) && killSwitch != null) {
+        if (killSwitchTripped.compareAndSet(false, true)) {
           journal.writeDecision(e.seq(), Json.object()
               .field("type", "KILL_SWITCH")
               .field("reason", "daily loss limit breached")
               .field("seq", e.seq())
               .build());
-          killSwitch.accept("daily loss limit breached");
+          // Code review B4: the kill switch closes everything, so -- exactly like the session-end flatten -- the
+          // risk chain and the strategy must stop believing in the closed position. onFlattened() books the loss at
+          // the current price and clears the position, so the breach now rests on REALIZED P&L: it stays breached
+          // (the latch holds, no re-fire) until the 17:00 CT reset, instead of clearing when price bounces and
+          // firing a second close at a flat account.
+          riskChain.onFlattened(killCtx);
+          if (healthy.get()) strategy.onFlattened("daily-loss kill switch");
+          lastIntent = Intent.none(strategy.id(), 0);
+          lastIntentBlocked = false;
+          if (killSwitch != null) killSwitch.accept("daily loss limit breached");
         }
       } else {
-        killSwitchTripped.set(false); // breach cleared (e.g. session rollover) -- allow it to fire again if it recurs
+        killSwitchTripped.set(false); // breach cleared (the 17:00 CT reset) -- allow it to fire again if it recurs
       }
     }
 
@@ -257,7 +373,18 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
       checkSessionFlatten(e);
     }
 
+    if (resyncRequested.compareAndSet(true, false)) resyncAfterReactivation(e);
+
+    if (suspended) return; // F-4: deactivated -- the strategy is not woken until the study is re-activated
     if (!healthy.get()) return; // keep ingesting/journaling raw events; stop invoking the strategy (kill switch above is exempt -- see its own comment)
+
+    // C1 (2026-09-29, D-120): a real fill is a notification, not a wake -- it never itself asks the strategy for a
+    // new decision (that still only happens from a declared Trigger below). An exception here is handled exactly
+    // like one from onEvent() (Sequencer's drain loop catches it and calls onPipelineException -- see its javadoc).
+    if (e instanceof FillEvent fe) {
+      strategy.onFill(fe);
+      return;
+    }
 
     // Every declared trigger is evaluated every event, never short-circuited
     // on the first one that fires -- a stateful trigger (LevelCross,
@@ -289,9 +416,23 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     if (!wake) return;
 
     Intent intent = strategy.onEvent(marketState);
-    if (!sameContent(intent, lastIntent)) {
-      lastIntent = intent; // updated regardless of what the risk chain decides, so an identical still-blocked intent doesn't re-evaluate every event
-      journal.writeDecision(e.seq(), intentChangeLine(intent, e.seq(), e.eventTimeMs()));
+    boolean changed = !sameContent(intent, lastIntent);
+    boolean retry = false;
+    if (!changed && lastIntentBlocked && riskChain != null) {
+      // Code review B2: the strategy is repeating an intent the risk chain blocked. Tell it again every time (a
+      // strategy that rolls its state back on rejection re-applies the change on each repeat, so it must be told
+      // on each repeat too), and re-evaluate at most once per BLOCKED_RETRY_MS so a block that has lifted (the
+      // dwell elapsed, the rate window moved, the 17:00 CT reset) is noticed instead of ignored forever.
+      long now = riskNowMs();
+      if (lastBlockedRetryMs != Long.MIN_VALUE && now - lastBlockedRetryMs < BLOCKED_RETRY_MS) {
+        strategy.onIntentRejected(intent, "still blocked (repeat of a blocked intent)");
+        return;
+      }
+      retry = true;
+    }
+    if (changed || retry) {
+      lastIntent = intent; // an unchanged, allowed intent is not re-evaluated (D-15 change-only journal)
+      if (changed) journal.writeDecision(e.seq(), intentChangeLine(intent, e.seq(), e.eventTimeMs()));
 
       if (riskChain == null) {
         intentSink.onIntentChanged(intent, e); // no risk chain configured -- exact prior behavior
@@ -303,14 +444,26 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           armedSupplier.getAsBoolean(),
           readinessChecker.isReady(strategy.requires()),
           marketState.lastPriceTicks(),
-          marketState.exchangeTimeMs(),
+          marketState.riskClockMs(), // A2: the one monotonic risk clock (was the mixed "exchange time")
           queueDepthSupplier.getAsInt(),
           processingMs);
       RiskChain.Result result = riskChain.evaluate(intent, ctx);
-      journal.writeDecision(e.seq(), RiskChain.resultLine(e.seq(), intent, result));
+      // A retry that is still blocked writes nothing (in DRY_RUN every entry is blocked by "armed"; one line per
+      // second per blocked intent would swamp the journal). The first verdict, and any retry that is allowed, is written.
+      if (!retry || result.allowed()) journal.writeDecision(e.seq(), RiskChain.resultLine(e.seq(), intent, result));
+      lastIntentBlocked = !result.allowed();
+      lastBlockedRetryMs = result.allowed() ? Long.MIN_VALUE : riskNowMs();
       if (result.allowed()) {
-        riskChain.recordAccepted(intent, ctx);
-        intentSink.onIntentChanged(intent, e);
+        String refused = intentSink.deliver(intent, e);
+        if (refused == null) {
+          riskChain.recordAccepted(intent, ctx);
+        } else {
+          // B3: allowed by the risk chain but the runtime did not act (an order still in flight, resting orders,
+          // a flip): exactly like a block -- not recorded, the strategy is told, a repeat is retried.
+          lastIntentBlocked = true;
+          lastBlockedRetryMs = riskNowMs();
+          strategy.onIntentRejected(intent, "runtime did not act: " + refused);
+        }
       } else {
         // Bugfix found building the first real strategy (D-62): without
         // this, a strategy that optimistically mutates its own state the
@@ -325,13 +478,101 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   }
 
   /**
+   * The clock every risk rule is judged on (dwell, rate window, trading window, daily reset, blocked-intent retry):
+   * MutableMarketState.riskClockMs(), one monotonic clock (code review A2).
+   */
+  private long riskNowMs() {
+    return marketState.riskClockMs();
+  }
+
+  /**
+   * F-19: the feed watchdog, run on every event (ClockEvents keep time moving when no tick arrives). Uses the LOCAL
+   * clock only (marketState.localTimeMs(), advanced by ClockEvents): exchange time freezes with the feed.
+   */
+  private void checkFeed(Event e) {
+    long staleMs = riskChain.feedStaleMs();
+    if (staleMs <= 0) return; // watchdog switched off
+    long now = marketState.localTimeMs();
+    if (e instanceof TickEvent te) {
+      if (feedState == FeedState.STALE) {
+        FeedGap gap = new FeedGap(staleSinceLocalMs, now, priceBeforeGap, te.priceTicks());
+        feedState = FeedState.SETTLING;
+        settleUntilLocalMs = now + riskChain.feedSettleMs();
+        journal.writeDecision(e.seq(), Json.object()
+            .field("type", "data_gap")
+            .field("seq", e.seq())
+            .field("startLocalMs", gap.startLocalMs())
+            .field("endLocalMs", gap.endLocalMs())
+            .field("durationMs", gap.durationMs())
+            .fieldOrNull("priceBeforeTicks", gap.priceBeforeTicks())
+            .fieldOrNull("priceAfterTicks", gap.priceAfterTicks())
+            .fieldOrNull("jumpTicks", gap.priceBeforeTicks() == null ? null : gap.priceAfterTicks() - gap.priceBeforeTicks())
+            .build());
+        riskChain.setFeedBlock("market data resumed after " + (gap.durationMs() / 1000) + "s; settling before new entries");
+        FeedListener l = feedListener;
+        if (l != null) {
+          try {
+            l.onFeedResumed(gap);
+          } catch (RuntimeException ex) {
+            journal.writeDecision(e.seq(), Json.object().field("type", "feed_listener_failed")
+                .field("reason", String.valueOf(ex)).field("seq", e.seq()).build());
+          }
+        }
+      }
+      lastTickLocalMs = now;
+      lastTickPriceTicks = te.priceTicks();
+      return;
+    }
+    if (!(e instanceof ClockEvent) || lastTickLocalMs == Long.MIN_VALUE) return;
+    long age = now - lastTickLocalMs;
+    if (feedState != FeedState.STALE && age > staleMs && riskChain.marketExpectedOpen(riskNowMs())) {
+      if (feedState == FeedState.LIVE) { // (a relapse while SETTLING keeps the original gap's start)
+        staleSinceLocalMs = lastTickLocalMs;
+        priceBeforeGap = lastTickPriceTicks;
+      }
+      feedState = FeedState.STALE;
+      journal.writeDecision(e.seq(), Json.object()
+          .field("type", "FEED_STALE")
+          .field("reason", "no market data for " + (age / 1000) + "s during the trading window")
+          .field("seq", e.seq())
+          .field("lastTickAgeMs", age)
+          .fieldOrNull("lastPriceTicks", lastTickPriceTicks)
+          .build());
+      riskChain.setFeedBlock("no market data for " + (age / 1000) + "s");
+      raise("ALERT", "FEED_STALE", "FEED_STALE no market data for " + (age / 1000) + "s during the trading window (last price "
+          + lastTickPriceTicks + " ticks); new entries blocked. MotiveWave may need a manual Rithmic disconnect/connect.");
+    } else if (feedState == FeedState.SETTLING && now >= settleUntilLocalMs) {
+      feedState = FeedState.LIVE;
+      riskChain.setFeedBlock(null);
+      journal.writeDecision(e.seq(), Json.object().field("type", "feed_live")
+          .field("reason", "market data continuous for the settle period; entries allowed again").field("seq", e.seq()).build());
+    }
+  }
+
+  /** F-4: drain-thread half of resumeTrading() -- forget every belief held across the deactivated gap. */
+  private void resyncAfterReactivation(Event e) {
+    journal.writeDecision(e.seq(), Json.object()
+        .field("type", "pipeline_resync")
+        .field("reason", "study re-activated: strategy and risk chain told the account is flat, last intent forgotten")
+        .field("seq", e.seq())
+        .build());
+    if (riskChain != null) {
+      riskChain.onFlattened(new RiskChain.Context(armedSupplier.getAsBoolean(), true, marketState.lastPriceTicks(),
+          riskNowMs(), 0, 0L));
+    }
+    if (healthy.get()) strategy.onFlattened("study re-activation");
+    lastIntent = Intent.none(strategy.id(), 0);
+    lastIntentBlocked = false;
+  }
+
+  /**
    * D-92: session-end flatten, checked on EVERY event (ClockEvents keep time moving when the book is quiet).
    * Runs above the healthy check for the same reason the kill switch does. On entering the window: journal it,
    * tell the risk chain and the strategy the account is flat, forget the last intent so the first entry after
    * the reopen registers as a change. Then call sessionFlatten now and every FLATTEN_RETRY_MS.
    */
   private void checkSessionFlatten(Event e) {
-    long now = e.eventTimeMs();
+    long now = riskNowMs(); // A2: same clock as the entry window (was this event's own time, a different clock)
     if (!riskChain.flattenDue(now)) {
       flattenWindowActive = false;
       return;
@@ -351,6 +592,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
         strategy.onFlattened("session-end flatten window");
       }
       lastIntent = Intent.none(strategy.id(), 0);
+      lastIntentBlocked = false;
     }
     if (sessionFlatten != null && (lastFlattenAttemptMs == Long.MIN_VALUE || now - lastFlattenAttemptMs >= FLATTEN_RETRY_MS)) {
       lastFlattenAttemptMs = now;
@@ -372,6 +614,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
         && a.targetPosition() == b.targetPosition()
         && Objects.equals(a.stopPriceTicks(), b.stopPriceTicks())
         && Objects.equals(a.targetPriceTicks(), b.targetPriceTicks())
+        && a.anchorToFill() == b.anchorToFill()
         && Objects.equals(a.reason(), b.reason());
   }
 
@@ -458,6 +701,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
         .field("seq", e.seq())
         .build();
     journal.writeDecision(e.seq(), line);
+    raise("ALERT", "DISARM", "DISARM pipeline disarmed by an exception: " + t);
   }
 
   private void heartbeat(Event e) {
@@ -474,6 +718,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     if (riskChain != null && armedSupplier != null) {
       // D-97: absent (not false) when there is no risk chain, so replay/observer journals keep their old shape.
       j.field("armed", armedSupplier.getAsBoolean()).fieldRaw("runtime", runtimeJson());
+      j.field("feedState", feedState.name()); // F-19
     }
     journal.writeDecision(e.seq(), j.build());
   }

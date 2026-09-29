@@ -56,13 +56,12 @@ def session_ids(t0, t1):
     return sorted({a, b})
 
 
-def load_construct(data_root: Path, name: str, t0: int, t1: int):
+def load_construct(data_root: Path, name: str, t0: int, t1: int, symbol=None):
     """Lines of data/<name>/<sid>.jsonl with t in [t0, t1], in order. Streams the file, parses only lines
     in range (the liquidity map is hundreds of MB a day) and stops at the first line past t1."""
     out, found = [], False
-    d = data_root / name
     for sid in session_ids(t0, t1):
-        f = d / f"{sid}.jsonl"
+        f = dr.data_file(data_root, name, sid, symbol)  # F-1: the symbol folder, or the pre-F-1 flat file
         if not f.exists():
             continue
         found = True
@@ -483,8 +482,10 @@ def main(argv=None):
     span_start = e_t - max(args.before, args.flow_secs) * 1000
     data = Path(args.data)
     ctx = {"found": {}}
+    symbol = next((s.header.get("symbol") for s in sessions if s.name == trade["session"] and s.header.get("symbol")),
+                  dr.DEFAULT_SYMBOL)
     for name in ("footprint", "vwap", "liquidity_map", "big_trades", "market_structure"):
-        lines, found = load_construct(data, name, span_start, span_end)
+        lines, found = load_construct(data, name, span_start, span_end, symbol)
         ctx[name] = lines
         ctx["found"][name] = found
     opts = {"before": args.before, "after": args.after, "flow_secs": args.flow_secs,

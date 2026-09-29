@@ -106,7 +106,8 @@ public final class ExternalConfig {
       "fixedContracts", "maxContracts", "dailyLossLimitTicks", "rateLimitPerMinute",
       "minDwellMs", "maxReversalsPerSession", "lagQueueDepthThreshold", "lagProcessingMsThreshold",
       "dataIntervalSeconds", "liquidityIntervalSeconds", "dataKeepTradingDays",
-      "flattenLeadMinutes", "noEntryLeadMinutes", "logRetentionHours"
+      "flattenLeadMinutes", "noEntryLeadMinutes", "logRetentionHours",
+      "feedStaleSeconds", "feedSettleSeconds", "entrySlippageCapTicks"
   };
 
   private int getInt(String key, int def) {
@@ -170,6 +171,24 @@ public final class ExternalConfig {
    * config/risk.local.json.
    */
   public int logRetentionHours() { return Math.max(0, getInt("logRetentionHours", 0)); }
+
+  /**
+   * F-19 (2026-09-28): seconds without a tick, during the trading window, after which market data is treated as
+   * stale (default 20; gold ticks every second or so). 0 switches the feed watchdog off.
+   */
+  public int feedStaleSeconds() { return Math.max(0, getInt("feedStaleSeconds", 20)); }
+
+  /** F-19: after ticks resume, seconds of continuous data required before new entries are allowed again (default 10). */
+  public int feedSettleSeconds() { return Math.max(0, getInt("feedSettleSeconds", 10)); }
+
+  /**
+   * F-23 (2026-09-29, D-122): cap on entry slippage, in ticks past the touch (buy: ask + this; sell: bid - this) --
+   * a marketable limit instead of a bare market order, cancelled (and journaled as `entry_missed`) if it hasn't
+   * filled after LiveOrderTracker.ENTRY_LIMIT_TIMEOUT_MS. Default 0 = off (today's plain market order, unchanged) --
+   * on Sim, measured 2026-09-28, a market order fills at the touch with ~0 latency, so this mainly matters for a
+   * real account or a slower venue; built now, ready to turn on, not turned on by this default.
+   */
+  public int entrySlippageCapTicks() { return Math.max(0, getInt("entrySlippageCapTicks", 0)); }
 
   /** For staleness journaling (README: "traceable after the fact, not silently assumed current"). 0 = no file loaded, using pure defaults. */
   public long fileLastModifiedMs() { return fileLastModifiedMs; }

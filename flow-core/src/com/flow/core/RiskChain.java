@@ -36,11 +36,20 @@ import java.util.List;
  * Daily-loss PnL is tracked in integer ticks, not dollars -- sidesteps
  * needing a per-instrument dollar-per-tick multiplier as a separate
  * config value for this v1 (see ExternalConfig's own javadoc).
- * RiskChain assumes every ALLOWED intent is exactly what gets reconciled
- * (true today: OrderGateway is dry-run only, D-14) -- once real Sim
- * fills exist, this needs to sync against actual fill prices instead of
- * assuming the intent's own target took effect immediately, noted here
- * rather than fixed now.
+ *
+ * An intent to go flat is always allowed, by every filter (B1) -- blocking
+ * one used to leave this chain believing a position was still open after
+ * the real bracket had already closed it. The rate limit and churn guard
+ * only count and limit real position changes, not a strategy re-asserting
+ * the same target (A4). realizedPnlTicks/unrealized both scale with the
+ * position's own size, not just its sign (A7). Every check here reads
+ * `ctx.nowEventTimeMs()` -- the pipeline's one monotonic risk clock (A2),
+ * never wall-clock time, so evaluate()/dailyLossBreached()/flattenDue()
+ * never drift apart on which moment they're judging. The daily-loss PnL
+ * this chain tracks is still estimated from the *signal* prices the
+ * strategy/risk-chain context carried at the time, not from actual fill
+ * prices (B7/C1, open) -- once real Sim fills are reconciled against this
+ * instead of assumed, that gap can close, noted here rather than fixed now.
  */
 public final class RiskChain {
   public record Verdict(String filter, boolean allowed, String reason) {}
@@ -61,7 +70,20 @@ public final class RiskChain {
       long processingTimeMs
   ) {}
 
+  /**
+   * F-1 (2026-09-28, live findings L-1/L-14): the ACCOUNT's own numbers, so the daily-loss check does not have to
+   * estimate P&L from the strategy's signal prices (B7/C1 -- it fired ~10 ticks late in the live test, because the
+   * estimate booked the strategy's virtual exits, not the fills). cash is the account balance now (updated at
+   * each fill callback), startCash the balance when this study session began, position/avgEntryTicks the account's
+   * open position and its average entry price in this session's tick offsets, dollarsPerTick = point value x tick
+   * size. Supplied by the runtime only while it is genuinely live (SIM_LIVE + armed); null otherwise -- the DRY_RUN
+   * and replay paths keep the signal-price estimate exactly as before.
+   */
+  public record AccountTruth(double cash, double startCash, int position, Integer avgEntryTicks, double dollarsPerTick) {}
+
   private final ExternalConfig config;
+  private final java.util.function.Supplier<AccountTruth> truthSupplier; // nullable
+  private Double rolloverBaselineCash = null; // cash at the last 17:00 CT rollover seen while live; null = use startCash
   private final SessionBoundary.Tracker sessionTracker = new SessionBoundary.Tracker();
 
   // Churn guard + PnL state (drain-thread-only, same as every Feature).
@@ -76,7 +98,23 @@ public final class RiskChain {
   private final Deque<Long> recentChangeTimestamps = new ArrayDeque<>();
 
   public RiskChain(ExternalConfig config) {
+    this(config, null);
+  }
+
+  public RiskChain(ExternalConfig config, java.util.function.Supplier<AccountTruth> truthSupplier) {
     this.config = config;
+    this.truthSupplier = truthSupplier;
+  }
+
+  /** The account's numbers, or null when none are available (not live, or the supplier failed -- fall back to the estimate). */
+  private AccountTruth truth() {
+    if (truthSupplier == null) return null;
+    try {
+      AccountTruth t = truthSupplier.get();
+      return t != null && t.dollarsPerTick() > 0 ? t : null;
+    } catch (RuntimeException e) {
+      return null;
+    }
   }
 
   /**
@@ -90,6 +128,8 @@ public final class RiskChain {
     if (sessionTracker.advance(nowEventTimeMs)) {
       reversalsThisSession = 0;
       realizedPnlTicks = 0;
+      AccountTruth t = truth();
+      rolloverBaselineCash = t == null ? null : t.cash(); // F-1: the new trading day's loss is counted from here
     }
   }
 
@@ -97,6 +137,15 @@ public final class RiskChain {
     maybeRolloverSession(ctx.nowEventTimeMs());
 
     List<Verdict> verdicts = new ArrayList<>();
+
+    // Code review B1: an intent to go flat reduces risk and is never blocked -- by any filter. Blocking one left
+    // this chain believing a position was still open after the real bracket had closed it (e.g. a stop hit inside
+    // the 5 s dwell), marking that phantom against every later price until it could trip the kill switch on a flat
+    // account. The session window already exempted flat intents for the same reason; now every filter does.
+    if (intent.targetPosition() == 0) {
+      verdicts.add(allow("flat"));
+      return new Result(true, verdicts);
+    }
 
     Verdict armedV = ctx.armed() ? allow("armed") : block("armed", "not armed");
     verdicts.add(armedV);
@@ -110,6 +159,14 @@ public final class RiskChain {
     verdicts.add(readyV);
     if (!readyV.allowed()) return new Result(false, verdicts);
 
+    // F-19: no new entries while market data is stale or still settling after an outage. Journaled only when it
+    // blocks (an "ok" entry would change every allowed verdict list).
+    String feedReason = feedBlockReason;
+    if (feedReason != null) {
+      verdicts.add(block("feed", feedReason));
+      return new Result(false, verdicts);
+    }
+
     Verdict lossV = checkDailyLoss(ctx);
     verdicts.add(lossV);
     if (!lossV.allowed()) return new Result(false, verdicts);
@@ -118,7 +175,7 @@ public final class RiskChain {
     verdicts.add(sizeV);
     if (!sizeV.allowed()) return new Result(false, verdicts);
 
-    Verdict rateV = checkRateLimit(ctx);
+    Verdict rateV = checkRateLimit(intent, ctx);
     verdicts.add(rateV);
     if (!rateV.allowed()) return new Result(false, verdicts);
 
@@ -133,18 +190,38 @@ public final class RiskChain {
     return new Result(true, verdicts);
   }
 
+  // F-19: set by Pipeline's feed watchdog (drain thread); null = market data is live.
+  private volatile String feedBlockReason = null;
+
+  /** F-19: block (reason) or unblock (null) new entries because of the state of the market-data feed. */
+  public void setFeedBlock(String reason) { this.feedBlockReason = reason; }
+
+  public long feedStaleMs() { return config.feedStaleSeconds() * 1000L; }
+
+  public long feedSettleMs() { return config.feedSettleSeconds() * 1000L; }
+
+  /**
+   * F-19: whether ticks are EXPECTED now (the entry window or the no-new-entries lead-in). During the daily halt and
+   * the weekend a silent feed is normal and must not raise an alert.
+   */
+  public boolean marketExpectedOpen(long nowEventTimeMs) {
+    TradingWindow.Phase p = phaseAt(nowEventTimeMs);
+    return p != TradingWindow.Phase.FLATTEN;
+  }
+
   /** Only call when evaluate() returned allowed=true for this same intent/ctx. */
   public void recordAccepted(Intent intent, Context ctx) {
     if (intent.targetPosition() != lastPosition) {
       if (lastChangeAtMs >= 0) reversalsThisSession++; // don't count the session's very first entry
       if (lastPosition != 0 && entryPriceTicks != null && ctx.currentPriceTicks() != null) {
-        realizedPnlTicks += (ctx.currentPriceTicks() - entryPriceTicks) * Integer.signum(lastPosition);
+        realizedPnlTicks += (ctx.currentPriceTicks() - entryPriceTicks) * lastPosition; // A7: signed size, not just the sign
       }
       entryPriceTicks = intent.targetPosition() != 0 ? ctx.currentPriceTicks() : null;
       lastChangeAtMs = ctx.nowEventTimeMs();
       lastPosition = intent.targetPosition();
+      // Code review A4: only a real position change uses a rate-limit slot ("holding"/"none" restatements used to).
+      recentChangeTimestamps.addLast(ctx.nowEventTimeMs());
     }
-    recentChangeTimestamps.addLast(ctx.nowEventTimeMs());
   }
 
   /**
@@ -189,7 +266,7 @@ public final class RiskChain {
    */
   public void onFlattened(Context ctx) {
     if (lastPosition != 0 && entryPriceTicks != null && ctx.currentPriceTicks() != null) {
-      realizedPnlTicks += (ctx.currentPriceTicks() - entryPriceTicks) * Integer.signum(lastPosition);
+      realizedPnlTicks += (ctx.currentPriceTicks() - entryPriceTicks) * lastPosition;
     }
     lastPosition = 0;
     entryPriceTicks = null;
@@ -207,12 +284,29 @@ public final class RiskChain {
   }
 
   private Verdict checkDailyLoss(Context ctx) {
+    int limit = config.dailyLossLimitTicks();
+    AccountTruth truth = truth();
+    if (truth != null) {
+      // F-1: realized = the account's own cash change since the day/session baseline; unrealized = the account's
+      // open position marked at the current price from its real average entry. Nothing here depends on what the
+      // strategy believes or on signal prices.
+      double baseline = rolloverBaselineCash != null ? rolloverBaselineCash : truth.startCash();
+      double realized = (truth.cash() - baseline) / truth.dollarsPerTick();
+      double unrealized = 0;
+      if (truth.position() != 0 && truth.avgEntryTicks() != null && ctx.currentPriceTicks() != null) {
+        unrealized = (double) (ctx.currentPriceTicks() - truth.avgEntryTicks()) * truth.position();
+      }
+      long accountTicks = Math.round(realized + unrealized);
+      if (accountTicks <= -limit) {
+        return block("daily_loss", "pnl " + accountTicks + " ticks breaches limit -" + limit + " (account)");
+      }
+      return allow("daily_loss");
+    }
     int unrealized = 0;
     if (entryPriceTicks != null && ctx.currentPriceTicks() != null && lastPosition != 0) {
-      unrealized = (ctx.currentPriceTicks() - entryPriceTicks) * Integer.signum(lastPosition);
+      unrealized = (ctx.currentPriceTicks() - entryPriceTicks) * lastPosition; // A7: scales with size
     }
     int totalPnlTicks = realizedPnlTicks + unrealized;
-    int limit = config.dailyLossLimitTicks();
     if (totalPnlTicks <= -limit) {
       return block("daily_loss", "pnl " + totalPnlTicks + " ticks breaches limit -" + limit);
     }
@@ -227,7 +321,8 @@ public final class RiskChain {
     return allow("size_cap");
   }
 
-  private Verdict checkRateLimit(Context ctx) {
+  private Verdict checkRateLimit(Intent intent, Context ctx) {
+    if (intent.targetPosition() == lastPosition) return allow("rate_limit"); // A4: no change requested, nothing to limit
     long windowStart = ctx.nowEventTimeMs() - RATE_WINDOW_MS;
     while (!recentChangeTimestamps.isEmpty() && recentChangeTimestamps.peekFirst() < windowStart) {
       recentChangeTimestamps.pollFirst();

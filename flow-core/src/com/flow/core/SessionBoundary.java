@@ -68,7 +68,10 @@ public final class SessionBoundary {
      */
     public boolean advance(long epochMillis) {
       long id = sessionIdFor(epochMillis);
-      if (id == lastSessionId) return false;
+      // Code review A3: only a LATER session is a rollover. An instant from an earlier session (an event stamped on
+      // a clock a little behind, arriving after one stamped past 17:00 CT) is ignored instead of being reported as a
+      // new session -- which used to reset VWAP / the daily P&L again each time the clocks crossed back and forth.
+      if (id <= lastSessionId) return false;
       boolean first = lastSessionId == Long.MIN_VALUE;
       lastSessionId = id;
       return !first;

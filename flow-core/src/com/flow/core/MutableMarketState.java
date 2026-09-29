@@ -18,22 +18,43 @@ public final class MutableMarketState implements MarketState {
   private long generation = 0;
   private long exchangeTimeMs = 0;
   private long localTimeMs = 0;
+  private long riskClockMs = 0;
   private Integer lastPriceTicks = null;
 
   public MutableMarketState(Map<String, Feature> features) {
     this.features = features;
   }
 
-  /** Advances the generation and updates whichever clock the driving event carries. */
+  /**
+   * Advances the generation and updates whichever clock the driving event carries.
+   *
+   * Code review A2 (2026-09-27): exchangeTimeMs used to be overwritten by EVERY non-clock event, but an order-book
+   * (DOM) event carries the LOCAL receipt time (the SDK gives it no exchange time), while ticks carry the feed's
+   * exchange time -- measured ~2.27 s apart on this machine, so "exchange time" jumped backwards dozens of times a
+   * minute. Now only ticks and bars move exchangeTimeMs (it stays "the market's own clock", for strategies and
+   * display), and every risk rule reads riskClockMs() instead.
+   */
   public void bump(Event e) {
     generation++;
     if (e instanceof ClockEvent) {
       localTimeMs = e.eventTimeMs();
-    } else {
+    } else if (e instanceof TickEvent || e instanceof BarEvent) {
       exchangeTimeMs = e.eventTimeMs();
     }
+    if (e.receiptTimeMs() > riskClockMs) riskClockMs = e.receiptTimeMs();
     Integer p = Event.priceOf(e);
     if (p != null) lastPriceTicks = p;
+  }
+
+  /**
+   * Code review A2: the ONE clock every risk rule is judged on -- dwell, rate window, the entry / flatten windows,
+   * the 17:00 CT daily reset, the kill-switch reset and the blocked-intent retry. It is the highest ingest receipt
+   * time seen (the local wall clock stamped by the Sequencer on every event, journaled in raw.jsonl), so it never
+   * moves backwards and replay reproduces it exactly. It is only as right as this machine's clock: keep Windows time
+   * sync on (codeReview.md E4).
+   */
+  public long riskClockMs() {
+    return riskClockMs;
   }
 
   @Override
