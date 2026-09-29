@@ -4588,11 +4588,15 @@ readable rather than being silently rewritten.
     backfilled for the gap (`DataSeries`, read via `FlowRuntimeStudy.lookupGapRange`, captured from `onTick`'s
     `DataContext`) — if the range's low or high reached/crossed a level, flattens via the same verified,
     two-source-checked path as everything else (`GAP_RANGE_FLATTEN`); if the platform hasn't backfilled by then,
-    says so (`GAP_RANGE_UNAVAILABLE`) and leaves KEEP standing rather than retrying forever. **UNVERIFIED LIVE**:
-    `DataSeries.findIndex()`'s exact out-of-range behaviour is undocumented, so `lookupGapRange` is written
-    defensively (returns null on any doubt) and — like the market-structure warm-start's own `DataSeries` use — is
-    not unit-tested itself; `LiveOrderTracker`'s side of the mechanism (the scheduling, the crossing logic, the
-    two-source safety) is fully unit-tested with a fake `GapRangeLookup`.
+    says so (`GAP_RANGE_UNAVAILABLE`) and leaves KEEP standing rather than retrying forever.
+    `LiveOrderTracker`'s side of the mechanism (the scheduling, the crossing logic, the two-source safety) is fully
+    unit-tested with a fake `GapRangeLookup`.
+    **Live-verified 2026-09-29, 14:53 IST** (deployed session `lvn_fade_test_1790671651021_inst1423988965`, 8 feed
+    outages in ~47 min, one with a position open): quick check → `FEED_RESUME_KEEP price is still between the stop
+    4174.0 and the target 4175.0`; 5 s later → `GAP_RANGE_KEEP the historical range [20,27] ticks never reached the
+    stop 4174.0 or the target 4175.0` — MotiveWave's bar backfill had landed by the 5 s mark and
+    `lookupGapRange`/`DataSeries` read correctly. The flatten branch itself (a range that DOES cross a level) has
+    still not fired live — this run's one case happened to confirm KEEP, not correct a miss.
   - **F-23 — entry slippage cap, `entrySlippageCapTicks` (0 = off, the shipped default).** When > 0 and the
     signal carries a bid/ask, the entry is a marketable LIMIT at the touch plus the cap instead of a bare market
     order; unfilled after `ENTRY_LIMIT_TIMEOUT_MS` (5 s) it is cancelled (self-cancel-marked, so the callback

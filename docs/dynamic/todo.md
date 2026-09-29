@@ -96,6 +96,16 @@ State when this was written: dev machine's MotiveWave closed, `risk.local.json` 
 - **Configurable, no code needed:** reversal cap, rate limit, daily loss limit (`config/risk.json` / `risk.local.json`); **big-trade Min Size is a STUDY setting** (MotiveWave → study settings → Big Trades → Min Size, default 1) — set it on the EC2 chart, it is not in `risk.json`.
 - **Still to run on EC2:** the reboot test, a full halt + reopen (02:15 → 03:45 IST) with the watchdog running, and the first-24-hours checklist (`runbook-ec2.md` §10). The halt tonight on this machine is the dress rehearsal.
 
+## Update 2026-09-29 14:53 IST — F-22's DataSeries read confirmed live
+
+Deployed session `lvn_fade_test_1790671651021_inst1423988965`: 8 feed outages in ~47 min, one with a position open.
+Quick check said `FEED_RESUME_KEEP`; 5 s later the NEW bar-range check ran for the first time on live data and said
+`GAP_RANGE_KEEP` — MotiveWave's backfill had landed and `lookupGapRange` read it correctly (D-120's "UNVERIFIED
+LIVE" note on `DataSeries.findIndex()` is resolved for the read-succeeds case). **Still not seen: the flatten
+branch** (a range that actually crosses a level) — this case confirmed KEEP, not a correction. Also confirmed
+clean over the whole run: 84 fills, no kill switch, no non-sim-account event, no order refusal, no missed entry,
+no lost leg, no new SEVERE. `STUDY_SETTINGS` also confirmed working (`bigTradeMinSize=5`, the user's new value).
+
 ## Update 2026-09-29 (later) — C1, F-22, F-23 built (see D-120 for the full write-up)
 
 User: "let's complete 3 and 4" (C1, and F-22/F-23), choosing "wire real fills to the strategy" for C1 and "build it,
