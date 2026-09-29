@@ -41,30 +41,36 @@ State when this was written: dev machine's MotiveWave closed, `risk.local.json` 
   "5/5" bracket is really 7 stop / 3 target from the fill; avg win +3.7 vs avg loss −6.8; needs ~66 % wins to break even
   (observed 25–42 %). ⚑ user decides: offset from the fill price / marketable-limit entry / widen. Also feeds L-5 (the
   strategy's virtual `target_hit` vs the real target that didn't fill).
-- [ ] **F-8 · Max-reversals meaning (B5, ⚑).** Counts every position change (20 ≈ 10 round trips). Currently worked around by
-  `risk.local.json` = 100000. ⚑ decide the intended semantics (round trips? per hour?) and the shipped default.
-- [ ] **F-9 · Rate limit is what shapes trading (S7 numbers in `logAnalysis`).** 472 of 536 denials tonight were "6 changes in the last 60s".
-  ⚑ decide whether 6/min is the intended cap for a real run; it is per *intent change*, entries and exits both count.
-- [ ] **F-10 · Strategy chatter on thin profiles (L-11).** Flip-flopping on 1-tick LVN zones; contained by the guards. Only if
-  the strategy is to be judged, not the plumbing.
+- [x] **F-8 · Max-reversals meaning (B5, ⚑).** *(2026-09-28, decided: stays at the `risk.json` default of 20 for a
+  real run — see "B. Decided" below. `risk.local.json`'s 100000 was a testing-only override.)* Counts every position change (20 ≈ 10 round trips).
+- [x] **F-9 · Rate limit is what shapes trading (S7 numbers in `logAnalysis`).** *(2026-09-28, decided: stays at the
+  `risk.json` default of 6/min — see "B. Decided" below.)* 472 of 536 denials that night were "6 changes in the last 60s".
+- [ ] **F-10 · Strategy chatter on thin profiles (L-11).** Flip-flopping on 1-tick LVN zones; contained by the guards. **Subsumed
+  by item 1 (strategy/order-flow rework, the user's to do)** — not a separate action.
 
 ### P2 — records, tools, housekeeping
 - [x] **F-11 · `real_order_submitted` has no timestamp / signal price (N-6).** *(2026-09-28, D-114: it now has both, plus an `entry_execution` cost record per entry and an 'Execution cost' table in the report.)* Add `t` + intent price so latency and slippage
   are read from the journal, not inferred.
-- [ ] **F-12 · Log volume for long runs (N-3).** `raw.jsonl` ≈ 33 MB/h, `logs/` 438 MB, retention 0. Choose a `logRetentionHours`
-  for the cloud run and watch one real prune.
-- [ ] **F-13 · Clock (N-5 = E4).** Feed ahead of the PC by 0.2–1.9 s. `w32tm /resync` on both machines before a long run;
-  decide whether the risk clock should follow the exchange time.
-- [ ] **F-14 · `sdkTotalRealizedPnL` is per activation (L-15)** — never sum it across sessions; report/tools must use cash.
+- [~] **F-12 · Log volume for long runs (N-3).** `raw.jsonl` ≈ 33 MB/h. **Not yet done** — `logRetentionHours` is
+  still 0 (keep everything) on this machine; `runbook-ec2.md`'s example config sets 48 for EC2, but that's only
+  written down, not applied/watched pruning for real anywhere yet.
+- [ ] **F-13 · Clock (N-5 = E4).** Feed ahead of the PC by 0.2–1.9 s. **Part of the EC2 setup** (`harden_windows.ps1`
+  checks time sync) — whether the risk clock should follow exchange time instead of the local clock is still undecided.
+- [x] **F-14 · `sdkTotalRealizedPnL` is per activation (L-15)** — checked: no Python tool (`daily_report.py`,
+  `status.py`, `trade_view.py`) reads this field at all; every P&L figure already comes from cash deltas. Nothing to fix.
 - [ ] **F-15 · Cosmetic/text:** bracket prices journaled as float expansions (L-17); two `warm_start` lines in one day file (L-13);
   Friday's last bar arrives as the first live bar (L-12); `order_fill.t` vs `lastFillTimeMs` (L-18); `ORDER_MODIFIED` ×2 (L-16).
 - [ ] **F-16 · MotiveWave-side noise, recorded not fixed:** `OrderImpl::target order not found!` (L-8), platform cancelling the
-  sibling leg itself (L-7), one JavaFX `ConcurrentModificationException` in the chart renderer (N-4 — check our chart drawing
-  stays on the UI thread if it recurs), Rithmic `get_order_book permission denied GCZ6` at workspace load (N-8 — spot-check the
-  liquidity map has depth after each session).
-- [ ] **F-17 · C3 real-account guard** (one checkbox is the only guard, D-107) — ⚑ the cash-balance/second-layer idea is still open.
-- [ ] **F-18 · Housekeeping before the next session:** decide `risk.local.json` values per machine; set big-trade Min Size back
-  from 1; remove + re-add the study after every deploy.
+  sibling leg itself (L-7), a JavaFX `ConcurrentModificationException` in the chart renderer (N-4 — recurred 8x on 2026-09-29,
+  still no FLOW class in any of the stacks — check our chart drawing stays on the UI thread if the rate keeps climbing), Rithmic
+  `get_order_book permission denied GCZ6` at workspace load (N-8 — spot-check the liquidity map has depth after each session).
+- [~] **F-17 · C3 real-account guard** (one checkbox is the only guard, D-107). **The account-ID second layer is built
+  (D-115, 2026-09-28)** — a fill/order naming a non-simulated account is refused/ignored and locks the study. **A DIFFERENT
+  idea — a cash-balance heuristic — is still ⚑ open** and probably lower priority now that the account-ID check exists.
+- [x] **F-18 · Housekeeping before the next session:** `risk.local.json` decided per machine (git-ignored, still
+  loose test values on this machine — reset before a real run, item 3 in the "yours" list); big-trade Min Size **set to
+  5 on this machine 2026-09-29**, now journaled (`STUDY_SETTINGS`, D-120 addendum) so it won't go unnoticed again;
+  remove + re-add after every deploy has been the practice throughout.
 
 - [x] **F-19 · Dead feed with a position open (N-10a/c/d, logAnalysis addendum 21:53 IST).** *(2026-09-28, D-114: watchdog + `feed` filter + `data_gap` + settle; the user's open-position rule = flatten if a stop/target was reached or crossed, keep orders if still between. Built + tested, NOT live. Recorder back-fill and re-warm are F-22. Original wording below.)* Detect "no tick for N s while a position/orders are open" (a gold market ticks every second; N ≈ 15–30 s), raise an ALERT, block new entries until data has flowed again for a settle period, and journal a `data_gap` record (start/end/price jump) so recorders and reports can mark the hole. ⚑ Decide the action: alert-only vs. flatten as soon as the trading connection is back.
 - [x] **F-20 · Flag Sim fill artifacts (N-10b).** *(2026-09-28, D-114: built + tested, NOT live.)* In `daily_report.py`/`trade_view.py` mark a fill more than a few ticks through its own limit/stop price (`fill vs order price`) and show P&L with and without it, so an outage-gap fill like +$820 doesn't pass as strategy performance.
@@ -218,12 +224,16 @@ GUI steps):
   must not arm.
 - [ ] **Removal with a position open, answering "No"** in the close dialog (L-4) — does the bracket keep working, and
   does the re-added study refuse to arm?
-- [ ] **Session-end flatten (D-92)** — from 19:50 IST with `flattenLeadMinutes` 400 / `noEntryLeadMinutes` 405 in
-  `risk.local.json`.
-- [ ] **Re-test L-1 / L-14 fixes live** with a small `dailyLossLimitTicks` (10) — kill switch at the right P&L, no
-  naked position.
-- [ ] **The same live run on the laptop** (distribution test, Phase 2).
-- [ ] **Multi-hour / multi-day soak** — memory growth, prune, the 17:00 CT day roll (needed before the cloud run).
+- [x] **Session-end flatten (D-92)** *(2026-09-29, D-119: the REAL 16:00-17:00 CT halt, not the artificial
+  `flattenLeadMinutes`-shifted test originally planned — entries stopped 02:15:26 IST, flatten window 02:25:00 IST,
+  zero false alerts through the quiet halt, clean reopen 03:30:00.)*
+- [x] **Re-test L-1 / L-14 fixes live** with a small `dailyLossLimitTicks` (10) *(2026-09-28 22:55:16 IST, D-113:
+  fired at exactly -10 ticks, one close, `FLATTEN_VERIFIED`, no naked position.)*
+- [ ] **The same live run on the laptop** (distribution test, Phase 2). *(Likely moot — the user is moving to EC2
+  instead of a second physical machine; leave open only if a laptop run is still wanted for some other reason.)*
+- [~] **Multi-hour / multi-day soak** — memory growth, prune, the 17:00 CT day roll. *(Day roll verified 2026-09-29,
+  D-119. Memory/disk growth over MULTIPLE days is still unmeasured — one ~24h stretch so far, not a soak; the
+  `ops/watchdog.py` metrics CSV (D-118) is what will supply this once EC2 has been running a while.)*
 - [ ] Partial fills, both legs filling (1 contract), DOM backlog skip (E1) — opportunistic, can't be forced.
 
 ### LIVE TEST — PULL BRANCH `distribution-test` (2026-09-27, D-112) — read before the laptop's Phase 2
