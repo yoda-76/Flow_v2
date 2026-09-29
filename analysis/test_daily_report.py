@@ -417,6 +417,23 @@ class TestTrades(Base):
         self.assertEqual(sev["POSITION_SOURCES_DISAGREE"], "ALERT")
         self.assertEqual(sev["FLATTEN_VERIFIED"], "NOTE")
 
+    def test_gap_range_and_entry_missed_lines_are_classified(self):
+        """F-22/F-23 (2026-09-29, D-120)."""
+        j = self.journal()
+        t = ct_ms(DAY, 10)
+        j.log(t, "GAP_RANGE_FLATTEN target 4302.0 reached/crossed at 4302.5 (found in the bar range after the fact) -- {}")
+        j.log(t + 1, "GAP_RANGE_FLATTEN_HELD stop 4299.0 reached/crossed at 4298.9 -- no close sent")
+        j.log(t + 2, "GAP_RANGE_KEEP the historical range [-5,15] ticks never reached the stop 4299.0 or the target 4302.0")
+        j.log(t + 3, "GAP_RANGE_UNAVAILABLE bars covering the outage are not backfilled yet")
+        j.log(t + 4, "ENTRY_MISSED some cancel line")
+        j.write()
+        sev = {a[3]: a[2] for a in self.model()["attention"]}
+        self.assertEqual(sev["GAP_RANGE_FLATTEN"], "ALERT")
+        self.assertEqual(sev["GAP_RANGE_FLATTEN_HELD"], "ALERT")
+        self.assertEqual(sev["GAP_RANGE_KEEP"], "NOTE")
+        self.assertEqual(sev["GAP_RANGE_UNAVAILABLE"], "WARN")
+        self.assertEqual(sev["ENTRY_MISSED"], "WARN")
+
     def test_trade_still_open_is_flagged(self):
         j = self.journal()
         self._entry_long(j)

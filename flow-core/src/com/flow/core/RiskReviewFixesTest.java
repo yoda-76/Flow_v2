@@ -48,6 +48,9 @@ public final class RiskReviewFixesTest {
     testPipelineRetriesABlockedIntentOnceTheBlockLifts();
     testPipelineTellsTheStrategyOnEveryRepeatAndStaysQuiet();
     testLvnFadeRollsBackABlockedEntry();
+    testFillAnchorsTheBracketToTheRealFillNotTheSignal();
+    testFillOnStopOrTargetEndsThePositionImmediately();
+    testFillIsIgnoredWhileNotInAPosition();
     testRiskClockIsMonotonicOnTheRealRecording();
     testDomEventsDoNotMoveExchangeTime();
     testSessionTrackerIgnoresAnEarlierSession();
@@ -270,6 +273,86 @@ public final class RiskReviewFixesTest {
     lvn2.onIntentRejected(hold, "rate limit");
     Intent still = step(lvn2, st2, 5, 200_003L, 1001);
     checkEq("B2: a blocked 'holding' does NOT drop the position", still.targetPosition(), -1);
+  }
+
+  // ---- C1 (2026-09-29, D-120): lvn_fade_test reacts to a REAL fill --------------------------------------------
+
+  private record Entered(LvnFadeTestStrategy lvn, MutableMarketState st) {}
+
+  /** Enters the LVN [1000,1005] from below -> SHORT, signal-anchored stop 1005 / target 995. */
+  private static Entered shortEntry() {
+    LvnFadeTestStrategy lvn = new LvnFadeTestStrategy();
+    MutableMarketState st = new MutableMarketState(Map.of(com.flow.flow.VolumeProfileView.FEATURE_ID, new OneLvn()));
+    step(lvn, st, 1, 0L, 990);
+    step(lvn, st, 2, 200_000L, 990);
+    Intent entry = step(lvn, st, 3, 200_001L, 1000);
+    checkEq("setup: a short entry, signal-anchored stop/target", entry.stopPriceTicks() + "/" + entry.targetPriceTicks(), "1005/995");
+    return new Entered(lvn, st);
+  }
+
+  /** Enters the LVN [1000,1005] from above -> LONG, signal-anchored stop 1000 / target 1010. */
+  private static Entered longEntry() {
+    LvnFadeTestStrategy lvn = new LvnFadeTestStrategy();
+    MutableMarketState st = new MutableMarketState(Map.of(com.flow.flow.VolumeProfileView.FEATURE_ID, new OneLvn()));
+    step(lvn, st, 1, 0L, 1010);
+    step(lvn, st, 2, 200_000L, 1010);
+    Intent entry = step(lvn, st, 3, 200_001L, 1005);
+    checkEq("setup: a long entry, signal-anchored stop/target", entry.stopPriceTicks() + "/" + entry.targetPriceTicks(), "1000/1010");
+    return new Entered(lvn, st);
+  }
+
+  /**
+   * Proves the fix by comparing the SAME test price with and without onFill() having run: a short signalled at 1000
+   * that fills 10 ticks worse (1010) must re-anchor to stop 1015 / target 1005 -- test at 1000, which is inside the
+   * OLD bracket (995 < 1000 < 1005, so the control just holds) but AT the NEW target (1000 <= 1005, so the fixed
+   * strategy exits). The long side mirrors it with a BETTER fill (the stop tightens): signalled at 1005, filled at
+   * 1000, new stop 995 / target 1005; tested at 997, inside the NEW bracket (995 < 997) but AT-OR-PAST the OLD stop
+   * (997 <= 1000), so the control stops out and the fixed strategy does not.
+   */
+  private static void testFillAnchorsTheBracketToTheRealFillNotTheSignal() {
+    Entered fixedShort = shortEntry();
+    fixedShort.lvn().onFill(new FillEvent(1, 200_002L, 200_002L, "o1", FillEvent.Role.ENTRY, false, 1010, 1, -1));
+    Intent fixed = step(fixedShort.lvn(), fixedShort.st(), 4, 200_003L, 1000);
+    checkEq("short, fill 10 worse: at price 1000 the FILL-anchored target (1005) has been reached", fixed.reason(), "target_hit");
+
+    Entered controlShort = shortEntry(); // no onFill: still signal-anchored
+    Intent control = step(controlShort.lvn(), controlShort.st(), 4, 200_003L, 1000);
+    checkEq("control (no onFill): at the SAME price 1000, still just holding (995 < 1000 < 1005)", control.reason(), "holding");
+
+    Entered fixedLong = longEntry();
+    fixedLong.lvn().onFill(new FillEvent(2, 200_002L, 200_002L, "o2", FillEvent.Role.ENTRY, true, 1000, 1, 1)); // filled 5 better
+    Intent fixedL = step(fixedLong.lvn(), fixedLong.st(), 4, 200_003L, 997);
+    checkEq("long, fill 5 better: at price 997 the FILL-anchored stop (995) has NOT been reached", fixedL.reason(), "holding");
+
+    Entered controlLong = longEntry();
+    Intent controlL = step(controlLong.lvn(), controlLong.st(), 4, 200_003L, 997);
+    checkEq("control (no onFill): at the SAME price 997, the OLD (signal) stop (1000) has been reached", controlL.reason(), "stop_hit");
+  }
+
+  private static void testFillOnStopOrTargetEndsThePositionImmediately() {
+    LvnFadeTestStrategy lvn = new LvnFadeTestStrategy();
+    MutableMarketState st = new MutableMarketState(Map.of(com.flow.flow.VolumeProfileView.FEATURE_ID, new OneLvn()));
+    step(lvn, st, 1, 0L, 990);
+    step(lvn, st, 2, 200_000L, 990);
+    step(lvn, st, 3, 200_001L, 1000); // short entry accepted (not rejected -> stays IN_POSITION)
+
+    lvn.onFill(new FillEvent(1, 200_002L, 200_002L, "o3", FillEvent.Role.STOP, true, 1005, 1, 0));
+
+    // A price that would be "holding" or a hit for the OLD position instead goes through search(): prevPriceTicks
+    // is already inside the same zone, so no fresh crossing -> "none", not "holding"/"stop_hit"/"target_hit". That
+    // shape is only possible if the position was actually forgotten the instant onFill ran, not on the next tick.
+    Intent after = step(lvn, st, 4, 200_003L, 1002);
+    checkEq("STOP fill drops the position at once (search(), not manageOpenPosition())", after.reason(), "none");
+    checkEq("...flat", after.targetPosition(), 0);
+  }
+
+  private static void testFillIsIgnoredWhileNotInAPosition() {
+    LvnFadeTestStrategy lvn = new LvnFadeTestStrategy();
+    // No entry at all yet -- must not throw, must not fabricate a position.
+    lvn.onFill(new FillEvent(1, 0L, 0L, "o4", FillEvent.Role.ENTRY, true, 1000, 1, 1));
+    MutableMarketState st = new MutableMarketState(Map.of(com.flow.flow.VolumeProfileView.FEATURE_ID, new OneLvn()));
+    Intent i = step(lvn, st, 1, 0L, 990);
+    checkEq("an onFill with nothing open changes nothing observable", i.reason(), "none");
   }
 
   // ---- A2 / A3: clocks -----------------------------------------------------------------------------------------

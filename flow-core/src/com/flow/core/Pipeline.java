@@ -378,6 +378,14 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
     if (suspended) return; // F-4: deactivated -- the strategy is not woken until the study is re-activated
     if (!healthy.get()) return; // keep ingesting/journaling raw events; stop invoking the strategy (kill switch above is exempt -- see its own comment)
 
+    // C1 (2026-09-29, D-120): a real fill is a notification, not a wake -- it never itself asks the strategy for a
+    // new decision (that still only happens from a declared Trigger below). An exception here is handled exactly
+    // like one from onEvent() (Sequencer's drain loop catches it and calls onPipelineException -- see its javadoc).
+    if (e instanceof FillEvent fe) {
+      strategy.onFill(fe);
+      return;
+    }
+
     // Every declared trigger is evaluated every event, never short-circuited
     // on the first one that fires -- a stateful trigger (LevelCross,
     // ZoneTransition, PriceCross, BookChange) has to see every event to

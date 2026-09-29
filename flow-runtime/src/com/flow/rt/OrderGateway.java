@@ -296,6 +296,41 @@ final class OrderGateway {
   }
 
   /**
+   * F-23 (2026-09-29, D-122, off by default -- see ExternalConfig.entrySlippageCapTicks): the same entry as
+   * submitRealEntry(), but a LIMIT at a capped price instead of a bare market order, so slippage past that price is
+   * refused rather than accepted. Returns the Order reference too (submitRealEntry() does not) so the caller can
+   * cancel it on a timeout if it never fills -- see LiveOrderTracker.onEntryTimeout().
+   */
+  record EntryOrder(Order order, String journalLine) {}
+
+  EntryOrder submitRealLimitEntry(boolean isBuy, int qty, float limitPrice, String reason,
+      LiveOrderTracker.SignalInfo signal, long submitLocalMs) {
+    int positionBefore = ctx.getPosition();
+    Order entry = OrderAdapter.limitOrder(ctx, isBuy, qty, limitPrice);
+    requireSimulated(entry);
+    ctx.submitOrders(entry);
+    Json j = Json.object()
+        .field("type", "real_order_submitted")
+        .field("orderType", "LIMIT")
+        .field("limitPrice", limitPrice)
+        .field("instrument", ctx.getInstrument().getSymbol())
+        .field("side", isBuy ? "BUY" : "SELL")
+        .field("qty", qty)
+        .field("positionBefore", positionBefore)
+        .field("cashBalance", ctx.getCashBalance())
+        .field("reason", reason);
+    if (submitLocalMs > 0) j.field("t", submitLocalMs);
+    if (signal != null) {
+      j.fieldOrNull("signalPriceTicks", signal.priceTicks())
+          .fieldOrNull("signalBidTicks", signal.bidTicks())
+          .fieldOrNull("signalAskTicks", signal.askTicks())
+          .field("signalEventTimeMs", signal.eventTimeMs())
+          .field("signalReceivedLocalMs", signal.receivedLocalMs());
+    }
+    return new EntryOrder(entry, j.build());
+  }
+
+  /**
    * Stop + target bracket for an already-filled entry -- call only from
    * onOrderFilled (confirmed fill), never speculatively ahead of one, so
    * a rejected/partial entry never leaves an orphaned bracket sized for

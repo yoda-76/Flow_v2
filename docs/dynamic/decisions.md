@@ -4558,6 +4558,65 @@ readable rather than being silently rewritten.
   - **Still not live-verified:** the account-refusal paths (D-115 — the account id has only ever been
     `"simulated"`), the ES-chart / refuse-to-arm-over-a-position tests, a machine reboot, anything on EC2 itself.
 
+- **D-120** (2026-09-29) — **C1 closed (the strategy now hears about real fills); F-22 (historical-bar gap check)
+  and F-23 (entry slippage cap, off by default) built.** User: *"let's complete 3 and 4"* (C1, and F-22/F-23),
+  after choosing **"wire real fills to the strategy"** for C1's scope and **"build it, off by default"** for F-23.
+  Built off-market (the study was running on Sim throughout, deployed only for earlier pieces of the night, not
+  this round), all gates green, **not deployed, not seen live.**
+  - **C1 — FillEvent, finally wired.** The account side was already the truth (D-113: the kill switch and every
+    flatten read the account, not the strategy's belief); the remaining gap was the STRATEGY's own bookkeeping —
+    it tracked stop/target from the SIGNAL price even after F-7 anchored the real bracket to the FILL, so its
+    own virtual exit could diverge from the real one (the L-5 finding). `FillEvent` (a placeholder since the
+    walking-skeleton days) now carries `orderId, role(ENTRY/STOP/TARGET/OTHER), isBuy, fillPriceTicks, quantity,
+    positionAfter`; `LiveOrderTracker.recordFill()` publishes one through the sequencer (`Sequencer.publish`, same
+    path as every event) for every entry/stop/target fill of the CURRENT bracket — never for an "untracked" fill,
+    which is a manual/platform action, not the strategy's own, and stays F-3's job. `Pipeline.handle()` routes a
+    `FillEvent` straight to `strategy.onFill()` — a notification, not a wake, so it never itself asks for a new
+    decision — gated by the same `suspended`/`healthy` checks as everything else. `FlowStrategy.onFill()` (dead
+    code since D-91's own comment noted "no caller anywhere") finally has one. `RawEventCodec` extended to encode
+    it (raw.jsonl now records real fills going forward).
+    `LvnFadeTestStrategy.onFill()`: on an ENTRY, re-anchors its own stop/target to the fill using the exact math
+    `LiveOrderTracker` uses (a fixed offset either side of the signal, so re-deriving from the fill reproduces the
+    real bracket's levels exactly); on a STOP/TARGET fill, drops the position immediately rather than waiting for
+    the next price tick's own check to notice the same thing independently. `MarketStructureLvnReversalStrategy` is
+    untouched (it never set `anchorToFill`, so this gap never applied to it) — left for whenever the user's planned
+    strategy rework reaches it.
+  - **F-22 — the historical bar range across a gap, one delayed look.** The tick-only feed-resume check (D-114)
+    only sees the price the instant data resumed and the price now; a spike that reached or crossed a level and
+    came back inside that 1.5 s window is invisible to it. When that quick check says KEEP, `LiveOrderTracker`
+    schedules one further look 5 s later (`GAP_RANGE_CHECK_DELAY_MS`) at the bar range MotiveWave has (by then)
+    backfilled for the gap (`DataSeries`, read via `FlowRuntimeStudy.lookupGapRange`, captured from `onTick`'s
+    `DataContext`) — if the range's low or high reached/crossed a level, flattens via the same verified,
+    two-source-checked path as everything else (`GAP_RANGE_FLATTEN`); if the platform hasn't backfilled by then,
+    says so (`GAP_RANGE_UNAVAILABLE`) and leaves KEEP standing rather than retrying forever. **UNVERIFIED LIVE**:
+    `DataSeries.findIndex()`'s exact out-of-range behaviour is undocumented, so `lookupGapRange` is written
+    defensively (returns null on any doubt) and — like the market-structure warm-start's own `DataSeries` use — is
+    not unit-tested itself; `LiveOrderTracker`'s side of the mechanism (the scheduling, the crossing logic, the
+    two-source safety) is fully unit-tested with a fake `GapRangeLookup`.
+  - **F-23 — entry slippage cap, `entrySlippageCapTicks` (0 = off, the shipped default).** When > 0 and the
+    signal carries a bid/ask, the entry is a marketable LIMIT at the touch plus the cap instead of a bare market
+    order; unfilled after `ENTRY_LIMIT_TIMEOUT_MS` (5 s) it is cancelled (self-cancel-marked, so the callback
+    doesn't disarm) and journaled `entry_missed` — the strategy tries again on its own next signal, nothing
+    retries automatically. No signal, or a signal with no touch, falls back to the existing plain market order
+    unchanged. `OrderGateway.submitRealLimitEntry` mirrors `submitRealEntry` but returns the `Order` reference too
+    (needed for the timeout to cancel the right one). Measured 2026-09-28: on Sim a market order already fills at
+    the touch with ~0 latency, so this is built for a real account or a slower venue, not turned on by the default.
+  - **Tests:** `RawEventCodecTest` (new); `RiskReviewFixesTest` +3 groups (the anchor-to-the-fill proof compares the
+    SAME test price with and without `onFill()` having run, both directions; the immediate STOP/TARGET drop;
+    ignored while not in a position); `AccountTruthTest` +2 groups (`FillEvent` reaches the strategy but is never a
+    wake; gated by suspended/healthy, an exception from `onFill()` is not swallowed by `Pipeline` itself); `LiveOrderTrackerTest` +11 groups (fills published with the right role/side/price/qty; untracked fills are
+    never published; publishing is optional; the gap-range spike-and-return case in both directions, low and high;
+    a flattened account is left alone even with legs still referenced; unavailable/keep/already-resolved/disagree
+    cases; the slippage cap off by default, on with the right capped price each side, filling normally, the
+    timeout giving up and not disarming on its own late cancel, a race with an already-resolved entry, a stale
+    superseded timeout, and falling back to market with no signal/no touch). 2 new Python tests (report
+    classification). Mutation: 4/5 (C1), 3/3 + 2 documented-equivalent (F-22), 4/4 + 2 documented-equivalent
+    (F-23) — every survivor traced to a genuine redundancy elsewhere in the code (`decide()`'s own flat check,
+    a leg-fill always flattening position in this codebase, a resolved order never staying "active"), not a gap.
+  - **Not done:** `MarketStructureLvnReversalStrategy`'s own `onFill` (never needed `anchorToFill`); C1's fuller
+    form (strategies still decide from their OWN belief, not a single shared position — deliberately left for the
+    strategy rework rather than redone twice).
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

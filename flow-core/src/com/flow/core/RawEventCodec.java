@@ -54,8 +54,9 @@ public final class RawEventCodec {
     } else if (e instanceof OrderEvent oe) {
       j.field("type", "order").field("orderId", oe.orderId()).field("status", oe.status());
     } else if (e instanceof FillEvent fe) {
-      j.field("type", "fill").field("orderId", fe.orderId())
-          .field("priceTicks", fe.priceTicks()).field("quantity", fe.quantity());
+      j.field("type", "fill").field("orderId", fe.orderId()).field("role", fe.role().name())
+          .field("isBuy", fe.isBuy()).field("fillPriceTicks", fe.fillPriceTicks())
+          .field("quantity", fe.quantity()).field("positionAfter", fe.positionAfter());
     } else {
       throw new IllegalArgumentException("unhandled Event subtype: " + e.getClass());
     }
@@ -97,7 +98,8 @@ public final class RawEventCodec {
       case "clock" -> new ClockEvent(seq, eventTimeMs, receiptTimeMs);
       case "order" -> new OrderEvent(seq, eventTimeMs, receiptTimeMs, o.getString("orderId"), o.getString("status"));
       case "fill" -> new FillEvent(seq, eventTimeMs, receiptTimeMs, o.getString("orderId"),
-          o.getInt("priceTicks"), o.getInt("quantity"));
+          FillEvent.Role.valueOf(o.getString("role")), o.getBoolean("isBuy"),
+          o.getInt("fillPriceTicks"), o.getInt("quantity"), o.getInt("positionAfter"));
       default -> throw new IllegalArgumentException("unknown raw record type '" + type + "' in: " + line);
     };
   }

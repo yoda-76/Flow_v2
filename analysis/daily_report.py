@@ -288,6 +288,13 @@ ATTENTION = OrderedDict([
     ("FEED_RESUME_UNCHECKABLE", "WARN"),
     ("FEED_RESUME_KEEP", "NOTE"),
     ("FEED_RESUME_NOTHING_OPEN", "NOTE"),
+    ("GAP_RANGE_FLATTEN_HELD", "ALERT"),               # F-22: the bar range across the gap crossed a level, but the readings disagreed
+    ("GAP_RANGE_FLATTEN", "ALERT"),                    # F-22: found ONLY in the historical bar range, after the quick check said keep
+    ("GAP_RANGE_CHECK_FAILED", "ALERT"),
+    ("GAP_RANGE_UNAVAILABLE", "WARN"),                 # the bars covering the gap had not backfilled yet
+    ("GAP_RANGE_KEEP", "NOTE"),
+    ("ENTRY_MISSED", "WARN"),                          # F-23: a capped limit entry never filled and was given up on
+    ("ENTRY_TIMEOUT_CHECK_FAILED", "ALERT"),
     ("FEED_RESUMED", "NOTE"),
     ("LIVE_BRACKET_ADJUSTED", "WARN"),                # F-21: a bracket leg was on the wrong side of the fill and was clamped
     ("ENTRY_EXECUTION_RECORD_FAILED", "WARN"),

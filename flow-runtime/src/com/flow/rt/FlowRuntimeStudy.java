@@ -170,6 +170,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   private volatile PriceCodec priceCodec;
   private volatile OrderGateway gateway;
   private volatile Instrument instrument;
+  private volatile DataContext lastDataContext; // F-22: for the gap-range bar lookup, refreshed on every tick
   private volatile SdkVolumeProfileFeature volumeProfile;
   private volatile SdkFootprintFeature footprint;
   private volatile com.flow.flow.BigTradeFeature bigTrades;
@@ -235,6 +236,12 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     liveOrders.setAfterFillHook(this::onFillCallbackSeen);
     liveOrders.setScheduler(this::scheduleSafetyTask);
     liveOrders.setLockAction(() -> orderLock.set(true));
+    // C1 (2026-09-29, D-120): publish real fills into the normal event stream so the strategy learns about them
+    // (FlowStrategy.onFill) in order with everything else it sees, instead of never hearing about them at all.
+    liveOrders.setPublishFill((eventTimeMs, factory) -> {
+      Sequencer s = sequencer;
+      if (s != null) s.publish(factory, eventTimeMs);
+    });
   }
 
   // F-1 (2026-09-28): the ACCOUNT's numbers for the risk chain's daily-loss check (RiskChain.AccountTruth). Written on
@@ -537,6 +544,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     // signal-price estimate; in DRY_RUN there is no account activity, so the supplier says "none" and the estimate stays.
     com.flow.core.RiskChain riskChain = new com.flow.core.RiskChain(riskConfig,
         () -> isLiveModeRequested() ? accountTruth : null);
+    liveOrders.setEntrySlippageCapTicks(riskConfig.entrySlippageCapTicks()); // F-23, off by default
     java.util.function.BooleanSupplier armedSupplier =
         () -> getSettings().getBoolean(ARMED_KEY) && !armDenied && instrumentRefusal == null;
     java.util.function.IntSupplier queueDepthSupplier = () -> {
@@ -586,11 +594,12 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     pipeline.attachFeedListener(gap -> {
       logLine("FEED_RESUMED after " + (gap.durationMs() / 1000) + "s: price " + gap.priceBeforeTicks() + " -> "
           + gap.priceAfterTicks() + " ticks");
-      liveOrders.onFeedResumed(gap.priceAfterTicks(), () -> {
+      liveOrders.onFeedResumed(gap.startLocalMs(), gap.endLocalMs(), gap.priceAfterTicks(), () -> {
         Pipeline p = pipeline;
         return p == null ? null : p.marketState().lastPriceTicks();
       });
     });
+    liveOrders.setGapRangeLookup(this::lookupGapRange); // F-22
     // F-1: one folder per instrument, so a session on another chart never shares a day file with gold's.
     com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT,
         com.flow.core.InstrumentPolicy.symbolDir(instrument.getSymbol()));
@@ -651,6 +660,40 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   }
 
   /**
+   * F-22 (2026-09-29, D-121): the historical bar range covering [startMs, endMs] via the chart's own DataSeries --
+   * MotiveWave backfills bars automatically after a reconnect (seen live), so this needs no fetch of its own, only
+   * a read. UNVERIFIED LIVE: DataSeries.findIndex()'s exact out-of-range behaviour is undocumented, so every step
+   * here is defensive and returns null (== "not available yet, KEEP stands") rather than guess. Includes the
+   * currently-forming bar (index size()-1) deliberately -- unlike the market-structure warm-start, which excludes
+   * it on purpose (D-90), this wants the freshest high/low, settled or not.
+   */
+  private int[] lookupGapRange(long startMs, long endMs) {
+    try {
+      DataContext ctx = lastDataContext;
+      PriceCodec codec = priceCodec;
+      if (ctx == null || codec == null) return null;
+      DataSeries series = ctx.getDataSeries();
+      if (series == null || series.size() == 0) return null;
+      int hi = series.size() - 1;
+      if (series.getEndTime(hi) < endMs) return null; // the series hasn't caught up to the gap's end yet
+      int startIdx = series.findIndex(startMs);
+      int endIdx = series.findIndex(endMs);
+      int lo = Math.max(0, Math.min(startIdx < 0 ? 0 : startIdx, endIdx < 0 ? hi : endIdx));
+      int top = Math.min(hi, Math.max(startIdx, endIdx));
+      if (top < lo) return null;
+      float low = Float.MAX_VALUE, high = -Float.MAX_VALUE;
+      for (int i = lo; i <= top; i++) {
+        low = Math.min(low, series.getLow(i));
+        high = Math.max(high, series.getHigh(i));
+      }
+      if (!(low <= high)) return null; // NaN or an empty/garbage read
+      return new int[] {codec.toTicks(low), codec.toTicks(high)};
+    } catch (RuntimeException e) {
+      return null;
+    }
+  }
+
+  /**
    * F-7/F-11: what the tick that fired this intent looked like. A TickEvent carries last, bid and ask; any other
    * trigger falls back to the pipeline's last traded price (bid/ask left null). Runs on the drain thread.
    */
@@ -706,6 +749,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
 
   @Override
   public void onTick(DataContext ctx, Tick tick) {
+    lastDataContext = ctx; // F-22: the freshest DataContext, for the gap-range bar lookup (a MotiveWave-invoked thread, never a spawned one)
     Sequencer s = sequencer;
     PriceCodec codec = priceCodec;
     if (s == null || codec == null) return;

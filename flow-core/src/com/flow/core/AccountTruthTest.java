@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -80,6 +81,8 @@ public final class AccountTruthTest {
     testPipelineSuspendResume();
     testPipelineResumeWithoutSuspendIsANoOp();
     testAccountWatchCadenceAndFailureIsolation();
+    testFillEventReachesTheStrategyNotAWake();
+    testFillEventSkippedWhenSuspendedOrUnhealthy();
 
     if (failures > 0) {
       System.err.println(failures + " FAILURE(S)");
@@ -169,7 +172,9 @@ public final class AccountTruthTest {
     final AtomicInteger woken = new AtomicInteger(0);
     final AtomicInteger flattened = new AtomicInteger(0);
     final AtomicInteger seq = new AtomicInteger(0);
+    final List<FillEvent> fills = new ArrayList<>();
     volatile boolean wantEnter = true;
+    volatile RuntimeException throwOnFill = null;
     @Override public String id() { return "stub"; }
     @Override public Set<String> requires() { return Set.of(); }
     @Override public Set<Trigger> triggers() { return Set.of(new Trigger.EveryTick()); }
@@ -179,6 +184,10 @@ public final class AccountTruthTest {
       return wantEnter ? new Intent(id(), seq.incrementAndGet(), 1, null, null, "enter") : Intent.none(id(), seq.incrementAndGet());
     }
     @Override public void onFlattened(String reason) { flattened.incrementAndGet(); }
+    @Override public void onFill(FillEvent fill) {
+      if (throwOnFill != null) throw throwOnFill;
+      fills.add(fill);
+    }
   }
 
   private static ClockEvent clock(long seq, long timeMs) {
@@ -273,5 +282,73 @@ public final class AccountTruthTest {
     journal.flushAndClose();
     List<String> lines = Files.readAllLines(dir.resolve("decisions.jsonl"));
     checkEq("the failure was journaled once", count(lines, "\"type\":\"account_watch_failed\""), 1);
+  }
+
+  // ---- C1 (2026-09-29, D-120): FillEvent reaches the strategy, but is never itself a wake ----------------------
+
+  private static FillEvent fill(long seq, long t, FillEvent.Role role, boolean isBuy, int priceTicks, int qty, int posAfter) {
+    return new FillEvent(seq, t, t, "SIM-" + seq, role, isBuy, priceTicks, qty, posAfter);
+  }
+
+  private static void testFillEventReachesTheStrategyNotAWake() throws Exception {
+    Path dir = Files.createTempDirectory("flow_v2_test_truth_fill");
+    dir.toFile().deleteOnExit();
+    JournalWriter journal = new JournalWriter(dir);
+    journal.start();
+    StubStrategy strategy = new StubStrategy();
+    strategy.wantEnter = false;
+    Pipeline p = new Pipeline(strategy, journal, (i, e) -> {}, Map.of(), null, new RiskChain(config(1000)),
+        () -> true, () -> 0, r -> {}, r -> {});
+    long t0 = ct(23, 10, 0, 0);
+    p.handle(tick(1, t0, 1000)); // one ordinary event first, so it isn't mistaken for "the first event ever"
+    checkEq("baseline: one wake so far", strategy.woken.get(), 1);
+
+    FillEvent f = fill(2, t0 + 1000, FillEvent.Role.ENTRY, true, 1005, 1, 1);
+    p.handle(f);
+    checkEq("the strategy heard the fill, exactly as published", strategy.fills.size(), 1);
+    check("...the same event, unchanged", strategy.fills.get(0).equals(f));
+    checkEq("a FillEvent is NOT a wake -- onEvent() was not called for it", strategy.woken.get(), 1);
+
+    journal.flushAndClose();
+    List<String> lines = Files.readAllLines(dir.resolve("decisions.jsonl"));
+    checkEq("a fill notification writes no risk_verdict/intent_changed of its own", count(lines, "\"type\":\"risk_verdict\""), 0);
+  }
+
+  private static void testFillEventSkippedWhenSuspendedOrUnhealthy() throws Exception {
+    Path dir = Files.createTempDirectory("flow_v2_test_truth_fill_gated");
+    dir.toFile().deleteOnExit();
+    JournalWriter journal = new JournalWriter(dir);
+    journal.start();
+    StubStrategy strategy = new StubStrategy();
+    Pipeline p = new Pipeline(strategy, journal, (i, e) -> {}, Map.of(), null, new RiskChain(config(1000)),
+        () -> true, () -> 0, r -> {}, r -> {});
+    long t0 = ct(23, 10, 0, 0);
+
+    p.suspendTrading();
+    p.handle(fill(1, t0, FillEvent.Role.ENTRY, true, 1000, 1, 1));
+    checkEq("suspended: the fill never reaches the strategy", strategy.fills.size(), 0);
+
+    p.resumeTrading();
+    p.handle(tick(2, t0 + 1000, 1000)); // the resync happens on the NEXT event
+    p.handle(fill(3, t0 + 2000, FillEvent.Role.ENTRY, true, 1000, 1, 1));
+    checkEq("resumed: fills reach the strategy again", strategy.fills.size(), 1);
+
+    p.onPipelineException(new IllegalStateException("boom"), tick(4, t0 + 3000, 1000));
+    p.handle(fill(5, t0 + 4000, FillEvent.Role.ENTRY, true, 1000, 1, 1));
+    checkEq("unhealthy: the fill never reaches the strategy either", strategy.fills.size(), 1);
+
+    // An exception FROM onFill() must not escape handle() -- Sequencer's drain loop is what actually catches it in
+    // production (see its javadoc); calling handle() directly here, an uncaught throw would fail this test loudly.
+    Pipeline p2 = new Pipeline(strategy, journal, (i, e) -> {}, Map.of(), null, new RiskChain(config(1000)),
+        () -> true, () -> 0, r -> {}, r -> {});
+    strategy.throwOnFill = new IllegalStateException("strategy's onFill blew up");
+    boolean threw = false;
+    try {
+      p2.handle(fill(6, t0 + 5000, FillEvent.Role.ENTRY, true, 1000, 1, 1));
+    } catch (RuntimeException e) {
+      threw = true;
+    }
+    check("Pipeline.handle() itself does not swallow the exception (that is the Sequencer's job, by design)", threw);
+    journal.flushAndClose();
   }
 }

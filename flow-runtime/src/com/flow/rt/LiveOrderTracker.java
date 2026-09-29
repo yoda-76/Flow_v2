@@ -1,5 +1,7 @@
 package com.flow.rt;
 
+import com.flow.core.EventFactory;
+import com.flow.core.FillEvent;
 import com.flow.core.Intent;
 import com.flow.journal.Json;
 import com.motivewave.platform.sdk.order_mgmt.Order;
@@ -44,6 +46,11 @@ final class LiveOrderTracker {
   private volatile boolean pendingAnchorToFill = false;
   private volatile SignalInfo pendingSignal = null;
   private volatile long pendingSubmitLocalMs = 0;
+  // F-23 (2026-09-29, D-122): off (0) by default -- see ExternalConfig.entrySlippageCapTicks's own javadoc.
+  private volatile int entrySlippageCapTicks = 0;
+  void setEntrySlippageCapTicks(int ticks) { this.entrySlippageCapTicks = ticks; }
+  /** Only set while a LIMIT entry (the slippage cap) is outstanding, so a stale scheduled timeout can recognize it has been superseded. */
+  private volatile Order pendingEntryOrder;
 
   /** The tick that fired an entry intent, as the runtime saw it. Any field may be null (a non-tick trigger). */
   record SignalInfo(Integer priceTicks, Integer bidTicks, Integer askTicks, long eventTimeMs, long receivedLocalMs) {}
@@ -104,6 +111,58 @@ final class LiveOrderTracker {
   private volatile Runnable lockAction;
   void setLockAction(Runnable lockAction) { this.lockAction = lockAction; }
   private volatile boolean unknownAccountLogged = false;
+
+  // ---- C1 (2026-09-29, D-120): tell the strategy about a REAL fill, through the normal event stream -------------
+
+  /** How to publish a FillEvent: eventTimeMs, then the factory Sequencer.publish() needs (see FillEvent's javadoc). */
+  interface FillPublisher {
+    void publish(long eventTimeMs, EventFactory<FillEvent> factory);
+  }
+
+  private volatile FillPublisher publishFill; // nullable: dry-run/replay/tests that don't need it just don't set one
+  void setPublishFill(FillPublisher publishFill) { this.publishFill = publishFill; }
+
+  /**
+   * Publishes ENTRY/STOP/TARGET fills of the tracker's own bracket only -- an "untracked" fill (a manual trade, the
+   * platform's own close) is not the strategy's own action; F-3's account watch surfaces those instead. Never
+   * throws: called from recordFill(), already inside a try/catch that only logs.
+   */
+  private void publishFillEvent(Order order, String role, OrderGateway gw) {
+    FillPublisher pub = publishFill;
+    if (pub == null || "untracked".equals(role)) return;
+    PriceCodec c = codec.get();
+    if (c == null) return;
+    Float px = avgFillPriceOf(order);
+    if (px == null || px.isNaN() || px == 0f) return;
+    Integer filled = filledOf(order);
+    if (filled == null) return;
+    Boolean isBuy;
+    try {
+      isBuy = order.isBuy();
+    } catch (RuntimeException e) {
+      return;
+    }
+    FillEvent.Role r = switch (role) {
+      case "entry" -> FillEvent.Role.ENTRY;
+      case "stop" -> FillEvent.Role.STOP;
+      case "target" -> FillEvent.Role.TARGET;
+      default -> FillEvent.Role.OTHER;
+    };
+    int fillTicks = c.toTicks(px);
+    int posAfter = gw.currentPosition();
+    String orderId = String.valueOf(order.getOrderId());
+    Long fillTimeMs = safeLastFillTime(order);
+    long eventTimeMs = fillTimeMs != null && fillTimeMs > 0 ? fillTimeMs : System.currentTimeMillis();
+    pub.publish(eventTimeMs, (seq, et, rt) -> new FillEvent(seq, et, rt, orderId, r, isBuy, fillTicks, filled, posAfter));
+  }
+
+  private static Long safeLastFillTime(Order order) {
+    try {
+      return order.getLastFillTime();
+    } catch (RuntimeException e) {
+      return null;
+    }
+  }
 
   private boolean nonSimulatedEvent(Order order, String what) {
     String id;
@@ -206,6 +265,77 @@ final class LiveOrderTracker {
       }
     } catch (RuntimeException e) {
       log.accept("FLATTEN_VERIFY_FAILED " + what + " " + e);
+    }
+  }
+
+  // ---- F-22 (2026-09-29, D-121, the user's own idea) ---------------------------------------------------------
+  //
+  // The tick-based check above only sees the price the instant data resumed and the price now -- a spike that
+  // reached or crossed a level and came BACK inside that window is invisible to it. This is a second, coarser,
+  // DELAYED look at the historical BAR RANGE across the whole gap, only taken when the quick check said KEEP (a
+  // flatten has already happened otherwise -- nothing more to add). MotiveWave backfills historical bars
+  // automatically after a reconnect (seen live), but how long that takes is UNVERIFIED, so this is a single look,
+  // not a retry loop: if the bars aren't there yet, it says so and KEEP stands.
+
+  /** null if bars covering [startMs, endMs] are not available yet; else {lowTicks, highTicks} across that range. */
+  interface GapRangeLookup {
+    int[] lookup(long startMs, long endMs);
+  }
+
+  private volatile GapRangeLookup gapRangeLookup;
+  void setGapRangeLookup(GapRangeLookup lookup) { this.gapRangeLookup = lookup; }
+
+  /** How long after the quick check's KEEP to look at the bar range once, giving MotiveWave's backfill time to land. */
+  static final long GAP_RANGE_CHECK_DELAY_MS = 5_000L;
+
+  private void scheduleGapRangeCheck(long gapStartMs, long gapEndMs) {
+    GapRangeLookup lookup = gapRangeLookup;
+    java.util.function.BiConsumer<Runnable, Long> s = scheduler;
+    if (lookup == null || s == null) return;
+    s.accept(() -> checkGapRange(gapStartMs, gapEndMs), GAP_RANGE_CHECK_DELAY_MS);
+  }
+
+  void checkGapRange(long gapStartMs, long gapEndMs) {
+    try {
+      GapRangeLookup lookup = gapRangeLookup;
+      if (lookup == null) return;
+      Order stop = restingStopOrder;
+      Order target = restingTargetOrder;
+      OrderGateway gw = gateway.get();
+      if (stop == null || target == null || gw == null) return; // already resolved by then (a leg filled, or the quick check already flattened)
+      int strat = gw.currentPosition();
+      int acct = gw.accountPosition();
+      if (strat == 0 && acct == 0) return; // already flat
+      Float stopPx = stop.getStopPrice();
+      Float targetPx = target.getLimitPrice();
+      if (stopPx == null || targetPx == null) return;
+      int[] range = lookup.lookup(gapStartMs, gapEndMs);
+      if (range == null) {
+        log.accept("GAP_RANGE_UNAVAILABLE bars covering the outage are not backfilled yet -- the earlier KEEP stands");
+        return;
+      }
+      PriceCodec c = codec.get();
+      if (c == null) return;
+      boolean isLong = stop.isSell();
+      String why = crossedLevel(isLong, c.fromTicks(range[0]), stopPx, targetPx);
+      if (why == null) why = crossedLevel(isLong, c.fromTicks(range[1]), stopPx, targetPx);
+      if (why == null) {
+        log.accept("GAP_RANGE_KEEP the historical range [" + range[0] + "," + range[1]
+            + "] ticks never reached the stop " + stopPx + " or the target " + targetPx);
+        return;
+      }
+      Act act = decide(gw, false, "GAP_RANGE");
+      if (act == Act.CLOSE) {
+        resetForKillSwitch();
+        log.accept("GAP_RANGE_FLATTEN " + why + " (found in the bar range after the fact) -- "
+            + gw.cancelAllAndClose("market-data outage (bar range): " + why));
+        scheduleFlatVerification("GAP_RANGE", 0);
+      } else {
+        log.accept("GAP_RANGE_FLATTEN_HELD " + why + " -- no close sent (readings disagree or flat); verifying");
+        scheduleFlatVerification("GAP_RANGE", 0);
+      }
+    } catch (RuntimeException e) {
+      log.accept("GAP_RANGE_CHECK_FAILED " + e);
     }
   }
 
@@ -419,8 +549,24 @@ final class LiveOrderTracker {
     pendingAnchorToFill = intent.anchorToFill();
     pendingSignal = signal;
     pendingSubmitLocalMs = System.currentTimeMillis();
+    boolean isBuy = delta > 0;
+    int qty = Math.abs(delta);
     try {
-      return gw.submitRealEntry(delta > 0, Math.abs(delta), intent.reason(), signal, pendingSubmitLocalMs);
+      // F-23: a capped LIMIT entry only when the cap is on AND the signal actually carries a touch to cap from;
+      // otherwise (the default) exactly today's market order, unchanged.
+      int cap = entrySlippageCapTicks;
+      if (cap > 0 && signal != null && signal.bidTicks() != null && signal.askTicks() != null) {
+        PriceCodec c = codec.get();
+        if (c != null) {
+          int limitTicks = isBuy ? signal.askTicks() + cap : signal.bidTicks() - cap;
+          float limitPrice = gw.roundToTick((float) c.fromTicks(limitTicks));
+          OrderGateway.EntryOrder eo = gw.submitRealLimitEntry(isBuy, qty, limitPrice, intent.reason(), signal, pendingSubmitLocalMs);
+          pendingEntryOrder = eo.order();
+          scheduleEntryTimeout(eo.order());
+          return eo.journalLine();
+        }
+      }
+      return gw.submitRealEntry(isBuy, qty, intent.reason(), signal, pendingSubmitLocalMs);
     } catch (IllegalStateException refused) {
       // The gateway refused (an order on a non-simulated account, or the order lock): nothing was sent.
       clearPendingLiveOrder();
@@ -435,6 +581,45 @@ final class LiveOrderTracker {
     }
   }
 
+  // ---- F-23 (2026-09-29, D-122): give up on a capped limit entry that never filled -------------------------------
+
+  /** How long a capped limit entry is left resting before this gives up on it and tries again on the next signal. */
+  static final long ENTRY_LIMIT_TIMEOUT_MS = 5_000L;
+
+  private void scheduleEntryTimeout(Order entry) {
+    java.util.function.BiConsumer<Runnable, Long> s = scheduler;
+    if (s == null) return;
+    s.accept(() -> onEntryTimeout(entry), ENTRY_LIMIT_TIMEOUT_MS);
+  }
+
+  /**
+   * The entry hasn't filled after ENTRY_LIMIT_TIMEOUT_MS: cancel it (marked self-cancelled first, exactly like a
+   * bracket-leg sibling cancel, so the resulting onOrderCancelled callback is recognized as expected, not a
+   * disarm-worthy anomaly) and journal `entry_missed`. If it resolved (filled, or already cancelled/rejected) in the
+   * meantime, cancelIfActive() returns null and nothing further happens here -- its own callback already handled it.
+   * A superseded reference (a fresh entry since, or this one already cleared) is a silent no-op.
+   */
+  void onEntryTimeout(Order entry) {
+    try {
+      if (entry == null || entry != pendingEntryOrder || !entry.isActive()) return;
+      OrderGateway gw = gateway.get();
+      if (gw == null) return;
+      String id = entry.getOrderId();
+      if (id != null) selfCancelledOrderIds.add(id);
+      String line = gw.cancelIfActive(entry, "entry", "slippage cap timeout: unfilled after " + ENTRY_LIMIT_TIMEOUT_MS + "ms");
+      if (line == null) {
+        if (id != null) selfCancelledOrderIds.remove(id); // resolved between the isActive() check and the cancel -- no callback coming for this
+        return;
+      }
+      clearPendingLiveOrder();
+      log.accept("ENTRY_MISSED " + line);
+      record.accept(Json.object().field("type", "entry_missed").field("t", System.currentTimeMillis())
+          .field("orderId", String.valueOf(id)).field("reason", "slippage cap timeout").build());
+    } catch (RuntimeException e) {
+      log.accept("ENTRY_TIMEOUT_CHECK_FAILED " + e);
+    }
+  }
+
   /** Clears in-flight/pending-bracket state -- shared by onOrderRejected/onOrderCancelled below. */
   private void clearPendingLiveOrder() {
     liveOrderInFlight = false;
@@ -445,6 +630,7 @@ final class LiveOrderTracker {
     pendingAnchorToFill = false;
     pendingSignal = null;
     pendingSubmitLocalMs = 0;
+    pendingEntryOrder = null;
   }
 
   /**
@@ -710,6 +896,7 @@ final class LiveOrderTracker {
       else if (liveOrderInFlight) role = "entry";
       else role = "untracked";
       record.accept(gw.describeFill(order, role));
+      publishFillEvent(order, role, gw);
     } catch (RuntimeException e) {
       log.accept("ORDER_FILL_RECORD_FAILED " + e);
     }
@@ -769,13 +956,23 @@ final class LiveOrderTracker {
   // already resolved (the tracker has forgotten it) and is not raced by our own close (the L-1 lesson).
   // (A finer rule -- fetch the bars of the gap and see whether the range touched a level and came back -- is a todo.)
 
-  void onFeedResumed(Integer firstPriceAfterTicks, java.util.function.Supplier<Integer> currentPriceTicks) {
+  void onFeedResumed(long gapStartMs, long gapEndMs, Integer firstPriceAfterTicks, java.util.function.Supplier<Integer> currentPriceTicks) {
     java.util.function.BiConsumer<Runnable, Long> s = scheduler;
     if (s == null) return;
-    s.accept(() -> feedResumeCheck(firstPriceAfterTicks, currentPriceTicks), VERIFY_DELAYS_MS[0]);
+    s.accept(() -> feedResumeCheck(gapStartMs, gapEndMs, firstPriceAfterTicks, currentPriceTicks), VERIFY_DELAYS_MS[0]);
   }
 
-  void feedResumeCheck(Integer firstPriceAfterTicks, java.util.function.Supplier<Integer> currentPriceTicks) {
+  /** null if px is between the stop and target (an exact touch counts as a hit at either boundary); else the reason. */
+  private static String crossedLevel(boolean isLong, double px, float stopPx, float targetPx) {
+    double eps = 1e-6;
+    boolean hitStop = isLong ? px <= stopPx + eps : px >= stopPx - eps;
+    boolean hitTarget = isLong ? px >= targetPx - eps : px <= targetPx + eps;
+    if (hitStop) return "stop " + stopPx + " reached/crossed at " + px;
+    if (hitTarget) return "target " + targetPx + " reached/crossed at " + px;
+    return null;
+  }
+
+  void feedResumeCheck(long gapStartMs, long gapEndMs, Integer firstPriceAfterTicks, java.util.function.Supplier<Integer> currentPriceTicks) {
     try {
       Order stop = restingStopOrder;
       Order target = restingTargetOrder;
@@ -805,23 +1002,16 @@ final class LiveOrderTracker {
         return;
       }
       boolean isLong = stop.isSell(); // a long is protected by a SELL stop
-      double eps = 1e-6;
-      boolean crossed = false;
-      String why = "";
+      String why = null;
       for (Integer p : new Integer[] {firstPriceAfterTicks, nowTicks}) {
         if (p == null) continue;
-        double px = c.fromTicks(p);
-        boolean hitStop = isLong ? px <= stopPx + eps : px >= stopPx - eps;
-        boolean hitTarget = isLong ? px >= targetPx - eps : px <= targetPx + eps;
-        if (hitStop || hitTarget) {
-          crossed = true;
-          why = (hitStop ? "stop " : "target ") + (hitStop ? stopPx : targetPx) + " reached/crossed at " + px;
-          break;
-        }
+        why = crossedLevel(isLong, c.fromTicks(p), stopPx, targetPx);
+        if (why != null) break;
       }
-      if (!crossed) {
+      if (why == null) {
         log.accept("FEED_RESUME_KEEP price is still between the stop " + stopPx + " and the target " + targetPx
             + " (first " + firstPriceAfterTicks + " now " + nowTicks + " ticks) -- orders left working");
+        scheduleGapRangeCheck(gapStartMs, gapEndMs); // F-22: one further look at the whole gap's range, once bars have backfilled
         return;
       }
       Act act = decide(gw, false, "FEED_RESUME");

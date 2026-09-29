@@ -1,5 +1,6 @@
 package com.flow.rt;
 
+import com.flow.core.FillEvent;
 import com.flow.core.Intent;
 
 import java.util.ArrayList;
@@ -59,6 +60,8 @@ public final class LiveOrderTrackerTest {
     final List<Runnable> scheduled = new ArrayList<>(); // F-1: post-flatten verifications, run by hand
     final List<Long> scheduledDelays = new ArrayList<>();
     int afterFillCalls = 0;
+    final List<FillEvent> publishedFills = new ArrayList<>(); // C1 (D-120)
+    int nextFillSeq = 1;
 
     Rig() {
       codec.toTicks(4300.0); // first price seen becomes the anchor: tick 0 == 4300.0
@@ -69,6 +72,7 @@ public final class LiveOrderTrackerTest {
       tracker.setScheduler((task, delay) -> { scheduled.add(task); scheduledDelays.add(delay); });
       tracker.setAfterFillHook(() -> afterFillCalls++);
       tracker.setLockAction(gw::lockOrders);
+      tracker.setPublishFill((eventTimeMs, factory) -> publishedFills.add(factory.create(nextFillSeq++, eventTimeMs, eventTimeMs)));
     }
 
     /** Runs the oldest queued verification (it may queue the next one). */
@@ -134,14 +138,27 @@ public final class LiveOrderTrackerTest {
     testRefuseToArmSeesTheAccountPosition();
     testResetForReactivationForgetsEverything();
     testAfterFillHookAndAccountTruth();
+    testEntryStopTargetFillsArePublished();
+    testUntrackedFillIsNotPublished();
+    testFillPublishingIsOptional();
     testLostLegFlattensAndDisarms();
     testPlatformSiblingCancelIsBenign();
     testLostLegWithDisagreeingPositionsSendsNoClose();
     testBracketAnchoredToTheFill();
     testAbsoluteBracketUnchangedAndWrongSideLegsAreClamped();
     testEntryExecutionCostRecord();
+    testEntrySlippageCapOffByDefault();
+    testEntrySlippageCapSubmitsACappedLimit();
+    testEntrySlippageCapFillsNormallyLikeAnyOtherEntry();
+    testEntrySlippageCapGivesUpOnTimeout();
+    testEntrySlippageCapTimeoutIsANoOpIfAlreadyResolved();
+    testEntrySlippageCapNeedsATouchToCapFrom();
     testFeedResumeFlattensOnlyWhenALevelWasReached();
     testFeedResumeOtherCases();
+    testGapRangeCatchesASpikeAndReturnMissedByTheQuickCheck();
+    testGapRangeCatchesACrossOnlyVisibleAtTheHighEndOfTheRange();
+    testGapRangeIgnoresAFlattenedAccountEvenWithLegsStillReferenced();
+    testGapRangeOtherCases();
     testNonSimulatedAccountIsNeverActedOn();
     testEntryOnANonSimulatedAccountIsRefusedBeforeSending();
     testUnknownAccountIdIsAllowedButLogged();
@@ -677,6 +694,58 @@ public final class LiveOrderTrackerTest {
         && r.tracker.restingStop() == null);
   }
 
+  // ---- C1 (2026-09-29, D-120): real fills published as FillEvents --------------------------------------------
+
+  private static void testEntryStopTargetFillsArePublished() {
+    Rig r = new Rig();
+    r.openLong(); // entry fills at the anchor (tick 0), stop -10, target +20
+    checkEq("one FillEvent for the entry", r.publishedFills.size(), 1);
+    FillEvent entryFe = r.publishedFills.get(0);
+    check("entry: role, side, price, qty, position after", entryFe.role() == FillEvent.Role.ENTRY && entryFe.isBuy()
+        && entryFe.fillPriceTicks() == 0 && entryFe.quantity() == 1 && entryFe.positionAfter() == 1);
+
+    FakeBroker.FakeOrder stop = r.broker.allOrders().get(1);
+    r.broker.fill(stop, 4299.0f, 1_790_000_060_000L); // -10 ticks from the 4300.0 anchor
+    r.tracker.onOrderFilled(stop.order());
+    checkEq("a second FillEvent for the stop", r.publishedFills.size(), 2);
+    FillEvent stopFe = r.publishedFills.get(1);
+    check("stop: role STOP, closing a long is a SELL, price -10, position after 0",
+        stopFe.role() == FillEvent.Role.STOP && !stopFe.isBuy() && stopFe.fillPriceTicks() == -10 && stopFe.positionAfter() == 0);
+    check("the event time is the order's own fill time, not 'now'", stopFe.eventTimeMs() == 1_790_000_060_000L);
+
+    Rig t = new Rig();
+    t.openLong();
+    FakeBroker.FakeOrder target = t.broker.allOrders().get(2);
+    t.broker.fill(target, 4302.0f, 1_790_000_090_000L);
+    t.tracker.onOrderFilled(target.order());
+    FillEvent targetFe = t.publishedFills.get(t.publishedFills.size() - 1);
+    check("target: role TARGET", targetFe.role() == FillEvent.Role.TARGET && targetFe.fillPriceTicks() == 20);
+  }
+
+  private static void testUntrackedFillIsNotPublished() {
+    Rig r = new Rig();
+    r.openLong();
+    r.tracker.flattenForSessionEnd("session-end flatten window"); // forgets the tracker's own legs
+    FakeBroker.FakeOrder platformClose = r.broker.restingOrder("MARKET", "SELL", 1, 4301f);
+    r.broker.fill(platformClose, 4301.0f, 1_790_000_120_000L);
+    int before = r.publishedFills.size();
+    r.tracker.onOrderFilled(platformClose.order());
+    checkEq("an untracked fill (not one of ours) is never published to the strategy", r.publishedFills.size(), before);
+  }
+
+  /** No setPublishFill() call at all (dry-run / replay / a test that doesn't care) must never throw. */
+  private static void testFillPublishingIsOptional() {
+    FakeBroker broker = new FakeBroker();
+    OrderGateway gw = new OrderGateway(broker.ctx());
+    PriceCodec codec = new PriceCodec(0.1);
+    codec.toTicks(4300.0);
+    LiveOrderTracker tracker = new LiveOrderTracker(() -> gw, () -> codec, l -> {}, r -> {}, () -> {});
+    tracker.reconcileLive(new Intent("s", 1, 1, -10, 20, "test"), gw);
+    broker.fill(broker.allOrders().get(0));
+    tracker.onOrderFilled(broker.allOrders().get(0).order()); // no exception with no publisher wired
+    check("nothing threw with no publisher configured", broker.allOrders().size() == 3);
+  }
+
   // ---- F-5 / B6 (user: "flatten + disarm") ----------------------------------------------------------------------
 
   /** A stop leg cancelled (or rejected) by the platform with the position still open: after the settle, flatten + disarm. */
@@ -863,6 +932,105 @@ public final class LiveOrderTrackerTest {
     check("price improvement is negative slippage", better.executions.get(0).contains("\"slippageVsTouchTicks\":-3"));
   }
 
+  // ---- F-23 (2026-09-29, D-122): entry slippage cap, off by default -------------------------------------------
+
+  private static void testEntrySlippageCapOffByDefault() {
+    Rig r = new Rig(); // entrySlippageCapTicks defaults to 0
+    String line = r.reconcile(1, -10, 20); // reconcile() carries no signal at all
+    check("cap off (0): still a plain MARKET entry, exactly as before", line.contains("\"orderType\":\"MARKET\""));
+    checkEq("a market order, not a limit", r.entry().type, "MARKET");
+
+    Rig withSignal = new Rig();
+    withSignal.tracker.setEntrySlippageCapTicks(0);
+    withSignal.tracker.reconcileLive(new Intent("s", ++withSignal.seq, 1, -10, 20, "test"), withSignal.gw, signal(10, 9, 11));
+    check("cap off even WITH a signal carrying a touch: still MARKET", withSignal.entry().type.equals("MARKET"));
+  }
+
+  private static void testEntrySlippageCapSubmitsACappedLimit() {
+    Rig r = new Rig();
+    r.tracker.setEntrySlippageCapTicks(3);
+    String line = r.tracker.reconcileLive(new Intent("s", ++r.seq, 1, -10, 20, "test"), r.gw, signal(10, 9, 11)); // BUY, ask 11
+    check("cap on, a BUY: a LIMIT order, not MARKET", line.contains("\"orderType\":\"LIMIT\""));
+    check("...and it still carries the signal/time fields", line.contains("\"signalAskTicks\":11") && line.contains("\"t\":"));
+    checkEq("a limit order, at ask(11) + cap(3) = 14 ticks -> 4301.4", r.entry().type, "LIMIT");
+    check("...price 4301.4", near(r.entry().price, 4301.4f));
+    check("still marks an entry in flight, same as a market entry would", r.tracker.orderInFlight());
+
+    Rig s = new Rig();
+    s.tracker.setEntrySlippageCapTicks(3);
+    s.tracker.reconcileLive(new Intent("s", ++s.seq, -1, 10, -20, "test"), s.gw, signal(10, 9, 11)); // SELL, bid 9
+    check("a SELL: at bid(9) - cap(3) = 6 ticks -> 4300.6", near(s.entry().price, 4300.6f));
+  }
+
+  private static void testEntrySlippageCapFillsNormallyLikeAnyOtherEntry() {
+    Rig r = new Rig();
+    r.tracker.setEntrySlippageCapTicks(3);
+    r.tracker.reconcileLive(new Intent("s", ++r.seq, 1, -10, 20, "test", true), r.gw, signal(10, 9, 11));
+    r.broker.fill(r.entry()); // a LIMIT fills at its own price by default (FakeBroker)
+    r.tracker.onOrderFilled(r.entry().order());
+    check("the entry filled: in-flight cleared, a bracket was placed from the fill (F-7)", !r.tracker.orderInFlight()
+        && r.broker.allOrders().size() == 3 && r.loggedContaining("LIVE_BRACKET_SUBMITTED"));
+    checkEq("an entry_execution record was still written", r.executions.size(), 1);
+  }
+
+  private static void testEntrySlippageCapGivesUpOnTimeout() {
+    Rig r = new Rig();
+    r.tracker.setEntrySlippageCapTicks(3);
+    r.tracker.reconcileLive(new Intent("s", ++r.seq, 1, -10, 20, "test"), r.gw, signal(10, 9, 11));
+    checkEq("a timeout is scheduled", r.scheduledDelays.get(r.scheduledDelays.size() - 1), LiveOrderTracker.ENTRY_LIMIT_TIMEOUT_MS);
+    check("nothing filled yet: still in flight, nothing to cancel logged yet", r.tracker.orderInFlight() && !r.loggedContaining("ENTRY_MISSED"));
+
+    r.runNextVerification(); // the timeout fires
+    check("the unfilled limit is cancelled and given up on", r.broker.called("cancelOrders") && r.loggedContaining("ENTRY_MISSED"));
+    checkEq("one entry_missed record", r.records.stream().filter(l -> l.contains("\"type\":\"entry_missed\"")).count(), 1L);
+    check("in-flight cleared -- a fresh entry can be tried", !r.tracker.orderInFlight());
+
+    r.reconcile(1, -10, 20);
+    check("...and it goes through as an ordinary market order (cap needs a signal each time)", r.tracker.orderInFlight());
+
+    // The late cancel callback for the timed-out entry must not be read as an anomaly (it is self-cancelled).
+    boolean armDeniedBefore = r.armDenied;
+    r.tracker.onOrderCancelled(r.broker.allOrders().get(0).order());
+    check("the late callback for the TIMED-OUT entry does not disarm", r.armDenied == armDeniedBefore);
+  }
+
+  private static void testEntrySlippageCapTimeoutIsANoOpIfAlreadyResolved() {
+    Rig filled = new Rig();
+    filled.tracker.setEntrySlippageCapTicks(3);
+    filled.tracker.reconcileLive(new Intent("s", ++filled.seq, 1, -10, 20, "test", true), filled.gw, signal(10, 9, 11));
+    filled.broker.fill(filled.entry());
+    filled.tracker.onOrderFilled(filled.entry().order());
+    int callsBefore = filled.broker.calls().size();
+    filled.runNextVerification(); // the timeout fires AFTER the entry already filled
+    checkEq("already filled: the timeout does nothing more", filled.broker.calls().size(), callsBefore);
+    check("...no bogus entry_missed", !filled.loggedContaining("ENTRY_MISSED"));
+
+    Rig superseded = new Rig();
+    superseded.tracker.setEntrySlippageCapTicks(3);
+    superseded.tracker.reconcileLive(new Intent("s", ++superseded.seq, 1, -10, 20, "test"), superseded.gw, signal(10, 9, 11));
+    check("setup: a timeout is queued", superseded.scheduled.size() == 1);
+    superseded.broker.reject(superseded.entry()); // the first entry never worked out, some other way
+    superseded.tracker.onOrderRejected(superseded.entry().order());
+    check("in-flight cleared by the rejection", !superseded.tracker.orderInFlight());
+    superseded.reconcile(1, -10, 20); // a fresh entry starts (a plain market order this time, no signal)
+    int callsBefore2 = superseded.broker.calls().size();
+    superseded.runNextVerification(); // the FIRST entry's stale timeout fires now
+    checkEq("a stale timeout for a superseded entry changes nothing", superseded.broker.calls().size(), callsBefore2);
+  }
+
+  private static void testEntrySlippageCapNeedsATouchToCapFrom() {
+    Rig noSignal = new Rig();
+    noSignal.tracker.setEntrySlippageCapTicks(3);
+    noSignal.reconcile(1, -10, 20); // no SignalInfo at all
+    check("cap on but no signal: falls back to MARKET", noSignal.entry().type.equals("MARKET"));
+
+    Rig noTouch = new Rig();
+    noTouch.tracker.setEntrySlippageCapTicks(3);
+    noTouch.tracker.reconcileLive(new Intent("s", ++noTouch.seq, 1, -10, 20, "test"), noTouch.gw,
+        new LiveOrderTracker.SignalInfo(10, null, null, 1_790_000_000_000L, System.currentTimeMillis()));
+    check("a signal with no bid/ask: also falls back to MARKET", noTouch.entry().type.equals("MARKET"));
+  }
+
   // ---- F-19: the feed came back -------------------------------------------------------------------------------
 
   /** openLong: long 1 with stop 4299.0 (-10 ticks) and target 4302.0 (+20 ticks). */
@@ -879,7 +1047,7 @@ public final class LiveOrderTrackerTest {
   }
 
   private static void resumeWith(Rig r, Integer first, Integer now) {
-    r.tracker.onFeedResumed(first, () -> now);
+    r.tracker.onFeedResumed(0L, 1_000L, first, () -> now);
     r.runNextVerification();
   }
 
@@ -952,6 +1120,91 @@ public final class LiveOrderTrackerTest {
     resumeWith(noPrices, null, null);
     check("no prices to judge by: orders left as they are, said so", !noPrices.broker.called("closeAtMarket")
         && noPrices.loggedContaining("FEED_RESUME_UNCHECKABLE"));
+  }
+
+  // ---- F-22 (2026-09-29, D-121): the historical bar range, once the quick check said KEEP -------------------------
+
+  private static void testGapRangeCatchesASpikeAndReturnMissedByTheQuickCheck() {
+    // Long 1 (openLong: stop -10 ticks = 4299.0, target +20 = 4302.0). first=5, now=6 -> the quick check says KEEP.
+    // The bar range covering the gap shows the low dipped to -15 ticks (4298.5) -- past the stop -- and came back.
+    Rig r = feedRig(false);
+    r.tracker.setGapRangeLookup((start, end) -> new int[] {-15, 5});
+    resumeWith(r, 5, 6);
+    check("the quick check still says KEEP first", r.loggedContaining("FEED_RESUME_KEEP") && !r.broker.called("closeAtMarket"));
+    checkEq("a gap-range check is queued", r.scheduled.size(), 1);
+    checkEq("...5 s later", r.scheduledDelays.get(r.scheduledDelays.size() - 1), LiveOrderTracker.GAP_RANGE_CHECK_DELAY_MS);
+    r.runNextVerification();
+    check("the bar range shows the stop was reached during the outage: flattened after the fact",
+        r.broker.called("closeAtMarket positionBefore=1") && r.loggedContaining("GAP_RANGE_FLATTEN stop"));
+    check("...legs swept, account flat", r.broker.activeOrders().isEmpty() && r.broker.position() == 0);
+    checkEq("a verification of this flatten is queued too", r.scheduled.size(), 1);
+    r.runNextVerification();
+    check("...and confirms flat", r.loggedContaining("FLATTEN_VERIFIED GAP_RANGE"));
+  }
+
+  private static void testGapRangeCatchesACrossOnlyVisibleAtTheHighEndOfTheRange() {
+    // Long 1 (stop -10 / target +20). Range {0, 25}: the LOW (0) crosses nothing, only the HIGH (25) reaches the
+    // target -- if only range[0] were ever checked, this would be missed.
+    Rig r = feedRig(false);
+    r.tracker.setGapRangeLookup((start, end) -> new int[] {0, 25});
+    resumeWith(r, 5, 6);
+    r.runNextVerification();
+    check("the high end of the range alone reaches the target: flattened", r.broker.called("closeAtMarket")
+        && r.loggedContaining("GAP_RANGE_FLATTEN target"));
+  }
+
+  private static void testGapRangeIgnoresAFlattenedAccountEvenWithLegsStillReferenced() {
+    // The platform closed the account by itself (L-4's close dialog, extended to mid-outage) while the tracker's
+    // own leg references are still non-null (no fill/cancel callback ever told it otherwise) -- both readings are
+    // flat, so nothing must be sent even though stop/target are technically still "resting" by our own bookkeeping.
+    Rig r = feedRig(false);
+    r.tracker.setGapRangeLookup((start, end) -> new int[] {-15, 5});
+    resumeWith(r, 5, 6);
+    r.broker.setPosition(0);
+    r.broker.reportAccountPosition(0);
+    int callsBefore = r.broker.calls().size();
+    r.runNextVerification();
+    checkEq("both readings flat: no order sent even with legs still referenced", r.broker.calls().size(), callsBefore);
+  }
+
+  private static void testGapRangeOtherCases() {
+    Rig noLookup = feedRig(false); // default: no lookup wired
+    resumeWith(noLookup, 5, 6);
+    checkEq("no lookup configured: nothing is scheduled for it", noLookup.scheduled.size(), 0);
+
+    Rig unavailable = feedRig(false);
+    unavailable.tracker.setGapRangeLookup((start, end) -> null); // bars not backfilled yet
+    resumeWith(unavailable, 5, 6);
+    unavailable.runNextVerification();
+    check("bars not available: says so, sends nothing, no further schedule", unavailable.loggedContaining("GAP_RANGE_UNAVAILABLE")
+        && !unavailable.broker.called("closeAtMarket") && unavailable.scheduled.isEmpty());
+
+    Rig stillBetween = feedRig(false);
+    stillBetween.tracker.setGapRangeLookup((start, end) -> new int[] {0, 15}); // the whole range stayed inside [-10, 20]
+    resumeWith(stillBetween, 5, 6);
+    stillBetween.runNextVerification();
+    check("the range never reached a level: confirmed KEEP, nothing sent", stillBetween.loggedContaining("GAP_RANGE_KEEP")
+        && !stillBetween.broker.called("closeAtMarket"));
+
+    Rig resolved = feedRig(false);
+    resolved.tracker.setGapRangeLookup((start, end) -> new int[] {-15, 5});
+    resumeWith(resolved, 5, 6);
+    // the position closed naturally (the platform's stop filled) BEFORE the 5 s mark -- the tracker forgot its legs.
+    FakeBroker.FakeOrder stop = resolved.broker.allOrders().get(1);
+    resolved.broker.fill(stop, 4299.0f, 1_790_000_200_000L);
+    resolved.tracker.onOrderFilled(stop.order());
+    int callsBefore = resolved.broker.calls().size();
+    resolved.runNextVerification();
+    checkEq("already resolved by then: the gap-range check is silent (no broker call)", resolved.broker.calls().size(), callsBefore);
+    check("...cleanly, not via a caught exception", !resolved.loggedContaining("GAP_RANGE_CHECK_FAILED"));
+
+    Rig disagree = feedRig(false);
+    disagree.tracker.setGapRangeLookup((start, end) -> new int[] {-15, 5});
+    resumeWith(disagree, 5, 6);
+    disagree.broker.reportAccountPosition(0); // the readings now disagree by the time the range check runs
+    disagree.runNextVerification();
+    check("readings disagree at range-check time: no close, held", !disagree.broker.called("closeAtMarket")
+        && disagree.loggedContaining("GAP_RANGE_FLATTEN_HELD"));
   }
 
   // ---- 2026-09-28: only the simulated account may affect anything -----------------------------------------------
