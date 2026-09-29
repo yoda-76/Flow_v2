@@ -4621,6 +4621,56 @@ readable rather than being silently rewritten.
     form (strategies still decide from their OWN belief, not a single shared position — deliberately left for the
     strategy rework rather than redone twice).
 
+- **D-121** (2026-09-29) — **`distribution-test` merged into `main`.** User: *"document the progress and since this
+  branch is tested and safe, merge it with main."* Everything below has been live-verified on the Simulated account
+  on the dev machine (except where marked); nothing has ever touched a real account; `main` now carries all of it.
+
+  **The arc, in one paragraph:** the laptop trial (D-105/D-108/D-110) proved the repo builds and runs on a second,
+  bare machine; the 2026-09-27 code review (`codeReview.md`) found the plumbing gaps that a real live run would
+  hit; the first live Sim sessions on 2026-09-27/28 (`liveTest-2026-09-28.md`, findings L-1…L-18) found them for
+  real — most seriously, the kill switch racing a bracket fill and leaving the account **short, unprotected**
+  (L-1), and the risk chain computing P&L from the strategy's belief instead of the account (L-14). Fixing that
+  properly turned into the bulk of this branch: D-113 through D-120, four+ overlapping night/day sessions.
+
+  **What actually changed, by theme:**
+  - **The account, not the strategy, is now the truth for anything safety-critical (D-113, D-120/C1).** The daily-
+    loss check reads the account's cash and position live; every kill-switch/session-end/feed-resume flatten reads
+    BOTH the study's and the account's position and refuses to act on a disagreement; every such flatten is
+    verified 1.5/3/5 s later and self-corrects a wrong-way fill. The strategy itself now hears real fills
+    (`FillEvent`/`onFill`, previously dead code) and re-anchors its own belief to them.
+  - **Execution quality is measured and no longer silently lopsided (D-114/D-120).** The real bracket — and now the
+    strategy's own virtual one — is anchored to the FILL, not the signal (measured: signal-anchoring cost ~1.6-1.9
+    ticks a trade, confirmed fixed at scale over 210 overnight trades, all landing exactly on the intended distance
+    from the fill). Every entry's slippage/latency is journaled; the report shows it and flags a Sim-artifact fill.
+    A slippage-capped limit entry exists, off by default (F-23).
+  - **A dead market-data feed is detected and handled, not silently trusted (D-114/D-119/D-120).** A watchdog
+    inside the runtime notices a stale feed before MotiveWave's own connection alerts do, blocks new entries, and
+    on resume judges an open bracket against both the immediate price and (new, D-120) the historical bar range
+    across the whole outage — both branches (keep / flatten) now confirmed live.
+  - **Only the Simulated account can affect anything, enforced in code (D-115).** Every order and fill carries an
+    account id; one naming anything else is refused/ignored and locks the study — on top of, not instead of, the
+    "Sim Trade Only" checkbox and the human confirming the selector.
+  - **Something now tells a human (D-117/D-118).** Runtime alerts (`logs/alerts.log`, throttled) for the kill
+    switch, disarms, a stale feed, a non-Sim account, a lost leg. An outside watchdog (`ops/watchdog.py`, forwards
+    to Telegram once the user adds a bot) catches MotiveWave/the study dying outright, which nothing inside the
+    process could ever notice about itself.
+  - **A path to an unattended cloud machine exists (D-118).** `docs/runbook-ec2.md`, `ops/harden_windows.ps1`,
+    `ops/register_tasks.ps1` — none run for real yet, all UNVERIFIED where marked.
+  - **Live-verified for real, not just unit-tested:** the kill switch at the right P&L with no naked position; two
+    real+one deliberate feed outages with clean recovery; a 10.5 h unattended overnight run through the full
+    16:00-17:00 CT halt and day roll with zero false alerts; F-26's feed-resume flatten firing correctly on its
+    own; F-22's historical-bar read landing correctly on its own.
+  - **Still open, unchanged by this merge:** the strategy/order-flow rules themselves (the user's to redesign —
+    `lvn_fade_test` is a plumbing stress test, not a strategy with an edge); C1's fuller form (one shared position
+    truth across strategy/risk-chain/tracker, deliberately left for that redesign); C3's cash-balance guard idea;
+    the account-refusal paths, ES-chart refusal, and a real reboot (all need a fault Sim won't produce on its own,
+    or hardware Claude doesn't have — EC2 is where these get their turn).
+
+  **Numbers for the record:** 8 decisions (D-113…D-120) landed ~40 new/extended test groups across 6 new test
+  classes, every one mutation-checked with every survivor traced to a documented equivalent (a redundant check
+  elsewhere, never a real gap); the full `build.sh` (every gate) passed before each of the 6 commits in this
+  stretch; nothing was deployed or merged with a failing gate at any point.
+
 ## Open questions (not yet decisions)
 
 Platform questions get answered by a throwaway study in

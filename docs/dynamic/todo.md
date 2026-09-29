@@ -138,6 +138,16 @@ Full numbers: `logAnalysis-2026-09-28.md` final addendum.
 machine reboot, anything on EC2. **Still pending, the user's to review:** the strategy and order-flow rules, C1,
 F-22/F-23, the Telegram bot.
 
+## Update 2026-09-29 — `distribution-test` merged into `main` (see D-121 for the full write-up)
+
+Everything from this session (D-113…D-120: the account-truth kill switch, the feed watchdog, the Simulated-only
+guard, the alert path, C1/F-22/F-23) is now on `main`, tested and live-verified as described in D-121. `main` is
+the branch to work from going forward; `distribution-test` was the working branch for this stretch and can be
+treated as merged history from here. What's left is unchanged by the merge — see the "What's left" section above
+and D-121's own list: the strategy/order-flow rework (the user's), the EC2 setup (Claude's, once the provider is
+chosen), and a handful of live tests that need either a fault Sim won't produce on its own or hardware not
+available yet.
+
 ## Session handoff — 2026-09-28 night → 2026-09-29 (read this first if picking this up fresh)
 
 **Everything in this block is also in the sections below it (D-113…D-118, F-1…F-26) — this is only the "what actually
