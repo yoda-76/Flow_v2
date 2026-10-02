@@ -197,9 +197,19 @@ follows — see its README).
 ## Working on a second machine (added 2026-09-26)
 
 This repo is meant to be cloned onto other machines (a cloud machine; the spare-laptop trial). A Claude session
-there starts with **no memory of the first machine's chats** — everything it needs is in the repo. Read, in this
-order: `docs/working-agreements.md` (how the user works), the **"LAPTOP TRIAL HANDOFF"** block at the top of
-`docs/dynamic/todo.md`, then `docs/runbook.md` (§13 is the trial script) and `docs/configuration.md`.
+there starts with **no memory of the first machine's chats** — everything it needs is in the repo.
+
+- **For a rented cloud VM (EC2 or similar) — the current target:** read, in this order: `docs/working-agreements.md`
+  (how the user works), `docs/runbook-ec2.md` (the whole setup — decisions to make, AWS/Windows prep, MotiveWave
+  and FLOW install, alerts/watchdog, restart policy, the first-24-hours checklist), `docs/runbook.md` (general
+  first-start checklist §5, sizing §11a) and `docs/configuration.md` (every setting). Then check
+  `docs/dynamic/todo.md`'s most recent dated entries (search for "Session handoff" / "merged into `main`") for
+  what is still outstanding — do **not** start from the **"LAPTOP TRIAL HANDOFF"** block below; that one is the
+  spare-laptop trial specifically and `todo.md` itself now calls that trial moot ("the user is moving to EC2
+  instead of a second physical machine").
+- **For the spare-laptop trial specifically** (historical, 2026-09-26/27, superseded by the move to EC2): the
+  **"LAPTOP TRIAL HANDOFF"** block at the top of `docs/dynamic/todo.md`, then `docs/runbook.md` (§13 is the trial
+  script) and `docs/configuration.md`.
 
 - **Sibling repos may not exist.** `../motivewave` and `../FLOW` are not needed to build or run (only a JDK 26 is:
   set `FLOW_JDK_BIN`). Links into `../motivewave/docs/…` are then dead; do not re-derive platform facts from

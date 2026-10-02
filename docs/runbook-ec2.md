@@ -73,11 +73,16 @@ Follow `runbook.md` §4 in this order — **Sim Trade Only comes first**:
 ## 5. FLOW install on the instance
 
 ```text
-git clone <the repo>            # branch distribution-test (or the branch you test)
+git clone <the repo>            # branch main (D-121, 2026-09-29: distribution-test was merged into main — main is current)
 setx FLOW_HOME "D:\flow\FLOW_V2"  # ONLY if the clone is not at C:/yadvendra/trading/FLOW_V2 (the built-in default)
 setx FLOW_JDK_BIN "<path to the JDK's bin>"     # build/env.sh explains the variables
+setx MOTIVEWAVE_EXT_DIR "C:\Users\<this machine's Windows user>\MotiveWave Extensions"  # the hard-coded default is
+                                                 # the dev machine's user (MSI) and will be wrong here — build.sh
+                                                 # fails loudly and names this variable if it's missing (configuration.md)
+setx MWAVE_SDK_JAR "C:\Program Files (x86)\MotiveWave\lib\mwave_sdk.jar"  # only if MotiveWave installs elsewhere on this instance
 bash build/build.sh             # runs every test, then deploys to "MotiveWave Extensions\dev"
 ```
+(`setx` only takes effect in a **new** shell — close and reopen the terminal, or restart Git Bash, before running `build.sh`.)
 
 - After **any** deploy: remove and re-add the study (a running study keeps the old classes) and re-check `runbook.md` §5.
 - **Per-machine config** goes in the git-ignored `config/risk.local.json` — never in `risk.json`. A cloud file for a long run:

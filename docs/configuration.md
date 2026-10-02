@@ -12,7 +12,7 @@ There are four places configuration lives:
 | [`config/risk.json`](#1-configrisk-json) (+ optional git-ignored `config/risk.local.json` for one machine, D-106) | risk limits, session-end flatten, data-recording cadence, log retention | you, by hand | next time the study is **activated** |
 | [MotiveWave study settings](#2-motivewave-study-settings-flow-runtime) | strategy id, armed/mode, big-trade threshold, draw flags, warm-start | you, in the MotiveWave GUI | mostly at activation; a few live |
 | [Constants in code](#3-constants-in-code) | paths, retention, cadences | code change + rebuild + deploy | after deploy + re-activation |
-| `.env` | (nothing in FLOW_V2 uses it today) | **only you, never Claude** | — |
+| `.env` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (D-117/D-118) — read by `ops/watchdog.py` only; names documented in `.examples.env` | **only you, never Claude** | next watchdog run |
 
 The runtime never writes `config/risk.json` or the study settings; it only
 reads them and **journals the values actually in force at the start of every

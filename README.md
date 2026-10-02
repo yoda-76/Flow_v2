@@ -581,7 +581,7 @@ can place an order — the analysis scripts only read files under `logs/` and
 | `python analysis/trade_view.py --date D --trade N` | **Market context around one trade**: how far it went for/against you, order flow before/during/after, price ladder, liquidity in the way of the target. Saves `reports/trade_<D>_<N>.md`. | When a trade needs a "why?" |
 | `bash build/build.sh` | Compiles, runs **every** test gate (Java and Python) and **deploys** to MotiveWave. **Wipes `MotiveWave Extensions/dev` — never run while a session is running.** | After a code change |
 | edit `config/risk.json`, or the study's settings | See [docs/configuration.md](docs/configuration.md): every setting, its default, when it takes effect. | To change limits/cadences |
-| — | **Setting up a machine** (install, MotiveWave + Rithmic, Sim account, first-start checklist, deploying, unattended running): [docs/runbook.md](docs/runbook.md). A draft — every step is tagged verified / unknown / yours. | New machine, or after a MotiveWave change |
+| — | **Setting up a machine** (install, MotiveWave + Rithmic, Sim account, first-start checklist, deploying, unattended running): [docs/runbook.md](docs/runbook.md). A draft — every step is tagged verified / unknown / yours. For a rented cloud VM specifically (the current target), start from [docs/runbook-ec2.md](docs/runbook-ec2.md) instead. | New machine, or after a MotiveWave change |
 
 Where things land: `logs/<strategy>_<ms>_inst<id>/decisions.jsonl` (what the
 system decided, kept), `data/<construct>/<session>.jsonl` (recorded market
