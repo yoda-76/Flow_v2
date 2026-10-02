@@ -5,6 +5,25 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
+## NEW WORK 2026-10-02 — read this first if picking this up on the cloud VM
+
+System is now running 24/7 on the EC2 VM (the `runbook-ec2.md` setup is live). The user has very limited
+hands-on MotiveWave access going forward (multiple personal devices, one cloud machine) and picked two things to
+work on next, **plans/docs only so far, nothing built**:
+
+1. **Remote download of reports/data from the VM** → `docs/dynamic/remoteDataAccessPlan.md`. Decided: `rclone` to
+   the user's Google Drive (not S3, not a custom API server — reasoning is in the doc). One open ⚠️ item inside
+   (whether `raw.jsonl` needs a slower-cadence backup too, depends on item 2 below).
+2. **A real backtest engine** → `docs/dynamic/backtestEnginePlan.md`. Audited 2026-10-02: contrary to the
+   assumption going in, this is **not** mostly done — `ReplayHarness` is a determinism check (no PnL), and
+   `MarketStructureBacktest` is a narrow bar-only tool that deliberately excludes the order-flow edge (D-06 still
+   stands for that). The doc has a ⚠️ AMBIGUOUS scope question (own `raw.jsonl` archive vs. a longer MotiveWave bar
+   export vs. both) flagged for the user — **don't start coding until that's resolved**, everything else in the
+   doc's phasing is unambiguous and can proceed.
+
+Everything below this section is the pre-existing backlog (2026-09-28 fix list and earlier) — still valid, not
+superseded by the above; the user said "we will go after them later."
+
 ## FIX LIST 2026-09-28 (from the log analysis — `logAnalysis-2026-09-28.md` + `liveTest-2026-09-28.md`; NOTHING here is fixed yet)
 
 Sources: **L-n** = `liveTest-2026-09-28.md` (last night), **N-n** = `logAnalysis-2026-09-28.md` (tonight's 34-min run, S7),
