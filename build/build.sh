@@ -72,6 +72,14 @@ echo "== market structure backtest engine synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.backtest.MarketStructureBacktestTest
 echo "(backtest engine test passed -- see output above)"
 
+echo "== generic backtest engine test (BacktestStrategy plug-in + ported risk chain, 2026-10-03) =="
+"$JAVA" -cp build/classes/core com.flow.backtest.BacktestEngineTest
+echo "(generic backtest engine test passed -- see output above)"
+
+echo "== backtest runner CLI test (JSONL output shape, 2026-10-03) =="
+"$JAVA" -cp build/classes/core com.flow.backtest.BacktestRunnerTest
+echo "(backtest runner CLI test passed -- see output above)"
+
 echo "== risk chain synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.core.RiskChainTest
 echo "(risk chain test passed -- see output above)"
@@ -163,6 +171,10 @@ if command -v python >/dev/null 2>&1; then
   python analysis/test_trade_view.py
   python analysis/test_status.py
   echo "(daily report + trade viewer + status tests passed -- see output above)"
+  echo "== backtest report + comparison tests (python, 2026-10-03) =="
+  python analysis/test_backtest_report.py
+  python analysis/test_backtest_compare.py
+  echo "(backtest report + comparison tests passed -- see output above)"
   echo "== watchdog tests (python, ops/) =="
   python ops/test_watchdog.py
   echo "(watchdog tests passed -- see output above)"

@@ -94,6 +94,12 @@ readable rather than being silently rewritten.
   order-flow logic that's inherently tick/DOM-level. Backtest is future
   scope, not rejected outright — see D-07.
 
+  **Amended 2026-10-03, see D-122** — a general-purpose, bar-close-only backtest engine is now built and has
+  run for real. This does **not** reverse D-06's core point: order-flow/tick-level execution still cannot be
+  honestly backtested (no tick/DOM historical data exists) and stays permanently out of scope. What changed is
+  narrower — D-74/D-79/D-80's one-off market-structure-only carve-out is now a reusable, pluggable engine any
+  bar-close strategy can register with, per the user's explicit 2026-10-03 scope call (`backtestEnginePlan.md`).
+
 - **D-07** (2026-09-12) — **Record now, replay later, with bounded raw
   retention.** The journal records every input event the runtime sees
   (ticks, DOM, bar closes), not just decisions, so a future replay harness
@@ -4671,7 +4677,50 @@ readable rather than being silently rewritten.
   elsewhere, never a real gap); the full `build.sh` (every gate) passed before each of the 6 commits in this
   stretch; nothing was deployed or merged with a failing gate at any point.
 
-## Open questions (not yet decisions)
+- **D-122** (2026-10-03) — **Generic backtest engine built, run for real for the first time; amends D-06 (see
+  there).** User's scope call: order-flow execution stays permanently out of backtesting (no tick/DOM historical
+  data exists); test bar-close signal logic only, generically across strategies, on the user's own MotiveWave
+  chart export rather than the VM's recordings. Full design in `docs/dynamic/backtestEnginePlan.md`, how-to in
+  `docs/backtest-strategy-guide.md`.
+
+  **Built**: `BacktestStrategy` interface, `BacktestEngine` (ported risk chain — daily-loss kill switch, max
+  reversals, rate limit, min dwell, reusing `SessionBoundary.Tracker` for the 17:00 CT rollover), `BacktestRunner`
+  CLI + strategy registry, `analysis/backtest_report.py` (md + `_trades.csv` + `_periods.csv`, with
+  daily/weekly/monthly/yearly PnL — the user's explicit requirement, so "performance in July 2023" is a lookup,
+  not a calculation) and `analysis/backtest_compare.py` (reads already-run `.jsonl` files, never re-runs the
+  engine — the user's explicit instruction). Regression-checked byte-identical against the old D-79 tool on real
+  data; mutation-tested (2 real boundary-case gaps found and fixed — see `backtestEnginePlan.md`'s checklist).
+
+  **First real run, 2026-10-03**: `MarketStructureBacktestStrategy` (still the pre-order-flow-rules-review
+  placeholder logic — this result predates that review landing, and should be re-run once it does) over the
+  user's own **~5-year** `@GC` 1-minute export (2021-10-03 → 2026-10-02, 1,760,251 bars, `sinceMs` filter on
+  `analysis/data/GC_1m_latest.csv`'s full ~6.2-year range).
+
+  | Run | rr | Stop | Trades | Win% | totalR | maxDrawdownR | totalR/maxDD |
+  |---|---|---|---|---|---|---|---|
+  | Default | 2.0 | FIXED_BUFFER_TICKS(2) | 12,650 | 42.3% | 1289.74 | 127.53 | 10.11 |
+  | "Optimized" | 4.0 | FIXED_BUFFER_TICKS(2) | 12,543 | 32.6% | 1837.26 | 128.53 | 14.29 |
+
+  **How "optimized" was chosen, and why not more aggressively**: swept `rr` 1.0→6.0 at the default stop; raw
+  `totalR` climbed *monotonically* the whole way (win% fell from 53.0%→28.2% but reward-per-win grew faster) —
+  a classic sign this isn't a real edge peaking, just reward asymmetry with no realism penalty, so picking the
+  largest `rr` tested would have been an overfit, not an optimum. Used `totalR/maxDrawdownR` instead: it peaks
+  cleanly at **rr=4.0** (14.29) and falls on both sides (11.80 at rr=2.5, 11.80 at rr=5.0, 11.86 at rr=6.0 — note
+  `maxDrawdownR` itself jumps from 128.5 to 163+ past rr=4.0). Also swept the other two stop conventions
+  (`ZONE_SIZE_MULTIPLE`: strongly negative; `FIXED_PRICE_DISTANCE`: weakly positive, far worse) and the buffer
+  size itself (1/3/5/8 ticks: 1 gives a higher raw totalR but a worse ratio, 9.38; 2 stays the best-ratio choice)
+  — the original default stop convention and buffer size were already near-optimal; `rr` was the one real lever.
+  Full sweep (19 runs): `reports/backtest/comparison_full_sweep.md`. Both final runs' full reports:
+  `reports/backtest/market_structure_{default,optimized}_5y.md` (+ `_trades.csv`/`_periods.csv` each),
+  side-by-side: `reports/backtest/comparison_default_vs_optimized.md`.
+
+  **Read with real caveats, matching this tool's own stated purpose (a screening filter, not a PnL estimate)**:
+  the entry filter is deliberately loose (zone touch only, no order-flow confirmation) — `deniedMaxReversals` is
+  huge (216,955–228,527 across the two runs) because the strategy tries to re-enter far more often than the
+  20-per-session cap allows, so most of its raw signal volume never becomes a trade at all; no transaction
+  costs/slippage are modeled; these are *still the pre-review placeholder rules* per `orderFlowExecutionRules.md`'s
+  16 open points. A positive risk-adjusted number here means the setup logic is worth a forward-test slot once
+  reviewed, not that this exact parameterization should go live as-is.
 
 Platform questions get answered by a throwaway study in
 `../motivewave/experiments/`, landing in that repo's `findings.md`; system

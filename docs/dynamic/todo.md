@@ -5,21 +5,35 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
-## NEW WORK 2026-10-02 — read this first if picking this up on the cloud VM
+## NEW WORK 2026-10-02/03 — read this first if picking this up on the cloud VM
 
 System is now running 24/7 on the EC2 VM (the `runbook-ec2.md` setup is live). The user has very limited
-hands-on MotiveWave access going forward (multiple personal devices, one cloud machine) and picked two things to
-work on next, **plans/docs only so far, nothing built**:
+hands-on MotiveWave access going forward (multiple personal devices, one cloud machine) and picked three things to
+work on next. The user is doing the order-flow rules review themselves (item 3); item 1 is still plan-only; item 2
+— **the backtest engine — is now built** (2026-10-03, on the dev machine, not delegated to the cloud Claude after
+all, see `backtestEnginePlan.md`'s checklist for the full status):
 
 1. **Remote download of reports/data from the VM** → `docs/dynamic/remoteDataAccessPlan.md`. Decided: `rclone` to
-   the user's Google Drive (not S3, not a custom API server — reasoning is in the doc). One open ⚠️ item inside
-   (whether `raw.jsonl` needs a slower-cadence backup too, depends on item 2 below).
-2. **A real backtest engine** → `docs/dynamic/backtestEnginePlan.md`. Audited 2026-10-02: contrary to the
-   assumption going in, this is **not** mostly done — `ReplayHarness` is a determinism check (no PnL), and
-   `MarketStructureBacktest` is a narrow bar-only tool that deliberately excludes the order-flow edge (D-06 still
-   stands for that). The doc has a ⚠️ AMBIGUOUS scope question (own `raw.jsonl` archive vs. a longer MotiveWave bar
-   export vs. both) flagged for the user — **don't start coding until that's resolved**, everything else in the
-   doc's phasing is unambiguous and can proceed.
+   the user's Google Drive (not S3, not a custom API server — reasoning is in the doc). Still not built. One open
+   ⚠️ item inside (whether `raw.jsonl` needs a slower-cadence backup too — low priority, not blocking).
+2. **A generic, multi-strategy backtest engine on 1-minute OHLC data** → `docs/dynamic/backtestEnginePlan.md`.
+   **Built and tested 2026-10-03** (`flow-core/src/com/flow/backtest/`: `BacktestStrategy` interface,
+   `BacktestEngine` with a ported risk chain, `BacktestRunner` CLI, `analysis/backtest_report.py` +
+   `backtest_compare.py`; `docs/backtest-strategy-guide.md` explains how to add a new strategy). Regression-checked
+   byte-identical against the old D-79 numbers on real data; mutation-tested (found and fixed 2 real boundary-case
+   test gaps). Data: the user's own ~6.2-year 1-minute `@GC` CSV (2020-07-12 → 2026-10-02, 2,193,481 bars,
+   `analysis/data/GC_1m_latest.csv`), exported via the redeployed `../motivewave/experiments`
+   `HistoricalOhlcExporter` (now also writing a stable `_latest.csv` path), contract-roll-checked (no stitching
+   artifacts found, not fully provable without a contract-month column — accepted as low-risk for a screening tool).
+   Order-flow execution stays permanently out of scope (no tick/DOM historical data available) — this only tests
+   pure bar-close signal logic, as a cheap screening checkpoint before committing a forward-test slot to a strategy.
+   **First real run done 2026-10-03** (D-122): the user's own ~5-year slice (2021-10-03 → 2026-10-02,
+   1,760,251 bars), default params and a risk-adjusted-optimized `rr=4.0` — both reports + a full 19-run sweep
+   under `reports/backtest/`. `decisions.md` D-122 amends D-06 with the full write-up. Still pre-order-flow-rules-
+   review placeholder strategy logic — re-run once `orderFlowExecutionRules.md` lands.
+3. **Order-flow execution rules review** → `docs/dynamic/orderFlowExecutionRules.md` (16 unresolved ⚠️ points) —
+   the user is doing this review directly, not delegated. Check back here for whether it's landed before assuming
+   which strategy rules are current.
 
 Everything below this section is the pre-existing backlog (2026-09-28 fix list and earlier) — still valid, not
 superseded by the above; the user said "we will go after them later."
