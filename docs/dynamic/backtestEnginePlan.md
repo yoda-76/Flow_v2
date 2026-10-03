@@ -40,10 +40,13 @@ see the decision to record at the end of this doc.
 - **This engine tests strategies on 1-minute OHLC bars only.** No tick data, no DOM, no footprint/VWAP/volume
   profile/big-trades/liquidity-map features — those don't exist in this mode at all.
 - **Not dependent on the VM's own recordings.** Historical data comes directly from MotiveWave's own chart (the
-  same technique D-77 already proved: lower the chart's "Max Linear Bars" setting, scroll back, export) — **the
-  user has now loaded ~1 year of 1-minute `@GC` bars this way (2025-10-05 → today)**, far beyond the 24.2-day CSV
-  D-77 originally exported. This replaces "wait for the VM to accumulate raw.jsonl history" entirely for this
-  purpose.
+  same technique D-77 already proved: lower the chart's "Max Linear Bars" setting, scroll back, export) — **final
+  result, 2026-10-03: ~6.2 years, 2020-07-12 → 2026-10-02, 2,193,481 bars** (`analysis/data/GC_1m_latest.csv`),
+  far beyond the 24.2-day CSV D-77 originally exported — the number grew through several re-exports as the user
+  kept scrolling further back (see §7 below and the checklist for the full trail). This replaces "wait for the
+  VM to accumulate raw.jsonl history" entirely for this purpose. **MotiveWave on the dev machine froze while
+  scrolling for even more** (reached April 2020 before hanging) — left alone rather than force-restarted; see
+  `todo.md`'s "loose end" note for what to check if it recovers.
 - **Must be generic across many strategies, not just market structure.** The user plans to test "a lot of different
   strategies" through this tool — the engine is the pluggable, reusable part; each strategy's bar-close logic is a
   plug-in, the same philosophy the live system already uses for `FlowStrategy` (README: "new strategy touches one
@@ -56,7 +59,7 @@ see the decision to record at the end of this doc.
   focus is not the replay on the chart, the main focus is how effective the strategies [are] before applying the
   execution engine... this is just the first checkpoint in onboarding a new strategy... ultimately we can only
   forward-test a limited number of strategies with our current resources."* This is a **screening filter** — does a
-  strategy's setup/signal logic show any edge at all on a year of bars — not a replacement for forward testing, not
+  strategy's setup/signal logic show any edge at all on years of historical bars — not a replacement for forward testing, not
   a visual/replay tool, not an order-flow-execution model. Don't let the build grow past that.
 - **Explicitly parked for later** (the user's words: *"park it, we'll come back to it, that's a different thing"**):
   D-43 / Replay-inside-MotiveWave / any order-flow backtest. Do not fold this into the current build.
@@ -101,26 +104,29 @@ no reusable report.
 6. **Multi-strategy / parameter-sweep comparison** — formalizes what D-80 did by hand: given N (strategy, param set)
    combinations, run each through steps 3–5, emit one comparison table. This is central now, not an afterthought —
    "testing a lot of different strategies" is the explicit goal.
-7. **Data**: the user's **~2.8-year 1-minute `@GC` CSV** (2023-12-13 → 2026-10-02, 985,615 bars, exported via the
-   redeployed `HistoricalOhlcExporter`, D-77's tool — `../motivewave/experiments/src/flow_diag/
+7. **Data, final**: the user's **~6.2-year 1-minute `@GC` CSV** (2020-07-12 → 2026-10-02, 2,193,481 bars,
+   exported via the redeployed `HistoricalOhlcExporter`, D-77's tool — `../motivewave/experiments/src/flow_diag/
    HistoricalOhlcExporter.java`, now also writing a stable `GC_1m_latest.csv` alongside the dated snapshot so
    downstream tooling has one fixed path) is the primary input, replacing the original 24.2-day D-77 export. OHLCV,
    not OHLC — volume was already correct in the exporter, verified (see data-quality check below). Store under
    `analysis/data/` per existing convention; `analysis/data/`'s gitignore status is still flagged, not decided
-   (D-79) — **recommend**: gitignore the raw CSV (large, 45MB, regeneratable from MotiveWave any time) but commit
-   small run-output summaries/reports, matching how `data/`/`reports/` are already split elsewhere in this repo.
-   Flag this recommendation to the user rather than deciding it silently.
-   More history may still be coming — the user is scrolling the chart back further (hit some UI lag at ~2.8 years,
-   stopped there for now, may push further later). **Re-export requires reactivating the study** (remove + re-add,
-   or restart MotiveWave) after scrolling further — the exporter is a one-shot-per-activation design, and scrolling
-   alone does not feed more bars into an already-active study's `DataSeries` (unverified whether the platform even
-   does that at all; the safe, known-working path is reactivation either way).
+   (D-79) — **recommend**: gitignore the raw CSV (large, ~100MB, regeneratable from MotiveWave any time) but
+   commit small run-output summaries/reports, matching how `data/`/`reports/` are already split elsewhere in
+   this repo. Flag this recommendation to the user rather than deciding it silently.
+   Got here through several re-exports as the user scrolled further back each time (1y → 2.8y → 3.8y → 4.8y →
+   6.2y), each one re-validated the same way (shape + roll check, below) before trusting it. **MotiveWave froze
+   on the dev machine while scrolling for still more** (reached April 2020 before hanging) — left as-is per the
+   user's call rather than force-restarted; see `todo.md`'s loose-end note. **Re-export requires reactivating the
+   study** (remove + re-add, or restart MotiveWave) after scrolling further — the exporter is a one-shot-per-
+   activation design, and scrolling alone does not feed more bars into an already-active study's `DataSeries`
+   (unverified whether the platform even does that at all; the safe, known-working path is reactivation either
+   way) — confirmed empirically across all the re-exports above, every one needed a fresh reactivation.
 
-### Data-quality check — contract rolls (checked 2026-10-03, not fully conclusive)
+### Data-quality check — contract rolls (checked at each re-export through 2026-10-03, not fully conclusive)
 
-A 2.8-year `@GC` series crosses many contract rolls (roughly bi-monthly on COMEX gold). Checked for roll-splice
-artifacts by scanning all 985,615 bars for large 1-minute price moves: 380 moves >0.4% with a ≤5-minute time gap,
-top moves topping out ~2.1%. **No evidence of a stitching problem** — the large moves cluster cleanly into two
+A 6.2-year `@GC` series crosses many contract rolls (roughly bi-monthly on COMEX gold). Checked for roll-splice
+artifacts by scanning all 2,193,481 bars for large 1-minute price moves: no new red flags appeared at any
+re-export stage as the range grew. **No evidence of a stitching problem** — the large moves cluster cleanly into two
 explainable buckets: (a) daily/weekend session-boundary gaps (e.g. 61-min and ~49-hour gaps at the 16:00 CT halt/
 weekend close), and (b) a disproportionate number landing at `12:29`/`13:29` UTC specifically — the minute before
 the 8:30am ET scheduled US economic release (CPI, jobs, etc.) — across scattered, unrelated dates, which is a news
@@ -133,18 +139,24 @@ dates.
 
 ### Phasing (don't attempt all of this in one pass — matches the user's "keep it minimal, keep moving" instruction)
 
-1. `BacktestStrategy` interface + extract the existing market-structure rule behind it. Regression-check against
-   D-79's run 1 numbers before anything else is trusted.
-2. Generalized `BacktestEngine` loop (strategy plug-in instead of inline logic) — same bar-by-bar mechanics as today.
-3. Ported risk chain (daily loss limit, size cap, reversals, rate limit, dwell) wired into the engine, denials
-   recorded on the report.
-4. Report writer reusing `daily_report.py`'s shape.
-5. Multi-strategy / parameter-sweep comparison tooling.
-6. Run the (currently reviewed-or-not) market-structure strategy over the full ~1-year CSV once the roll question
-   above is checked — label clearly whether this predates or postdates the order-flow rules review currently
-   in progress, since that review may change the live strategy this backtest's results get compared against.
+**Steps 1–6 all done, 2026-10-03** (see the checklist and `decisions.md` D-122 for the full detail):
+
+1. ~~`BacktestStrategy` interface + extract the existing market-structure rule behind it. Regression-check against
+   D-79's run 1 numbers before anything else is trusted.~~ Done — exact match, every trade identical.
+2. ~~Generalized `BacktestEngine` loop (strategy plug-in instead of inline logic) — same bar-by-bar mechanics as today.~~ Done.
+3. ~~Ported risk chain (daily loss limit, size cap, reversals, rate limit, dwell) wired into the engine, denials
+   recorded on the report.~~ Done, mutation-tested.
+4. ~~Report writer reusing `daily_report.py`'s shape.~~ Done — plus CSV output and daily/weekly/monthly/yearly
+   PnL tables (added to scope 2026-10-03, see the checklist).
+5. ~~Multi-strategy / parameter-sweep comparison tooling.~~ Done.
+6. ~~Run the (currently reviewed-or-not) market-structure strategy over the full historical CSV once the roll
+   question above is checked.~~ **Done, 2026-10-03, D-122** — run on a ~5-year slice (user's choice, not the
+   full 6.2 years), default params and a risk-adjusted `rr`. Explicitly **predates** the order-flow rules review
+   (still in progress as of this writing, confirmed by the user to be taking longer than expected) — re-run once
+   it lands.
 7. Onboard additional strategies as they're written, one `BacktestStrategy` implementation each — no engine changes
-   needed per the whole point of step 1's plug-in seam.
+   needed per the whole point of step 1's plug-in seam. **Not yet done** — only `market_structure_backtest` is
+   registered so far.
 
 **Explicitly not phased in here**: anything order-flow, anything requiring `raw.jsonl`/the VM's own recordings,
 D-43/Replay-inside-MotiveWave. Revisit only when the user says so.
@@ -154,7 +166,7 @@ D-43/Replay-inside-MotiveWave. Revisit only when the user says so.
 Not a reversal of D-06's stance that order-flow/tick-level execution can't be honestly backtested — that stance is
 unchanged and, per the user's 2026-10-03 scope call, now explicitly permanent for this engine's lifetime, not just
 "until D-43 is solved." This tool answers a narrower, different question: does a strategy's **setup/signal** logic
-(expressed in pure price action) show any edge on a year of bars, as a cheap first filter before spending one of a
+(expressed in pure price action) show any edge on years of historical bars, as a cheap first filter before spending one of a
 limited number of forward-test slots on it. Order-flow execution quality is only knowable once a strategy reaches
 Sim/live forward testing, same as today.
 
@@ -166,10 +178,11 @@ permanently out of scope — dated, with the regression-check and first real mul
 ## Checklist — what this now actually requires (revised 2026-10-03 after scope resolution)
 
 **1. Data**
-- [x] *(2026-10-03)* Export the `@GC` 1-minute CSV — got ~2.8 years (2023-12-13 → 2026-10-02, 985,615 bars), more
-  than planned; OHLCV confirmed, 0 malformed rows, only 3/985,615 zero-volume bars. Exporter now also writes a
-  stable `GC_1m_latest.csv` path. More history may still come (user may scroll further — needs study reactivation
-  to re-export, see above).
+- [x] *(2026-10-03, final)* Export the `@GC` 1-minute CSV — grew across several re-exports to **~6.2 years**
+  (2020-07-12 → 2026-10-02, 2,193,481 bars), far more than planned; OHLCV confirmed, 0 malformed rows, only
+  3/2,193,481 zero-volume bars. Exporter now also writes a stable `GC_1m_latest.csv` path. More history may still
+  come later — MotiveWave froze on the dev machine mid-scroll (reached April 2020) and was left as-is; see
+  `todo.md`'s loose-end note for what to check if it recovers.
 - [x] *(2026-10-03)* Contract-roll check — no stitching artifacts found; residual small-roll-gap risk accepted as
   low for a screening tool, not fully provable without a contract-month column. Full write-up above.
 - [ ] Decide `analysis/data/`'s gitignore status for this file (D-79, still flagged) — recommendation above, not yet

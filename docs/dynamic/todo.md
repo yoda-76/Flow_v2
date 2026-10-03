@@ -31,9 +31,24 @@ all, see `backtestEnginePlan.md`'s checklist for the full status):
    1,760,251 bars), default params and a risk-adjusted-optimized `rr=4.0` — both reports + a full 19-run sweep
    under `reports/backtest/`. `decisions.md` D-122 amends D-06 with the full write-up. Still pre-order-flow-rules-
    review placeholder strategy logic — re-run once `orderFlowExecutionRules.md` lands.
-3. **Order-flow execution rules review** → `docs/dynamic/orderFlowExecutionRules.md` (16 unresolved ⚠️ points) —
-   the user is doing this review directly, not delegated. Check back here for whether it's landed before assuming
-   which strategy rules are current.
+3. **Order-flow execution rules review** → `docs/dynamic/orderFlowExecutionRules.md` — the user is doing this
+   review directly, not delegated. **The file was fully restructured 2026-10-03** (a new "review record" format —
+   10 numbered sections, each with "Current behavior" + numbered "Open questions"/"Status," not the old
+   `⚠️ AMBIGUOUS` distillation this todo previously pointed at — don't go looking for that old format). **In
+   progress, confirmed by the user to be taking longer than expected** — as of this check, all 10 sections have
+   questions written but **none are yet marked RESOLVED**. Meanwhile: keep picking up tasks that don't depend on
+   its outcome (item 1, the generic engine's own further polish, anything VM-side) — the user's own framing,
+   2026-10-04ish: "we will keep completing tasks that doesn't need order flow review." Check back here before
+   assuming which strategy rules are current.
+
+**Loose end only in this session's memory, not written down anywhere else — worth knowing if picked up fresh**:
+MotiveWave on the **dev machine** (not the VM) was left **frozen/unresponsive** on 2026-10-03 while the user was
+scrolling the `@GC` chart back for more historical data — got as far as **April 2020** before it hung. That
+deeper history was never exported (the `HistoricalOhlcExporter` study couldn't be re-added while frozen), so
+`analysis/data/GC_1m_latest.csv` is still the ~6.2-year version (2020-07-12 → 2026-10-02, 2,193,481 bars) used for
+the current backtest runs, not the deeper slice. The user chose to leave it and see if it recovers on its own
+rather than force a restart. If it's picked back up: check whether MotiveWave is responsive again, and if so,
+remove+re-add the exporter study to get the deeper export before assuming 6.2 years is still the limit.
 
 Everything below this section is the pre-existing backlog (2026-09-28 fix list and earlier) — still valid, not
 superseded by the above; the user said "we will go after them later."
