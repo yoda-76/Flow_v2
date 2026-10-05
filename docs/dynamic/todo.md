@@ -14,7 +14,10 @@ work on next. The user is doing the order-flow rules review themselves (item 3);
 all, see `backtestEnginePlan.md`'s checklist for the full status):
 
 1. **Remote download of reports/data from the VM** → `docs/dynamic/remoteDataAccessPlan.md`. Decided: `rclone` to
-   the user's Google Drive (not S3, not a custom API server — reasoning is in the doc). Still not built. One open
+   the user's Google Drive (not S3, not a custom API server — reasoning is in the doc). **Pipeline built 2026-10-06** (`ops/sync_to_gdrive.ps1` on the VM, daily 03:00 IST; `ops/sync_from_gdrive.ps1` here, daily 08:00 IST or by hand; `ops/register_gdrive_tasks.ps1` to schedule; see the pipeline section of `remoteDataAccessPlan.md`). Not yet scheduled on any machine.
+   (`ops/sync_to_gdrive.ps1`, uses `rclone copy` so Drive never loses history). Needs, on the VM: rclone installed,
+   a one-time `rclone config` (remote `gdrive`, done by the user — the token never enters the repo), a dry run,
+   then a Task Scheduler entry. No MotiveWave needed. One open
    ⚠️ item inside (whether `raw.jsonl` needs a slower-cadence backup too — low priority, not blocking).
 2. **A generic, multi-strategy backtest engine on 1-minute OHLC data** → `docs/dynamic/backtestEnginePlan.md`.
    **Built and tested 2026-10-03** (`flow-core/src/com/flow/backtest/`: `BacktestStrategy` interface,

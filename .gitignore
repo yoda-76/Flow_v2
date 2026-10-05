@@ -34,3 +34,7 @@ __pycache__/
 temp.txt
 # D-106: per-machine config override (risk.local.json), e.g. a cloud machine setting logRetentionHours
 config/risk.local.json
+
+# Local copy of the Google Drive backup (ops/sync_from_gdrive.ps1) -- generated data, not source
+/gdrive_mirror/
+/gdrive_staging_*/
