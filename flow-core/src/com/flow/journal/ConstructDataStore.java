@@ -115,6 +115,7 @@ public final class ConstructDataStore {
    * Non-matching names are never touched.
    */
   public static int pruneNow(Path root, int keepSessions, long currentSessionId) throws IOException {
+    if (keepSessions <= 0) return 0; // safety: 0 would keep no session and delete everything, including today's files
     if (!Files.isDirectory(root)) return 0;
     TreeSet<Long> ids = new TreeSet<>();
     ids.add(currentSessionId);

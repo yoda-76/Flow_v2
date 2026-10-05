@@ -82,7 +82,7 @@ order. Holidays and early closes are **not modelled** (a decision — D-93).
 |---|---|---|
 | `dataIntervalSeconds` | 1 | Write interval for footprint candles, VWAP and big trades under `data/`. Raise if storage or load demands it. |
 | `liquidityIntervalSeconds` | 1 | Liquidity-map snapshot interval, tunable separately (the heaviest: ≈ 4–5 KB/s at 1 s ≈ 3 GB per 7 trading days). |
-| `dataKeepTradingDays` | 7 | Files are `data/<construct>/<symbol>/<sessionId>.jsonl` (the symbol folder since findings F-1, e.g. `GC` for `@GC`; recordings made before 2026-09-27 are flat `data/<construct>/<sessionId>.jsonl`, still read by the tools). Rolling window of trading days kept under `data/`; the oldest is deleted when a new one starts. About 0.45 GB per trading day (mostly the liquidity map) — disk per retention in `docs/runbook.md` §11a. |
+| `dataKeepTradingDays` | **0 = keep everything** (current VM setting, 2026-10-04; 7 = rolling window) | `0` or negative turns automatic deletion under `data/` OFF (no prune is requested; `pruneNow` also refuses `keepSessions <= 0`). Files are `data/<construct>/<symbol>/<sessionId>.jsonl` (the symbol folder since findings F-1, e.g. `GC` for `@GC`; recordings made before 2026-09-27 are flat `data/<construct>/<sessionId>.jsonl`, still read by the tools). Rolling window of trading days kept under `data/`; the oldest is deleted when a new one starts. About 0.45 GB per trading day (mostly the liquidity map) — disk per retention in `docs/runbook.md` §11a. |
 
 ### Log retention (D-106)
 

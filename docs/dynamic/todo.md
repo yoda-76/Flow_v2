@@ -56,6 +56,102 @@ remove+re-add the exporter study to get the deeper export before assuming 6.2 ye
 Everything below this section is the pre-existing backlog (2026-09-28 fix list and earlier) — still valid, not
 superseded by the above; the user said "we will go after them later."
 
+## Session handoff — 2026-10-02, first session on a new Linux/GCP VM (read this first if picking this up fresh)
+
+**New ground**: every prior machine (dev, laptop, the planned EC2 box in `runbook-ec2.md`) was Windows. This one
+is a remote **Linux** VM (GCP), MotiveWave installed natively via the official `.deb`, never run before this
+session. `docs/runbook.md` §2 and `decisions.md` D-100 had flagged the non-Windows path as untested
+(`:` classpath separator, `PATH` JDK fallback, whether MotiveWave even runs on a cloud Linux box at all) — this
+session is that first real test, and it passed.
+
+**What got built/verified this session, all live on `main` (`c552006`), nothing in `distribution-test` beyond it:**
+- Portable JDK 26 installed at `../motivewave/tools/jdk-26.0.2.1+1/` (matches the build scripts' existing default
+  path — no `FLOW_JDK_BIN` override needed on this machine). `MWAVE_SDK_JAR` → `/usr/share/motivewave/jar/
+  mwave_sdk.jar`, `MOTIVEWAVE_EXT_DIR` → `/home/yadvendras20/MotiveWave Extensions` (both still need exporting
+  for any future rebuild on this machine — not persisted to a shell profile).
+- **First-ever Linux build**: all 24 Java gates passed (every safety-chain test — kill switch, account-watch
+  race fix, feed watchdog, account-lock-on-non-Sim-fill, gap-range checks), deployed for real.
+- **First-ever live Sim run on Linux**, `lvn_fade_test`/`@GC`/20s bars: order path (entry → bracket → leg fill →
+  sibling cancel) correct across 13 trades over two sessions; risk chain (churn 5s dwell, rate limit 6/min) blocking
+  exactly as `risk.json` configures; all six data recorders (`bars`, `vwap`, `footprint`, `big_trades`,
+  `liquidity_map`, `market_structure`) writing correct, structurally sane records. 0 alerts, 0 safety incidents.
+  Account confirmed Simulated by the user both times.
+- **Found and fixed**: `FLOW_HOME` was unset → runtime fell back to its Windows built-in default
+  (`C:/yadvendra/trading/FLOW_V2`), which on Linux resolved as a bogus relative path
+  (`~/C:/yadvendra/trading/FLOW_V2`) — journal/data landed outside the repo and `config/risk.json` was never
+  read (`RISK_CONFIG_MISSING`, silently fell back to built-in defaults, which happened to match the tracked file
+  exactly, so no wrong numbers were used — but this would bite the moment `risk.json`/`risk.local.json` diverges
+  from the built-in defaults). Fixed by exporting `FLOW_HOME` in `~/.bashrc` and `~/.profile` — **but it only
+  takes effect on a fresh MotiveWave launch from a shell that has sourced the updated profile; it does NOT apply
+  to an already-running MotiveWave process.** Confirmed working after a full quit + relaunch from a new terminal
+  (`FLOW_HOME root=/home/yadvendras20/work/Flow_v2 source=environment variable FLOW_HOME`,
+  `risk_config_loaded` with a real `fileLastModifiedMs`).
+- **Found, not fixed (user's call, in progress)**: `build/build.sh` only checks `command -v python`; this machine
+  has `python3` but no `python` symlink, so the 4 Python/watchdog test suites (158 tests) silently skip —
+  non-blocking (the script says so) but it weakens the gate. Ran all 4 suites by hand with `python3` instead
+  (all pass). User is adding a `python`→`python3` alias/symlink on this machine rather than patching the script.
+
+**Soak test**: left running (armed, `SIM_LIVE`) after the above was confirmed, specifically to accumulate longer
+uptime/memory/disk numbers on a machine class (cloud Linux) that has never been soaked before. Still `lvn_fade_test`
+— a stress-test strategy with no edge; trade P&L from it means nothing.
+
+**Pending items identified this session** (added here per the user's request 2026-10-02; most are carried over
+from D-121/`decisions.md`'s "still open" list, re-surfaced because this new machine is where several of them will
+actually get their turn):
+
+- [ ] **The strategy/order-flow rules rework** — the user's, the biggest open item. `lvn_fade_test` remains a
+  plumbing stress test only; no result from it should be read as a trading result.
+- [ ] **C1's fuller form** — one shared position truth across strategy/risk-chain/tracker (deliberately deferred
+  until the strategy rework, D-121).
+- [ ] **C3 — cash-balance guard idea** (a second, different idea from the account-ID lock already built, D-115)
+  — still just a proposal.
+- [ ] **ES-chart refusal test** — study on a non-gold chart, expect `REFUSE_TO_ARM`, no orders of any kind.
+- [ ] **Refuse-to-arm with an existing position already on the account** (D-24) — never tried.
+- [ ] **Removal with a position open, answering "No"** in MotiveWave's close dialog (F-6) — does the bracket
+  keep working, does the re-added study refuse to arm?
+- [ ] **A real machine reboot** — what comes back, in what state, at 1/3/10 minutes (`runbook-ec2.md` §8 has the
+  Windows version of this checklist; needs a Linux equivalent, see below).
+- [ ] **Account-refusal paths live** (D-115) — the account id has been `"simulated"` in every session on every
+  machine so far; the refusal/lock logic itself has never actually fired live.
+- [ ] **Partial fills, both bracket legs filling, DOM backlog skip** (E1) — opportunistic, can't be forced.
+- [ ] **No Linux unattended-run plan exists.** `docs/runbook-ec2.md` and `ops/harden_windows.ps1` /
+  `ops/register_tasks.ps1` are entirely Windows (RDP, PowerShell, Task Scheduler). If this VM becomes the real
+  24/7 box, it needs a Linux equivalent — something to restart MotiveWave after a reboot/crash (systemd service
+  or cron) and run `ops/watchdog.py` unattended (cron, not a Windows Scheduled Task) — none of this is written
+  anywhere yet.
+- [ ] **Multi-day memory/disk soak is still unmeasured on any machine.** The longest continuous run so far is the
+  dev machine's ~24h overnight (D-119). This VM's soak (started today) is the first chance to get real numbers
+  on a cloud box specifically.
+- [ ] **16:00–17:00 CT daily halt + day-roll, and the Friday→Sunday weekend quiet** — verified once, on the old
+  Windows dev machine (D-119). Never seen on this machine.
+- [x] **Telegram alert bot** *(2026-10-02)* — user added `.env` (`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`, never read
+  by Claude per `CLAUDE.md`) and confirmed `python3 ops/watchdog.py --test-alert` reached the bot for real (the
+  script's own printed "sent...and Telegram" only checks the creds are present, not that Telegram's API accepted
+  it — the user's own confirmation is the real proof). Watchdog's forwarding is the path in use, not the Java
+  `TelegramAlertSink`. Not yet exercised on a real alert (kill switch / disarm / `FEED_STALE`), only the synthetic
+  test message — worth noting the first time a real one fires.
+- [ ] **December `GCZ6` contract roll** — not modeled anywhere; check the roll date in November.
+- [ ] **Exchange holidays and early closes** — not modeled; expect `FEED_STALE` noise on a holiday until a
+  calendar exists (same gap noted for the old EC2 plan).
+- [ ] **Housekeeping**: `build/build.sh`'s `python`-vs-`python3` gap (user adding an alias, see above, not yet
+  confirmed done); Big-Trade Min Size is at `1` (the old D-90 test value) on this machine's study settings —
+  fine for a soak, reset before anything meant to look like a real run.
+
+**Priority call (user, 2026-10-02)** on the pending items just above:
+- **Low priority**: the "live tests still owed" group — ES-chart refusal, refuse-to-arm over an existing position
+  (D-24), removal-with-position answering "No" (F-6), a real machine reboot, account-refusal paths live (D-115),
+  partial fills/both legs/DOM backlog (E1). User's call: these were already exercised on the dev machine, so
+  re-running them here is not urgent. (Note for whoever picks this up: several of these — ES-chart refusal,
+  refuse-to-arm-over-position, account-refusal paths specifically — are listed in `decisions.md` D-121 as *never
+  fired live on any machine*, only unit-tested/mutation-checked; the user is deprioritizing on confidence in that
+  existing test coverage, not asserting a live firing exists. Worth keeping that distinction precise if it matters
+  later.)
+- **Self-resolving, no dedicated test design needed**: "this machine's new gaps" (no Linux unattended-run plan,
+  multi-day soak numbers, the 16:00–17:00 CT halt/day-roll on this machine) — these will be exercised naturally
+  by just continuing to run, and because it's Sim-account-only the downside of something not working unattended
+  (e.g. no restart-on-crash yet) is a missed trading window, not a safety issue.
+- **Parked**: the December `GCZ6` contract roll and exchange holidays/early closes stay parked, no change.
+
 ## FIX LIST 2026-09-28 (from the log analysis — `logAnalysis-2026-09-28.md` + `liveTest-2026-09-28.md`; NOTHING here is fixed yet)
 
 Sources: **L-n** = `liveTest-2026-09-28.md` (last night), **N-n** = `logAnalysis-2026-09-28.md` (tonight's 34-min run, S7),

@@ -238,7 +238,8 @@ public final class DataRecorder {
     long sessionId = SessionBoundary.sessionIdFor(clockMs);
     if (sessionId != currentSessionId) {
       currentSessionId = sessionId;
-      store.requestPrune(keepTradingDays, sessionId);
+      // dataKeepTradingDays <= 0 = keep everything (no automatic deletion under data/).
+      if (keepTradingDays > 0) store.requestPrune(keepTradingDays, sessionId);
     }
     if (lastDataFlushMs < 0) lastDataFlushMs = alignDown(clockMs, dataIntervalMs);
     if (lastLiquidityFlushMs < 0) lastLiquidityFlushMs = alignDown(clockMs, liquidityIntervalMs);
