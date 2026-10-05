@@ -88,9 +88,14 @@ Drive (fine for now; a nicer viewer is a separate, later idea if wanted).
 
 Two directions, one Drive folder (`FLOW_V2_backup/by_date/<YYYY-MM-DD>/`), copy-only so nothing is ever deleted:
 
-1. **Upload, on the VM — `ops/sync_to_gdrive.ps1`**, daily at **03:00 IST**. Stages the files per trading day
-   (`ops/stage_by_date.py`) and copies them up. 03:00 IST sits inside the CME halt (02:30–03:30 IST), so the day's
-   data is complete. `-Mode liquidity` does the large `liquidity_map` weekly (not scheduled yet).
+1. **Upload, on the VM — `ops/sync_to_gdrive.ps1`** (Windows) or **`ops/sync_to_gdrive.sh`** (Linux), daily at
+   **04:00 IST** (= 17:30 CT, after the 17:00 CT rollover). Stages the files per trading day
+   (`ops/stage_by_date.py`) and copies them up. **Not 03:00 IST**: 03:00 IST is before the 17:00 CT rollover, so the
+   session still being recorded is copied while it grows, and the checksum check fails (first live run, 2026-10-05:
+   3 of 23 files failed for session 20730 — footprint, big_trades, vwap; the other 20 were copied). `-Mode liquidity`
+   does the large `liquidity_map` weekly (not scheduled yet). On this Linux VM the schedule is a systemd user timer
+   (`~/.config/systemd/user/flow-sync-gdrive.timer`, `OnCalendar=… 04:00:00 Asia/Kolkata`, lingering enabled so it
+   runs without a login); a run is logged to `logs/sync_gdrive.log` and to the journal.
 2. **Download, on this machine — `ops/sync_from_gdrive.ps1`**, daily at **08:00 IST**, or by hand. Pulls every day
    not yet in `gdrive_mirror/`; `-From/-To` pulls a range. Never writes into `logs/` or `data/`.
 
@@ -130,7 +135,7 @@ secret into chat or a commit: they live only in `%APPDATA%\rclone\rclone.conf`, 
    powershell -ExecutionPolicy Bypass -File ops\sync_to_gdrive.ps1
    ```
    `logs\sync_gdrive.log` should end with `OK` for the real run.
-4. Schedule daily 03:00 IST (elevated not required):
+4. Schedule daily 04:00 IST (elevated not required; the script's default is already 04:00):
    `powershell -ExecutionPolicy Bypass -File ops\register_gdrive_tasks.ps1 -Role upload`
 5. Optional, weekly `liquidity_map`: `powershell -ExecutionPolicy Bypass -File ops\sync_to_gdrive.ps1 -Mode liquidity`
    (schedule it yourself with Task Scheduler if wanted; not registered by the script).

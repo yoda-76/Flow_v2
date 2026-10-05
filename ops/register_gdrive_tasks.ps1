@@ -1,17 +1,18 @@
 <#
 .SYNOPSIS
   Registers the daily Google Drive backup task for the machine it runs on.
-    -Role upload    (the VM):           FLOW-GDrive-Upload    daily 03:00 IST -> ops\sync_to_gdrive.ps1
+    -Role upload    (the VM):           FLOW-GDrive-Upload    daily 04:00 IST -> ops\sync_to_gdrive.ps1
     -Role download  (this/dev machine): FLOW-GDrive-Download  daily 08:00 IST -> ops\sync_from_gdrive.ps1
   Times are IST; each trigger is converted to this machine's own clock, so it fires at the right moment whatever
-  timezone Windows is set to. 03:00 IST falls inside the daily CME halt (02:30-03:30 IST), so the trading day's data
-  is complete and nothing else is competing for the machine.
+  timezone Windows is set to. 04:00 IST is 17:30 CT, after the 17:00 CT rollover, so the session that just ended
+  is closed before it is copied. (03:00 IST was tried first and is too early: the still-recording session was copied
+  while it grew, and the checksum check failed on 2026-10-05.)
 
   Both tasks run as the CURRENT user, only while that user is logged on (same as ops\register_tasks.ps1).
   rclone must be on the PATH of that user (set it permanently in Windows environment variables, not per window).
 
 .PARAMETER Role        upload | download
-.PARAMETER AtIst       trigger time as HH:mm in IST (default 03:00 for upload, 08:00 for download)
+.PARAMETER AtIst       trigger time as HH:mm in IST (default 04:00 for upload, 08:00 for download)
 .PARAMETER Remove      unregister the task for this role instead
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File ops\register_gdrive_tasks.ps1 -Role upload
@@ -26,7 +27,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 
 $taskName = if ($Role -eq "upload") { "FLOW-GDrive-Upload" } else { "FLOW-GDrive-Download" }
 $script = if ($Role -eq "upload") { "ops\sync_to_gdrive.ps1" } else { "ops\sync_from_gdrive.ps1" }
-if (-not $AtIst) { $AtIst = if ($Role -eq "upload") { "03:00" } else { "08:00" } }
+if (-not $AtIst) { $AtIst = if ($Role -eq "upload") { "04:00" } else { "08:00" } }
 
 if ($Remove) {
   Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
