@@ -14,7 +14,7 @@ work on next. The user is doing the order-flow rules review themselves (item 3);
 all, see `backtestEnginePlan.md`'s checklist for the full status):
 
 1. **Remote download of reports/data from the VM** → `docs/dynamic/remoteDataAccessPlan.md`. Decided: `rclone` to
-   the user's Google Drive (not S3, not a custom API server — reasoning is in the doc). **Pipeline built 2026-10-06** (`ops/sync_to_gdrive.ps1` on the VM, daily 03:00 IST; `ops/sync_from_gdrive.ps1` here, daily 08:00 IST or by hand; `ops/register_gdrive_tasks.ps1` to schedule; see the pipeline section of `remoteDataAccessPlan.md`). Not yet scheduled on any machine.
+   the user's Google Drive (not S3, not a custom API server — reasoning is in the doc). **Pipeline built 2026-10-06** (upload on the VM daily 04:00 IST — `ops/sync_to_gdrive.sh` on this Linux VM, scheduled as a systemd user timer and live-tested 2026-10-05; `ops/sync_from_gdrive.ps1` on the dev machine, daily 08:00 IST or by hand; `ops/register_gdrive_tasks.ps1` for the Windows side; see the pipeline section of `remoteDataAccessPlan.md`). The first live upload copied 20 of 23 files; the 3 still-recording files of session 20730 were the 03:00 IST timing problem, now moved to 04:00 IST. Upload not yet verified by a scheduled run.
    (`ops/sync_to_gdrive.ps1`, uses `rclone copy` so Drive never loses history). Needs, on the VM: rclone installed,
    a one-time `rclone config` (remote `gdrive`, done by the user — the token never enters the repo), a dry run,
    then a Task Scheduler entry. No MotiveWave needed. One open
