@@ -52,7 +52,10 @@ fail() {
 STAGING="gdrive_staging_$MODE"
 "$PYTHON" ops/stage_by_date.py --flow-home "$FLOW_HOME" --mode "$MODE" || fail "stage_by_date.py failed"
 
-RC_ARGS=(copy "$STAGING" "$REMOTE:$ROOT/by_date" --fast-list --transfers 4)
+# --min-age 1h: skip files changed in the last hour. The session still recording (and any running instance's journal)
+# is always being appended to, so copying it fails the checksum check every time. Anything skipped here is picked up
+# by a later run, once it has been quiet for an hour.
+RC_ARGS=(copy "$STAGING" "$REMOTE:$ROOT/by_date" --fast-list --transfers 4 --min-age 1h)
 [ $DRY_RUN -eq 1 ] && RC_ARGS+=(--dry-run)
 echo "rclone ${RC_ARGS[*]}"
 rclone "${RC_ARGS[@]}" || fail "rclone copy failed"

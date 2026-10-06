@@ -4,9 +4,8 @@
     -Role upload    (the VM):           FLOW-GDrive-Upload    daily 04:00 IST -> ops\sync_to_gdrive.ps1
     -Role download  (this/dev machine): FLOW-GDrive-Download  daily 08:00 IST -> ops\sync_from_gdrive.ps1
   Times are IST; each trigger is converted to this machine's own clock, so it fires at the right moment whatever
-  timezone Windows is set to. 04:00 IST is 17:30 CT, after the 17:00 CT rollover, so the session that just ended
-  is closed before it is copied. (03:00 IST was tried first and is too early: the still-recording session was copied
-  while it grew, and the checksum check failed on 2026-10-05.)
+  timezone Windows is set to. 04:00 IST is 17:30 CT. The upload skips files changed in the last hour (--min-age 1h
+  in sync_to_gdrive.ps1), because the session recording after the 17:00 CT rollover is always being written.
 
   Both tasks run as the CURRENT user, only while that user is logged on (same as ops\register_tasks.ps1).
   rclone must be on the PATH of that user (set it permanently in Windows environment variables, not per window).

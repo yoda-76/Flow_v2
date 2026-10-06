@@ -89,11 +89,14 @@ Drive (fine for now; a nicer viewer is a separate, later idea if wanted).
 Two directions, one Drive folder (`FLOW_V2_backup/by_date/<YYYY-MM-DD>/`), copy-only so nothing is ever deleted:
 
 1. **Upload, on the VM — `ops/sync_to_gdrive.ps1`** (Windows) or **`ops/sync_to_gdrive.sh`** (Linux), daily at
-   **04:00 IST** (= 17:30 CT, after the 17:00 CT rollover). Stages the files per trading day
-   (`ops/stage_by_date.py`) and copies them up. **Not 03:00 IST**: 03:00 IST is before the 17:00 CT rollover, so the
-   session still being recorded is copied while it grows, and the checksum check fails (first live run, 2026-10-05:
-   3 of 23 files failed for session 20730 — footprint, big_trades, vwap; the other 20 were copied). `-Mode liquidity`
-   does the large `liquidity_map` weekly (not scheduled yet). On this Linux VM the schedule is a systemd user timer
+   **04:00 IST**. Stages the files per trading day (`ops/stage_by_date.py`) and copies them up with
+   **`--min-age 1h`**, which skips any file changed in the last hour. This is what makes the upload safe: the 17:00 CT
+   rollover closes one session but opens the next, and the new session's files (and any running instance's journal)
+   are written every second. Copying them fails the checksum check. The 04:00 time alone does not avoid this. It was
+   learned the hard way: the first live run (2026-10-05, 14:50 CDT) failed on 3 files of session 20730, and the first
+   scheduled run (2026-10-05 22:30 UTC) failed on the new session 20731 and the running instance's journal. The skipped
+   files are picked up by a later run once they have been quiet for an hour. `-Mode liquidity` does the large
+   `liquidity_map` weekly (not scheduled yet). On this Linux VM the schedule is a systemd user timer
    (`~/.config/systemd/user/flow-sync-gdrive.timer`, `OnCalendar=… 04:00:00 Asia/Kolkata`, lingering enabled so it
    runs without a login); a run is logged to `logs/sync_gdrive.log` and to the journal.
 2. **Download, on this machine — `ops/sync_from_gdrive.ps1`**, daily at **08:00 IST**, or by hand. Pulls every day

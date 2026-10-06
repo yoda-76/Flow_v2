@@ -23,7 +23,9 @@ if (-not (Get-Command rclone -ErrorAction SilentlyContinue)) {
 
 Set-Location $FlowHome
 $staging = "gdrive_staging_$Mode"
-$rcArgs = @("copy", $staging, "$Remote`:$Root/by_date", "--fast-list", "--transfers", "4")
+# --min-age 1h: skip files changed in the last hour (the session still recording is always being appended to, and
+# copying it fails the checksum check); a later run picks them up once they have been quiet for an hour.
+$rcArgs = @("copy", $staging, "$Remote`:$Root/by_date", "--fast-list", "--transfers", "4", "--min-age", "1h")
 if ($DryRun) { $rcArgs += "--dry-run" }
 $logPath = Join-Path $FlowHome "logs/sync_gdrive.log"
 New-Item -ItemType Directory -Force -Path (Join-Path $FlowHome "logs") | Out-Null
