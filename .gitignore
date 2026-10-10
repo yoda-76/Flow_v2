@@ -38,3 +38,6 @@ config/risk.local.json
 # Local copy of the Google Drive backup (ops/sync_from_gdrive.ps1) -- generated data, not source
 /gdrive_mirror/
 /gdrive_staging_*/
+
+# Third-party course transcripts and our distillations of them -- kept local
+/docs/video_transcripts/

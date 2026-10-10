@@ -5,6 +5,54 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
+## NEXT TASK (added 2026-10-09) — create the master order-flow review file
+
+**[x] Master file built 2026-10-10: `orderFlowRules_master_toBeReviewed.md` (all OPEN, awaiting the user's review; the
+merge-time changes are listed at its top as C1–C7).**
+**Task:** merge the course-derived redefinition and the pending additions into ONE master review file for the user
+to go through question by question. **No decisions were taken on 2026-10-09** — everything stays OPEN; this is
+file-building only, then the user's review.
+
+Inputs (all in `docs/dynamic/` unless noted):
+- `orderFlowRulesRedefinition.md` — the from-scratch, course-only review (13 sections, Q1.1–Q13.3, all OPEN).
+- `orderFlowRules_master_review_additions.md` — the user's suggested additions (Q3.5, Q3.6, Q4.6, Q5.8–Q5.10, trade-idea
+  lifecycle Q-L1–L3, activation/confirmation/execution split Q8.4–Q8.6, sweep Q12.3–Q12.4, revised review order).
+- Course source: `docs/video_transcripts/orderflow course/distilled/distillation_2/entry_model_rules.txt`
+  (fuller text: `distillation_1/`).
+- **Ignore `orderFlowExecutionRules.md` (the old placeholder rules) as a reference** — the user wants the old guesses
+  not to cloud the analysis.
+
+Adjustments agreed in the 2026-10-09 discussion to apply while merging (the user has seen these, not yet confirmed
+in the file):
+1. Merge Q3.6 (success/failure of aggression) with Q3.2 and Q4.2 into one question in §3; §4 points to it.
+2. Drop the "provisional shared 2-tick tolerance" baseline (Q5.10) — it is the old placeholder value; fold Q5.9/Q5.10
+   into Q5.7 as a test parameter with no baseline.
+3. Rewrite the lifecycle section so it is location-agnostic (not LVN-only: value-area edge, exhaustion and delta-flip
+   models activate differently) and owner-agnostic (do not assume an "underlying strategy" owns the idea — that is
+   the open Q1.3/Q5.1 decision); say what happens when price touches a lower-ranked LVN than the selected one.
+4. Add the missing lifecycle exits: setup expiry (Q7.3), invalidation after activation (price trades through the LVN or
+   leaves the zone), and reset after fill/stop-out.
+5. Q4.6 leaning (not decided): failed aggression is the broad concept; absorption, exhaustion and delta flip are
+   measurements/confirmations of it. Q5.8 leaning: start with one LVN metric (depth) rather than a combined score.
+6. Review order: scope which entry models are in at all (§6 quick call) first, then bar/data → primitives (§2–§4) →
+   location (§5) → models → timing/lifecycle (§7–§8) → stop/target/filters (§9–§11) → heatmap/gamma (§12) → validation (§13).
+
+Then: the user reviews the master file and answers; decisions go into `decisions.md` as usual. Nothing gets built from it
+before that.
+
+## TASK (added 2026-10-09) — make the GitHub repo private
+
+**Task:** make `github.com/yoda-76/Flow_v2` private ("stuff is getting serious" — the user, 2026-10-09). Do this
+before anything more sensitive is pushed (strategy rules, course material, configs).
+- Needs the user (or an explicit go-ahead): GitHub → repo → Settings → Danger Zone → Change visibility → Private
+  (or `gh repo edit yoda-76/Flow_v2 --visibility private --accept-visibility-change-consequences`).
+- First check the current visibility (`gh repo view yoda-76/Flow_v2 --json visibility`), and check the VM / any other
+  machine's clone still has access afterwards (a private repo needs working git credentials there).
+- Also review what history already contains that should not have been public (the sibling repo `yoda-76/motivewave`
+  is referenced from `CLAUDE.md` — decide whether it needs the same treatment).
+- **Not committed:** the 2026-10-09 docs (course transcripts, distillations, redefinition review, todo entries) are
+  still uncommitted locally by the user's choice; commit/push only when the user asks.
+
 ## NEW WORK 2026-10-02/03 — read this first if picking this up on the cloud VM
 
 System is now running 24/7 on the EC2 VM (the `runbook-ec2.md` setup is live). The user has very limited
