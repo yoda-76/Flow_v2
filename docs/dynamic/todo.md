@@ -7,8 +7,10 @@ date, and link the decision/finding it produced; don't delete it.
 
 ## NEXT TASK (added 2026-10-09) — create the master order-flow review file
 
-**[x] Master file built 2026-10-10: `orderFlowRules_master_toBeReviewed.md` (all OPEN, awaiting the user's review; the
-merge-time changes are listed at its top as C1–C7).**
+**[x] Master file built 2026-10-10: `orderFlowRules_toBeReviewed_v1.md` (renamed 2026-10-11 from `..._master_toBeReviewed.md`;
+merge-time changes listed at its top as C1–C7). The user's review of it is `orderFlowRules_reviewed_v1.md` (renamed from
+`..._reviewed_v18.md`) — the authority for approved rules. Remaining open questions: `orderFlowRules_toBeReviewed_v2.md`.**
+Naming: `orderFlowRules_toBeReviewed_vN.md` is what we ask; `orderFlowRules_reviewed_vN.md` is the answered copy of the same N.
 **Task:** merge the course-derived redefinition and the pending additions into ONE master review file for the user
 to go through question by question. **No decisions were taken on 2026-10-09** — everything stays OPEN; this is
 file-building only, then the user's review.
