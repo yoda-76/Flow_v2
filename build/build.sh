@@ -64,6 +64,16 @@ echo "== liquidity map book-imbalance synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.flow.LiquidityMapFeatureTest
 echo "(liquidity map test passed -- see output above)"
 
+echo "== order-flow engine synthetic test (footprint reads, aggression, profiles, sessions, aggregation; gapAnswers v1) =="
+"$JAVA" -cp build/classes/core com.flow.orderflow.OrderFlowEngineTest
+echo "(order-flow engine test passed -- see output above)"
+
+echo "== order-flow strategy replay smoke test (committed 5-min GC recording through the full strategy; fails on any error) =="
+"$JAVA" -cp build/classes/core com.flow.orderflow.OrderFlowReplay build/orderflow_replay_smoke.jsonl \
+  flow-core/fixtures/recording_gc_20260924_5min/raw.jsonl
+rm -f build/orderflow_replay_smoke.jsonl
+echo "(order-flow replay smoke test passed -- see output above)"
+
 echo "== log retention synthetic test =="
 "$JAVA" -cp build/classes/core com.flow.journal.LogRetentionTest
 echo "(log retention test passed -- see output above)"

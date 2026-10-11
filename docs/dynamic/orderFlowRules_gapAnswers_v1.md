@@ -37,8 +37,8 @@ Once approved they fold into `orderFlowRules_reviewed_v3.md`.
 |---|---|---|
 | A1 | **Approved:** keep the raw journals. | — |
 | A2 | **Approved, stronger:** the resting-liquidity rule was the user's own addition to cut false alerts; remove it. | Absorption is **footprint-only**. The resting size at the level is logged as context and is never a condition. The "confirmed absorption" level is dropped (§4). |
-| A3 | Open. | — |
-| A4 | Open. | — |
+| A3 | **Approved:** add M8. | M8 in §5 stands. |
+| A4 | **Approved:** 3 entries per zone per session. | §2 G0.11 and §9 stand. |
 | A5 | **No CLAUDE.md change.** This work moves to branch `orderflow-rules-review` (created from `main`). Change authority there only if it actually blocks something. | It doesn't block anything, so authority stays as it is (`reviewed_vN.md` governs order-flow rules as its own header says; nothing changes in CLAUDE.md or `decisions.md`). |
 | A6 | **Approved** (the user also saw it as overkill). | — |
 | A7 | Question: does 1.1 GB/day include everything? **No**, see the storage table below. | Numbers corrected. |

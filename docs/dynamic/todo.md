@@ -5,6 +5,14 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
+## STATE (2026-10-11, branch `orderflow-rules-review`) — order-flow execution model built, not yet run live
+
+Built from `orderFlowRules_gapAnswers_v1.md` (A1–A7 approved). Strategy id `orderflow_execution`; tunables in
+`config/orderflow.json`. Full `build.sh` passes; replayed on the recorded sessions. What exists, the three replay-driven
+deviations (B1–B3, to review), results, follow-ups and the **VM retention override warning** are in
+`docs/dynamic/orderFlowBuild_v1.md` (incl. "Running it on the VM"). Next: user runs it on the VM (Sim) for a few days; fix any errors; review B1–B3; research on the
+VM recordings.
+
 ## TASK (added 2026-10-11) — check whether Rithmic offers historical tick data for order-flow backtesting
 
 **[ ] Open.** Find out whether we can download **historical tick data (time & sales with bid/ask aggressor side)** for Gold

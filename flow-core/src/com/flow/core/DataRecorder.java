@@ -48,7 +48,7 @@ public final class DataRecorder {
   public static final String LIQUIDITY_MAP = "liquidity_map";
   public static final String BARS = "bars";
   public static final String MARKET_STRUCTURE = "market_structure";
-  private static final int LIQUIDITY_WINDOW_TICKS = 100;
+  private static final int LIQUIDITY_WINDOW_TICKS = 250; // gapAnswers A7 (was 100): heatmap walls further from price
 
   private final ConstructDataStore store;
   private final Map<String, Feature> features;

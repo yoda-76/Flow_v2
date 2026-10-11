@@ -6,6 +6,8 @@ costs no extra disk space; the originals are never moved or changed.
 Layout produced (under --staging, default gdrive_staging/):
   <YYYY-MM-DD>/reports/<file>                  daily reports (reports/YYYY-MM-DD.md)
   <YYYY-MM-DD>/logs/<session>/decisions.jsonl  decision journals, dated by the session's own start time
+  <YYYY-MM-DD>/logs/<session>/raw.jsonl        raw event journals (input of the order-flow research replay)
+  <YYYY-MM-DD>/logs/<base>_<YYYY-MM-DD>.log    rolled system logs (feature logs, orderflow_eval); live ones in _current/
   <YYYY-MM-DD>/data/<construct>/<symbol>/<sessionId>.jsonl   recorded data
   _undated/...                                 anything without a date (e.g. reports/backtest/)
 
@@ -67,11 +69,19 @@ def plan(flow_home: Path, mode: str):
     logs = flow_home / "logs"
     if mode == "nightly" and logs.is_dir():
         for session in sorted(p for p in logs.iterdir() if p.is_dir()):
-            dec = session / "decisions.jsonl"
-            if not dec.is_file():
-                continue
             label = session_label(session.name) or "_undated"
-            yield dec, Path(label) / "logs" / session.name / "decisions.jsonl"
+            # decisions.jsonl = decision journal; raw.jsonl = every trade/top-of-book/clock event, the input of
+            # com.flow.orderflow.OrderFlowReplay (research replay of the order-flow execution model, 2026-10-11)
+            for name in ("decisions.jsonl", "raw.jsonl"):
+                f = session / name
+                if f.is_file():
+                    yield f, Path(label) / "logs" / session.name / name
+        # rolling system logs (feature logs, orderflow_eval*.log = every idea/evaluation/entry/exit of the order-flow
+        # execution model). A rolled file carries its date (<base>_YYYY-MM-DD.log); the live one goes to _current/
+        # and is simply overwritten on Drive each night.
+        for f in sorted(p for p in logs.iterdir() if p.is_file() and p.suffix == ".log"):
+            m = re.search(r"_(\d{4}-\d{2}-\d{2})\.log$", f.name)
+            yield f, Path(m.group(1) if m else "_current") / "logs" / f.name
 
     data = flow_home / "data"
     if data.is_dir():

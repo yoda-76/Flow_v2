@@ -196,6 +196,9 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // D-60: unreviewed rule resolutions, see docs/dynamic/marketStructureRulesTemp.md
   private volatile com.flow.flow.MarketStructureFeature marketStructure;
   private volatile MarketStructureFileLogger marketStructureLogger;
+  // Order-flow execution model (docs/dynamic/orderFlowRules_gapAnswers_v1.md): pure-core, built from trades only.
+  private volatile com.flow.orderflow.OrderFlowEngine orderFlowEngine;
+  private static final Path ORDERFLOW_CONFIG_PATH = RISK_CONFIG_PATH.resolveSibling("orderflow.json");
   // Entry signal arrows: appended from onIntentChanged (drain thread, via
   // IntentSink), read from maybeRedraw()'s MotiveWave-invoked thread --
   // same cross-thread read-of-recent-events pattern as BigTradeFeature's
@@ -510,7 +513,9 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         .field("trendAfterWarmStart", marketStructure.trend().toString())
         .build());
 
+    orderFlowEngine = new com.flow.orderflow.OrderFlowEngine(com.flow.orderflow.OfConfig.load(ORDERFLOW_CONFIG_PATH));
     Map<String, com.flow.core.Feature> features = Map.of(
+        com.flow.orderflow.OrderFlowEngine.FEATURE_ID, orderFlowEngine,
         com.flow.flow.VolumeProfileView.FEATURE_ID, volumeProfile,
         com.flow.flow.FootprintView.FEATURE_ID, footprint,
         com.flow.flow.BigTradeView.FEATURE_ID, bigTrades,
@@ -525,7 +530,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     // once a real strategy needs them" plan), this is that first real need.
     strategy.onInit(new StrategyConfig(java.util.Map.of(
         "fixedContracts", String.valueOf(riskConfig.fixedContracts()),
-        "maxContracts", String.valueOf(riskConfig.maxContracts()))));
+        "maxContracts", String.valueOf(riskConfig.maxContracts()),
+        "orderflowConfigPath", ORDERFLOW_CONFIG_PATH.toString())));
     journal.writeDecision(0, Json.object()
         .field("type", "risk_config_loaded")
         .field("fixedContracts", riskConfig.fixedContracts())

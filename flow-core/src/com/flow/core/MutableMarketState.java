@@ -110,6 +110,10 @@ public final class MutableMarketState implements MarketState {
     return feature(com.flow.flow.OrderRepeatView.FEATURE_ID, com.flow.flow.OrderRepeatView.class);
   }
 
+  @Override public com.flow.orderflow.OrderFlowEngine orderFlow() {
+    return feature(com.flow.orderflow.OrderFlowEngine.FEATURE_ID, com.flow.orderflow.OrderFlowEngine.class);
+  }
+
   @Override
   public MarketState freeze() {
     return new Frozen(generation, exchangeTimeMs, localTimeMs, lastPriceTicks);
@@ -133,6 +137,7 @@ public final class MutableMarketState implements MarketState {
     @Override public com.flow.flow.LiquidityMapView liquidityMap() { return null; }
     @Override public com.flow.flow.VWAPView vwap() { return null; }
     @Override public com.flow.flow.OrderRepeatView orderRepeats() { return null; }
+    @Override public com.flow.orderflow.OrderFlowEngine orderFlow() { return null; }
 
     @Override
     public MarketState freeze() {

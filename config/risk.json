@@ -11,5 +11,5 @@
   "noEntryLeadMinutes": 15,
   "dataIntervalSeconds": 1,
   "liquidityIntervalSeconds": 1,
-  "dataKeepTradingDays": 7
+  "dataKeepTradingDays": 30
 }

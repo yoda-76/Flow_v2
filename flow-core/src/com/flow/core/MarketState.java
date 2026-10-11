@@ -47,6 +47,8 @@ public interface MarketState {
   com.flow.flow.LiquidityMapView liquidityMap();
   com.flow.flow.VWAPView vwap();
   com.flow.flow.OrderRepeatView orderRepeats();
+  /** Order-flow execution-model constructs (docs/dynamic/orderFlowRules_gapAnswers_v1.md); null if not registered. */
+  com.flow.orderflow.OrderFlowEngine orderFlow();
 
   /** Genuinely immutable snapshot copy. Used only by the journal and tests. */
   MarketState freeze();
