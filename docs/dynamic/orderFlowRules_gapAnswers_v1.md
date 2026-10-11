@@ -31,6 +31,33 @@ Once approved they fold into `orderFlowRules_reviewed_v3.md`.
 | A6 | **Your extended decisions that I cut down as over-engineered.** The live late-event correction/replay block (X4.24–X4.33) and the incident/severity/Telegram block (X9.14–X9.38). | Map both onto what already exists (§8) instead of building new machinery. | They were your decisions; I am superseding parts of them. |
 | A7 | **Storage numbers.** | Liquidity snapshot window from ±100 to **±250 ticks**; `dataKeepTradingDays` from 7 to **30**. That is about 1.1 GB per trading day, about 33 GB in total. | It costs disk on the VM. You said storage problems get fixed later. |
 
+**User answers (2026-10-11):**
+
+| # | Answer | Effect in this file |
+|---|---|---|
+| A1 | **Approved:** keep the raw journals. | — |
+| A2 | **Approved, stronger:** the resting-liquidity rule was the user's own addition to cut false alerts; remove it. | Absorption is **footprint-only**. The resting size at the level is logged as context and is never a condition. The "confirmed absorption" level is dropped (§4). |
+| A3 | Open. | — |
+| A4 | Open. | — |
+| A5 | **No CLAUDE.md change.** This work moves to branch `orderflow-rules-review` (created from `main`). Change authority there only if it actually blocks something. | It doesn't block anything, so authority stays as it is (`reviewed_vN.md` governs order-flow rules as its own header says; nothing changes in CLAUDE.md or `decisions.md`). |
+| A6 | **Approved** (the user also saw it as overkill). | — |
+| A7 | Question: does 1.1 GB/day include everything? **No**, see the storage table below. | Numbers corrected. |
+
+**Storage per trading day (measured on the dev machine's recordings, 2026-09-28/29; full ~23 h Globex day):**
+
+| What | Today | With my changes | Kept for |
+|---|---|---|---|
+| `data/liquidity_map` (1 s depth snapshots) | ≈ 0.35 GB at ±100 ticks (178 MB in 11.8 h) | ≈ **0.85 GB** at ±250 ticks (×2.5 rows) | 30 trading days |
+| `data/` footprint, big trades, VWAP, bars, structure | ≈ 0.01 GB | ≈ 0.01 GB | 30 trading days |
+| Raw journal `logs/<session>/raw.jsonl` (ticks + top of book + clock) | ≈ **0.28 GB** (162 MB in 13.3 h; busier NY days likely more) | same | forever (A1) |
+| Feature logs `logs/*_feature*.log` | ≈ 0.02 GB | same | forever (`logRetentionHours` 0) |
+| New evaluation/signal log, position-management log (planned) | — | ≈ 0.02–0.05 GB (one record per evaluation change) | forever |
+| **Total** | ≈ 0.65 GB | ≈ **1.2–1.3 GB** | |
+
+My earlier "1.1 GB" counted only `data/`. Steady state: `data/` levels off at about **26 GB** (30 days). Logs grow by about
+**0.3 GB per trading day** (~7 GB/month, ~80 GB/year) because they're never deleted. Per your instruction, that gets dealt
+with when it becomes a problem; the existing `logRetentionHours` setting is the lever.
+
 Everything below is decided.
 
 ---
@@ -104,7 +131,7 @@ evaluates it**. Where they clash, the merged rule below replaces both.
 |---|---|---|
 | **Failed aggression** | A big trade or burst at a location whose response is "failure" (§3) | E1, E3 |
 | **Absorption (footprint)** (A2) | At a location, on one execution bar: \|bar delta\| ≥ **1.5 ×** the average \|delta\| of the last 20 bars, **and** the bar closes against the delta sign, with **close location ≤ 30 %** of range (for positive delta) or ≥ 70 % (for negative delta). | E5 ("buyers push hard, delta positive, but the candle closes negative"; "big candles that close far from the extreme") |
-| **Confirmed absorption** | Absorption (footprint) **plus** resting size at the absorbing level (± 2 ticks) ≥ **20 contracts** or ≥ **4 ×** the median level size in the ±20-tick window, in the 1-second snapshot during the bar | E1, E5 ("passive sellers absorbing"), E7 |
+| ~~Confirmed absorption~~ | **Dropped (A2).** Resting size at the level (± 2 ticks) and its ratio to the ±20-tick median are **logged as context only**, so research can later test whether they cut false signals. | — |
 | Multi-bar absorption (original Q4.3) | Counts if the signature appears on ≥ 2 of the last 3 bars at the same location | E4 (repeated attempts) |
 | **Absorption completion** | Delta flip (below) after an absorption read | extended Q4.5 |
 | **Delta flip** | Execution-bar delta changes sign versus the previous bar **and** the bar fails to make a new extreme beyond the previous bar in the old direction | E1, E5 |
@@ -271,8 +298,8 @@ POSITION  OPEN ──(stop / target / flatten / position-mgmt exit)──► CLO
 
 ## 10. Heatmap and sweep (G21, S4, pending Q12.3/12.4)
 
-All of this is computed from the 1-second liquidity snapshots and logged. Only the absorption confirmation and the target
-candidate use it in V1.
+All of this is computed from the 1-second liquidity snapshots and logged. In V1 only the target candidate (magnet), the
+stop-behind-wall rule and the sweep/gap reads use it (absorption no longer does, A2).
 
 | Item | Decision | Course basis |
 |---|---|---|
