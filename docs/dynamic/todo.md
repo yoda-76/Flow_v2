@@ -5,13 +5,62 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
-## STATE (2026-10-11, branch `orderflow-rules-review`) — order-flow execution model built, not yet run live
+## SESSION HANDOFF (2026-10-12) — order-flow execution model: read this first if you are a new chat
 
-Built from `orderFlowRules_gapAnswers_v1.md` (A1–A7 approved). Strategy id `orderflow_execution`; tunables in
-`config/orderflow.json`. Full `build.sh` passes; replayed on the recorded sessions. What exists, the three replay-driven
-deviations (B1–B3, to review), results, follow-ups and the **VM retention override warning** are in
-`docs/dynamic/orderFlowBuild_v1.md` (incl. "Running it on the VM"). Next: user runs it on the VM (Sim) for a few days; fix any errors; review B1–B3; research on the
-VM recordings.
+**Where things are.** All order-flow work lives on branch **`orderflow-rules-review`** (pushed; `64d0063` = the build).
+`main` has none of it, except the gaps audit (one local `main` commit, `9537c56`, not pushed; the branch contains it).
+Strategy id **`orderflow_execution`**; every tunable in **`config/orderflow.json`**.
+
+**What the user is doing now.** Running the strategy on the **VM, Sim account**, for a few days, to find errors.
+
+**What the next chat should do when the user comes back with that run:**
+1. Pull the VM's data. `powershell -ExecutionPolicy Bypass -File ops\sync_from_gdrive.ps1` (put
+   `C:\Users\MSI\Downloads\rclone-v1.75.1-windows-amd64` on PATH first). Days land in `gdrive_mirror/<YYYY-MM-DD>/`.
+   The nightly upload now includes raw journals and `orderflow_eval_*.log`.
+2. Look for errors first: `"type":"error"` lines in `orderflow_eval*.log`, `DISARM` in alerts / `decisions.jsonl`, then
+   RiskChain rejections. Fix on the branch, keep `build.sh` green, push the branch.
+3. Then the research questions:
+   - how many ideas / evaluations / +2 setups / Go;
+   - which block reasons dominate;
+   - replay any session with
+     `java -cp build/classes/core com.flow.orderflow.OrderFlowReplay out.jsonl <raw.jsonl>`
+     (`-Dorderflow.config=...` to try other values).
+
+**Document map (read in this order):**
+1. `docs/dynamic/orderFlowBuild_v1.md`: what was built, file map, robustness, VM run steps, replay results,
+   deviations **B1–B3 (await the user's review)**, follow-ups not built yet.
+2. `docs/dynamic/orderFlowRules_gapAnswers_v1.md`: every rule and number the build implements (Claude's decisions;
+   user approved A1–A7). The spec for the code.
+3. `docs/dynamic/orderFlowRules_reviewed_v2.md`: the user's own decisions (two sets, "extended" and "original-source";
+   conflicts resolved in gapAnswers §2).
+4. `docs/dynamic/orderFlowRules_gaps_v1.md`: the audit that produced the questions (unedited by request).
+5. Background only: `orderFlowRules_toBeReviewed_v1/_v2.md`, `orderFlowRules_reviewed_v1.md`,
+   `orderFlowRulesRedefinition.md`, `orderFlowRules_master_review_additions.md`.
+   `orderFlowExecutionRules.md` = old placeholder, **not** a reference.
+6. Course transcripts and distillations (`docs/video_transcripts/`, git-ignored, dev machine only).
+   `distillation_1_v2/` + `sweep_v2/` are the latest (raw-transcript sweep 2026-10-11).
+
+**Working rules for this activity (user, 2026-10-11/12):**
+- Work on the branch; do **not** edit `CLAUDE.md`.
+- Commit/push only when asked.
+- Claude decides open order-flow questions itself, kept **as close to the course as possible**, and marks only what
+  truly needs the user as **⚠ ATTENTION NEEDED**. The user reviews in one pass and wants as few review rounds as
+  possible.
+- Research machine: everything configurable and logged, so nothing silently affects PnL. Numbers start near the
+  course and get tuned from Sim data. Everything runs on **Sim**; the real-account ban is absolute.
+- Storage: construct snapshots (1 s) kept 30 days; raw journals and all system logs kept forever; liquidity
+  snapshots ±250 ticks. Storage problems get fixed when they happen.
+- Doc naming: `orderFlowRules_toBeReviewed_vN.md` (questions) ↔ `orderFlowRules_reviewed_vN.md` (answers, same N).
+  Distillations versioned `distillation_1_v2`, etc.
+
+**Open items:**
+- B1–B3 review (user).
+- Follow-ups in `orderFlowBuild_v1.md` (intrabar shadow signals, outcome tracker, viewer overlay, NTP check,
+  `reviewed_v3` + `decisions.md` entry, `distillation_2_v2`).
+- Platform checks: imbalance direction and finished-auction side need **a screenshot of MotiveWave's footprint on a
+  bar** from the user (Claude can't drive the GUI).
+- **VM `config/risk.local.json` retention override must be removed** (else raw journals deleted after 48 h).
+- Merge the branch to `main` once the Sim run looks good (user's call).
 
 ## TASK (added 2026-10-11) — check whether Rithmic offers historical tick data for order-flow backtesting
 
