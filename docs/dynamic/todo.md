@@ -5,6 +5,19 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
+## TASK (added 2026-10-11) — check whether Rithmic offers historical tick data for order-flow backtesting
+
+**[ ] Open.** Find out whether we can download **historical tick data (time & sales with bid/ask aggressor side)** for Gold
+from Rithmic — the data that builds the volume profile, footprint, delta, imbalances and big-trade bubbles. If yes, every
+order-flow rule except the liquidity heatmap can be backtested.
+- **Known (user, 2026-10-11):** historical DOM / market depth is **not** available from Rithmic, so the heatmap, wall
+  detection, sweep and the DOM half of absorption stay out of any historical backtest (forward-test only).
+- **To check:** whether Rithmic's API/history service returns tick data with aggressor side; how far back; cost and
+  limits; format; whether it needs the data subscription we have; whether a vendor export is the fallback.
+- **If available:** start order-flow backtesting straight away (decision Q13.3 in `orderFlowRules_reviewed_v1.md`); the
+  generic backtest engine (1-min OHLC) would need a tick-based path. If not: record the answer and keep relying on the
+  ~7 days of retained ticks plus Sim forward testing. Update Q13.3 either way.
+
 ## NEXT TASK (added 2026-10-09) — create the master order-flow review file
 
 **[x] Master file built 2026-10-10: `orderFlowRules_toBeReviewed_v1.md` (renamed 2026-10-11 from `..._master_toBeReviewed.md`;
