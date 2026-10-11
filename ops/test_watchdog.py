@@ -197,6 +197,62 @@ class TestForwarding(Base):
         self.assertEqual(self.ch.sent, [])
 
 
+class TestOrderflowForwarding(Base):
+    """Order-flow execution model eval log (logs/orderflow_eval_<day>.log) -> errors, entries, exits."""
+
+    ANCHOR = {"type": "price_anchor", "price": 4329.0, "tickSize": 0.1}
+
+    def eval_log(self, *records, name="orderflow_eval_2026-10-12.log"):
+        with open(self.logs / name, "a", encoding="utf-8") as fh:
+            for r in records:
+                fh.write(json.dumps(r, separators=(",", ":")) + "\n")
+
+    def test_entries_exits_errors_forwarded_with_real_prices(self):
+        self.journal([self.ANCHOR, hb()])
+        self.eval_log({"type": "init"}, {"type": "eval", "idea": "I1"})
+        self.run_once()
+        self.assertEqual(self.ch.sent, [], "first run: existing lines are history")
+        self.eval_log({"type": "eval", "idea": "I1"},
+                      {"type": "entry", "idea": "I1", "model": "M1", "dir": 1, "entry": 10, "stop": -40, "target": 110, "rr": 2.0},
+                      {"type": "exit", "idea": "I1", "model": "M1", "reason": "target_hit", "price": 110, "entry": 10, "pnlTicks": 100},
+                      {"type": "error", "where": "strategy", "error": "java.lang.NullPointerException", "at": "X.y(X.java:1)"})
+        self.run_once(now=NOW + 1000)
+        self.assertEqual([(s, k) for s, k, _ in self.ch.sent],
+                         [("INFO", "ORDERFLOW_ENTRY"), ("INFO", "ORDERFLOW_EXIT"), ("WARN", "ORDERFLOW_ERROR")])
+        self.assertIn("LONG via M1 at 4330, stop 4325, target 4340", self.ch.sent[0][2])
+        self.assertIn("target_hit at 4340, +100 ticks", self.ch.sent[1][2])
+        self.assertIn("NullPointerException", self.ch.sent[2][2])
+        self.run_once(now=NOW + 2000)
+        self.assertEqual(len(self.ch.sent), 3, "already forwarded: not again")
+
+    def test_no_anchor_shows_ticks(self):
+        self.journal([hb()])
+        self.run_once()
+        self.eval_log({"type": "entry", "idea": "I1", "model": "M5", "dir": -1, "entry": 10, "stop": 40, "target": -50, "rr": 2.0})
+        self.run_once(now=NOW + 1000)
+        self.assertIn("SHORT via M5 at 10 ticks", self.ch.sent[0][2])
+
+    def test_error_flood_is_capped(self):
+        self.journal([self.ANCHOR, hb()])
+        self.run_once()
+        self.eval_log(*[{"type": "error", "where": "orderflow_engine", "error": "boom", "count": i} for i in range(1, 13)])
+        self.run_once(now=NOW + 1000)
+        keys = [k for _, k, _ in self.ch.sent]
+        self.assertEqual(keys.count("ORDERFLOW_ERROR"), wd.ORDERFLOW_MAX_ERRORS_PER_RUN + 1)
+        self.assertIn("7 more order-flow errors", self.ch.sent[-1][2])
+
+    def test_new_day_file_read_from_start_and_switch_off(self):
+        self.journal([self.ANCHOR, hb()])
+        self.run_once()
+        self.eval_log({"type": "exit", "idea": "I2", "model": "M3", "reason": "stop_hit", "price": 0, "entry": 20, "pnlTicks": -20},
+                      name="orderflow_eval_2026-10-13.log")
+        self.run_once(now=NOW + 1000, forward_orderflow=False)
+        self.assertEqual(self.ch.sent, [], "switched off")
+        self.run_once(now=NOW + 2000)
+        self.assertEqual([k for _, k, _ in self.ch.sent], ["ORDERFLOW_EXIT"])
+        self.assertIn("stop_hit at 4329, -20 ticks", self.ch.sent[0][2])
+
+
 class TestMisc(Base):
     def test_metrics_row_written_each_run(self):
         self.journal([hb()])
