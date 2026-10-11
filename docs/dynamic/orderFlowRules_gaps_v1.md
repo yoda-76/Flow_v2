@@ -23,6 +23,7 @@ Sources checked: `distillation_1/1–10.txt`, `distillation_2/entry_model_rules.
 | G19 (freshness) | Partly covered: original Q5.3 adds LVN age. Touch count is still missing. |
 | G24 (sizing/partials) | Partials deferred (original Q10.3), so the 1-contract conflict is gone. Sizing is still undecided. |
 | G5 / G25 (data) | **Sharper.** Original Q13.3 decides *no raw tick and no DOM storage*, which collides with the heatmap and absorption decisions (G0.8, G0.9). |
+| Raw sweep (later the same day) | Section **G** (S1–S12) added. G22 corrected (the course's bid/ask mapping is self-contradictory). G36b closed; G36c added (rebuild pass 2). G40–G44 added on the episode re-check. |
 | New | **G0** (two decision sets conflict), G2f (status of the "extended" decisions), G2g (D-88 retention change), G39 (feasibility of the original Q11.1 filters). |
 
 ---
@@ -118,6 +119,8 @@ The complete file replaced the older 3,073-line `orderFlowRules_reviewed_v2.md` 
 - Gold Extra Edge: build a profile over the NY session (18:30–22:30 IST); the next morning, counter-trade the approach to
   that POC.
 - If price opens *at* the POC, expect it to move away.
+- *(Raw sweep, S3:)* the course gives **no stop or target** for Extra Edge, and warns a return to the high-volume area
+  "can't always happen".
 
 None of M1–M7 is this model. *Decide:* M8, fold into another model, or drop.
 
@@ -188,11 +191,17 @@ Extended Q5.9 tracks "moving through" but doesn't connect it to targets or conti
 - Not covered either: **iceberg** and **spoof** detection (E1/E7).
 - Sweep/gap are pending in `toBeReviewed_v2`.
 
-**G22 — Finished-auction side mapping: the course gives one. (R, evidence for Q2.4)**
-- E5 (bid|ask convention): "0 | 3 at the HIGH" means **zero bid** at the high; "9 | 0 at the LOW" means **zero ask** at the
-  low. That differs from the common convention (zero *ask* at the high).
-- Q2.4 keeps the mapping open pending feed verification. Record this as the claim to test; the translation itself could
-  have swapped it.
+**G22 — Finished-auction side mapping: the course does NOT give a reliable one. (R + E, evidence for Q2.4)** *(corrected
+after the raw sweep, S2)*
+- Pass 1 said E5 gives the mapping (zero bid at the high, zero ask at the low). The raw transcript is **internally
+  contradictory**, so the course cannot settle it:
+  - E5 says "left side = sellers, right side = buyers", yet computes delta as left − right (9 | 3 → +6, shown as buyer
+    dominance).
+  - "0 | 3" at a high is explained as "the seller is no longer interested in selling", which fits left = sellers.
+  - "9 | 0" is explained as "the buyer is not interested in buying… therefore price can move **upward**", which contradicts
+    itself.
+- Only the MotiveWave/feed verification that Q2.4 already requires can settle the mapping. Do not use the course as
+  evidence either way.
 - The **opposite-side minimum volume** sub-question is noted as open in the new Q2.4. Keep it on the list.
 
 **G23 — VWAP computation. (R)**
@@ -212,6 +221,44 @@ These are hard blocks, but each depends on something still undefined:
 
 Until defined, the filters either block nothing or block arbitrarily.
 
+**G40 — No continuation / with-trend model. (R)** *(added on the episode-by-episode re-check)*
+- All of M1–M7 are reversal or counter-trade models.
+- The course also shows with-trend reads:
+  - repeated stacked imbalances over consecutive candles mean a trend is developing (E5);
+  - the E5 example 2 rally was ridden on stacked buyer imbalances;
+  - a P-shape in a trending market gives a good breakout (E6);
+  - a double distribution means value is migrating (E6);
+  - after a sweep, price "continues in the direction of the move" (E7);
+  - the negative-gamma regime (E10) suits momentum, though it is deferred.
+- *Decide:* is V1 reversal-only by design, or does a continuation model (or a stacked-imbalance continuation read) belong in
+  scope?
+
+**G41 — Time spent at a level (acceptance duration). (R)**
+- E4 (A+ trade): "price had stayed in the same range for a long time".
+- E5 example 3: "price spent a lot of time there".
+- E7: price looks for fuel after 1–1.5 h of consolidation.
+- Time-at-level / time-in-range isn't a feature anywhere. It differs from LVN *age* (Q5.3), which is when the level formed.
+
+**G42 — Bar close location as absorption evidence. (R, with G11)**
+- E5: "big candles that close far from the extreme show the same [absorption]".
+- E3: "a closed 500-tick candle with momentum".
+- E3: a bar closing "just short of the POC" means the POC will likely break.
+- Close location within the bar's range (wick vs close) isn't a defined read.
+
+**G43 — Course no-trade filters that were dropped without a decision. (R, low)**
+The redefinition's course list included:
+- "a bar that closes just short of the POC → skip the counter-trade" (E3);
+- "P-shape longs are traps outside trending days" (E6).
+
+Original Q11.1 adopted four other hard filters and said others come "only if validation supports them". These two were
+never explicitly accepted or rejected. Record them as research candidates so they aren't forgotten.
+
+**G44 — Minimum data before a profile anchor is usable. (R)**
+- E6: starting the profile at the London open (12:30 IST) "gives too little volume", so the speaker started it from the
+  Asia session (05:30) instead.
+- Extended Q5.28 marks profiles with insufficient inputs as degraded. Missing: a minimum-volume/time rule for a fresh
+  session profile, and what replaces it (fall back to the prior anchor?) until it is mature.
+
 ---
 
 ## C. Data, platform and feed capabilities
@@ -224,6 +271,10 @@ Until defined, the filters either block nothing or block arbitrarily.
 5. **Trade correction/cancel events.** If the feed doesn't send them, the extended Q4.24–Q4.33 replay/correction block is
    unnecessary.
 6. **Broker order/fill IDs** for dedup and partial-fill linkage (extended Q9.16, Q8.1-E).
+7. **Gold Level 2 entitlement** (E9): with a provider bundle, the CME Level 2 package covers ES/NQ only, and Gold
+   (COMEX) needs the **full** bundle. A heatmap without proper Level 2 "shows liquidity that disappears or is wrong".
+   Confirm our Rithmic/MotiveWave subscription actually delivers GC depth before any heatmap work. This is a subscription
+   check, so it is also a **T** item.
 
 **G5 / G0.8 — DOM capture. (R + T)**
 - Rithmic has no historical DOM; MotiveWave's heatmap keeps no history (E9); and original Q13.3 now decides not to store
@@ -326,12 +377,55 @@ in them.
 
 Re-check pass 2 against pass 1 before the next review.
 
+**G36b — Raw-transcript sweep: done 2026-10-11, results in section G. (closed)**
+- All 10 raw English transcripts were re-distilled into `distilled/distillation_1_v2/1–10.txt`.
+- Each episode got a sweep report in `distilled/sweep_v2/1–10.md`, listing what the old `distillation_1` missed, what it
+  distorted, and the raw transcript's own ambiguities, with quotes.
+- Both folders are git-ignored.
+
+**G36c — Pass 2 is built on the old pass 1. (T)**
+- `distillation_2/entry_model_rules.txt`, and through it the whole review, was built from `distillation_1`, which the
+  sweep found to contain additions not in the raw (section G).
+- Consider rebuilding pass 2 from `distillation_1_v2` as `distillation_2_v2` before the next review round.
+
 **G37 — Translation fidelity. (T, low)**
 Where a rule hinges on one word or convention (finished-auction side, G22), spot-check the Hindi original or a course
 screenshot.
 
 **G38 — `docs/video_transcripts/strategies/` is empty. (T, low)**
 It has `raw/` and `distilled/` folders with no files. Either it is planned work for a todo entry, or it can be removed.
+
+---
+
+## G. Raw-transcript sweep findings (2026-10-11)
+
+Sonnet subagents re-distilled the raw transcripts and listed what the old pass-1 distillation missed or distorted. Each
+report lists 20–65 "missing" items per episode, but most are example amounts, prices, menu paths and software pricing,
+none of which affects the rules. Only the rule-relevant findings are below.
+
+Items S1–S7 were **verified against the raw text** by the main session (the quotes were checked). The rest are taken from
+the sweep reports.
+
+| # | Finding | Raw evidence | Affects | Dest. |
+|---|---|---|---|---|
+| S1 | **The diagonal-imbalance direction is never stated in the course.** E5 says only "compare diagonally… like stairs", with example pairs (8/1, 11/34, 4/19…). The formula in the redefinition (`ask(P) / bid(P−1)`, `bid(P) / ask(P+1)`) is the general footprint convention, added in pass 1, not the speaker's. | E5 lines ~433–531 | Redefinition §2, Q2.1, Q2.6 | **E**: use MotiveWave's own imbalance calculation as the reference, and check it on a known bar |
+| S2 | **The bid/ask column mapping and the finished-auction side are contradictory in the raw** (see the corrected G22). | E5 lines ~302–340, ~941–994 | Q2.4, G22 | E |
+| S3 | **Gold Extra Edge has no stop or target in the raw.** Pass 1 attached "stop slightly beyond, min 1:2"; those numbers belong to the separate POC and value-area trades. The raw also warns that a return to the high-volume area "can't always happen". | E2 lines ~145, ~381, ~415 vs the Extra Edge section | G7a | R |
+| S4 | **"Sweep" has two incompatible definitions in E7.** One: price moves through a wall, consumes it, **then quickly reverses**. The other: "a sweep means breaking through it and **continuing** in the direction of the move". Pass 1 spliced them into one line. | E7 lines 1957, 2025, 2039 | Pending Q12.3/Q12.4 | R: choose a definition, or define two events |
+| S5 | **P-shape is stronger than recorded.** The speaker says "there is **always** a trap inside a P-shape" and "if the market is not trending, a P-shape can always trap you". Pass 1 softened this to "often". | E6 lines 1104, 1200 | G43, original Q5.5 | R |
+| S6 | **An unfinished auction does not force an immediate revisit.** "Don't assume every unfinished auction means price must immediately revisit the level." | E5 sweep #14 | G10 (target use must stay probabilistic) | R |
+| S7 | **"VAH as the target for longs" is not in the raw.** Pass 1 mirrored "VAL for shorts" into "VAH for longs". Original Q10.2 lists "the opposite value-area edge" as an eligible target, which is an extrapolation, not course evidence. | E3 sweep (distortions) | Q10.2 | R, low |
+| S8 | **Times have no timezone in the raw for E3.** Pass 1 added "AM", "IST" and "winter" to "around 4:30", "18:18" and "20:00". Reinforces R7 / Q5.22: course times must not become constants. | E3 sweep | R7, Q5.6, Q5.22 | R, low |
+| S9 | **The demand-zone gap entry is risky by the speaker's own account.** Entering inside the demand-zone gap is "somewhat risky", and the speaker did not take the 34-lot entry himself. This weakens the course evidence for M3's exact form. | E3 sweep #3 | M3 specification | R |
+| S10 | **The big-trade threshold is 30 in E3, not "30–40".** E1 says 40–50 for Gold; E3 uses 30 and lowers it to 20 or 10. Q3.1's baseline of 30 is consistent with this. | E3 sweep | Q3.1 (no change) | — |
+| S11 | **The "absorption needs a passive order" rationale is explicit.** In E5's May 25 short, "the main reason was the possibility of a passive order". Supports Q4.2 (absorption needs resting-liquidity evidence) and sharpens G0.8 (no DOM storage). | E5 sweep #35 | Q4.2, G0.8 | — |
+| S12 | **Gamma details (E10)** were dropped in pass 1: G1 can explode *upward* below VAL with absorption; a Call Resistance can be re-sold after a poke above; Zero DTE gives a per-session regime. All are deferred with gamma; now captured in `distillation_1_v2/10.txt` for later. | E10 sweep | Deferred gamma | — |
+
+**Raw-transcript quality notes.**
+- Several raw files are themselves translator output: `english/1.txt` opens with assistant boilerplate, and `english/3.txt`
+  ends with a translator's note.
+- The sweeps flag translation ambiguities in every episode, such as currency mixing and contradictory settings lines.
+- This reinforces G37: where a rule hinges on one word, check the Hindi original or a course screenshot.
 
 ---
 
