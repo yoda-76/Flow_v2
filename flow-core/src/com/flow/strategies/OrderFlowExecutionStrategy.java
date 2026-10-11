@@ -68,6 +68,7 @@ public final class OrderFlowExecutionStrategy implements FlowStrategy {
   private int positionDirection;
   private Integer positionStopTicks, positionTargetTicks;
   private String positionModel, positionIdeaId;
+  private int positionEntryTicks;
 
   // A4 limits, per CME trading day
   private long limitsDay = Long.MIN_VALUE;
@@ -182,10 +183,15 @@ public final class OrderFlowExecutionStrategy implements FlowStrategy {
     OrderFlowEngine eng = state.orderFlow();
     if (price == null || ms == null || !ms.isReady() || eng == null) return none();
     long now = state.exchangeTimeMs();
-    if (eng.errorCount() != engineErrorsLogged) {
-      engineErrorsLogged = eng.errorCount();
-      write(Json.object().field("type", "error").field("where", "orderflow_engine").field("count", engineErrorsLogged)
-          .field("error", String.valueOf(eng.lastError())).build());
+    long engErr = eng.errorCount();
+    if (engErr != engineErrorsLogged) {
+      engineErrorsLogged = engErr;
+      // a repeating engine error would otherwise write one line per trade: log counts 1, 2, 3, 10, 100, 1000, ...
+      boolean worthLogging = engErr <= 3 || (engErr >= 10 && Long.toString(engErr).matches("10*"));
+      if (worthLogging) {
+        write(Json.object().field("type", "error").field("where", "orderflow_engine").field("count", engErr)
+            .field("error", String.valueOf(eng.lastError())).build());
+      }
     }
     liq.update(state.liquidityMap(), eng, now);
     long day = SessionClock.tradingDayStart(now);
@@ -264,6 +270,7 @@ public final class OrderFlowExecutionStrategy implements FlowStrategy {
     positionStopTicks = plan.stopTicks;
     positionTargetTicks = plan.targetTicks;
     positionModel = plan.entryModel;
+    positionEntryTicks = plan.entryTicks;
     positionIdeaId = idea.id();
     String reason = "of_entry model=" + plan.entryModel + " idea=" + idea.id() + " rr=" + String.format("%.2f", plan.rr)
         + " target=" + plan.targetLabel;
@@ -288,6 +295,7 @@ public final class OrderFlowExecutionStrategy implements FlowStrategy {
       String why = stopHit ? "stop_hit" : "target_hit";
       write(Json.object().field("type", "exit").field("seq", seq).field("idea", positionIdeaId == null ? "" : positionIdeaId)
           .field("model", positionModel == null ? "" : positionModel).field("reason", why).field("price", price)
+          .field("entry", positionEntryTicks).field("pnlTicks", (price - positionEntryTicks) * positionDirection)
           .field("t", now).build());
       phase = Phase.SEARCHING;
       positionDirection = 0;

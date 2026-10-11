@@ -40,6 +40,20 @@ recorded sessions of 2026-09-26..29 with 0 errors. **Not yet run live in MotiveW
 - `build.sh` replays the committed 5-minute GC fixture through the full strategy and fails on any error.
 - All 14 recorded sessions on the dev machine replay with 0 engine / 0 strategy errors.
 
+## Telegram alerts (added 2026-10-12)
+
+`ops/watchdog.py` (scheduled every minute on the VM) now also tails `logs/orderflow_eval_<day>.log` and forwards
+three kinds of line:
+- **`ORDERFLOW_ERROR`** (WARN): engine or strategy errors. At most 5 a minute, then one summary line. The strategy itself
+  logs a repeating engine error only at counts 1, 2, 3, 10, 100, ...
+- **`ORDERFLOW_ENTRY`** (INFO): side, model, entry, stop, target, R:R, idea.
+- **`ORDERFLOW_EXIT`** (INFO): stop/target, price, P&L in ticks, model, idea.
+
+Prices are real prices: the session's `price_anchor` in `decisions.jsonl` converts the logged tick offsets. The first
+run doesn't forward history. Turn it off with `--no-forward-orderflow`. Telegram is only used if
+`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` are set on the VM (env or `.env`), as for every other alert; otherwise the
+lines only go to `logs/alerts.log`. Tested in `ops/test_watchdog.py` (4 new cases, mutation-checked).
+
 ## Backup to Google Drive (VM nightly)
 
 `ops/stage_by_date.py` (nightly mode) now also stages:

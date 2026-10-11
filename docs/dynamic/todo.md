@@ -17,7 +17,8 @@ Strategy id **`orderflow_execution`**; every tunable in **`config/orderflow.json
 1. Pull the VM's data. `powershell -ExecutionPolicy Bypass -File ops\sync_from_gdrive.ps1` (put
    `C:\Users\MSI\Downloads\rclone-v1.75.1-windows-amd64` on PATH first). Days land in `gdrive_mirror/<YYYY-MM-DD>/`.
    The nightly upload now includes raw journals and `orderflow_eval_*.log`.
-2. Look for errors first: `"type":"error"` lines in `orderflow_eval*.log`, `DISARM` in alerts / `decisions.jsonl`, then
+2. Look for errors first: `"type":"error"` lines in `orderflow_eval*.log` (also sent to Telegram as ORDERFLOW_ERROR, with
+   entries/exits as ORDERFLOW_ENTRY/EXIT, by `ops/watchdog.py`), `DISARM` in alerts / `decisions.jsonl`, then
    RiskChain rejections. Fix on the branch, keep `build.sh` green, push the branch.
 3. Then the research questions:
    - how many ideas / evaluations / +2 setups / Go;

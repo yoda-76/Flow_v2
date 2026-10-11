@@ -17,6 +17,10 @@ What it checks each run
   disk           free space on the drive holding the repo >= --min-free-gb (default 5)
   alerts.log     with --forward-alerts (default), NEW lines the runtime wrote to logs/alerts.log are forwarded to the
                  same channel, so a Telegram bot works without any Java-side Telegram code.
+  order flow     (default; --no-forward-orderflow to skip) NEW error / entry / exit lines of the order-flow execution
+                 model's logs/orderflow_eval_<day>.log: errors as WARN ORDERFLOW_ERROR (at most 5 a run, then one
+                 summary), entries/exits as INFO ORDERFLOW_ENTRY / ORDERFLOW_EXIT with real prices (the session's
+                 price_anchor turns the logged tick offsets back into prices).
 Also appends a row to logs/watchdog_metrics.csv every run (journal age, feed state, MotiveWave memory, free disk) --
 that file is the soak-test record ("measure memory after day one").
 
@@ -271,7 +275,11 @@ def run_once(root: Path, now_ms: int, opts, channel: Channel, procs=None, disk_f
     elif offset is None:
         offset = 0   # no alerts.log yet: whatever appears later is new
 
-    state = {"active": active, "alerts_offset": offset}
+    orderflow_offsets = state.get("orderflow_offsets")
+    if opts.get("forward_orderflow", True):
+        orderflow_offsets = forward_orderflow(logs, orderflow_offsets, opts, channel, now_ms)
+
+    state = {"active": active, "alerts_offset": offset, "orderflow_offsets": orderflow_offsets}
     if not opts.get("dry_run"):
         try:
             logs.mkdir(parents=True, exist_ok=True)
@@ -280,6 +288,101 @@ def run_once(root: Path, now_ms: int, opts, channel: Channel, procs=None, disk_f
         except OSError:
             pass
     return findings
+
+
+ORDERFLOW_GLOB = "orderflow_eval_*.log"
+ORDERFLOW_MAX_ERRORS_PER_RUN = 5
+
+
+def price_decoder(logs: Path):
+    """ticks -> price for the running session: the eval log stores per-activation tick offsets; the session's
+    decisions.jsonl carries {"type":"price_anchor","price":P,"tickSize":T}. None if not found (ticks are shown)."""
+    nj = newest_journal(logs)
+    if not nj:
+        return None
+    try:
+        with open(nj[1] / "decisions.jsonl", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i > 500:
+                    break
+                if '"price_anchor"' in line:
+                    r = json.loads(line)
+                    anchor, tick = float(r["price"]), float(r["tickSize"])
+                    return lambda t: round(anchor + t * tick, 4)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def orderflow_message(rec, decode):
+    """(severity, key, text) for an eval-log record worth telling the operator about, else None."""
+    p = (lambda t: f"{decode(t):g}") if decode else (lambda t: f"{t} ticks")
+    t = rec.get("type")
+    if t == "error":
+        return ("WARN", "ORDERFLOW_ERROR",
+                f"{rec.get('where', '?')}: {rec.get('error', '')} {rec.get('at', '')}".strip()
+                + (f" (count {rec['count']})" if "count" in rec else ""))
+    if t == "entry":
+        side = "LONG" if rec.get("dir", 0) > 0 else "SHORT"
+        return ("INFO", "ORDERFLOW_ENTRY",
+                f"{side} via {rec.get('model')} at {p(rec.get('entry'))}, stop {p(rec.get('stop'))}, "
+                f"target {p(rec.get('target'))}, R:R {rec.get('rr', 0):.2f} (idea {rec.get('idea')})")
+    if t == "exit":
+        pnl = rec.get("pnlTicks")
+        return ("INFO", "ORDERFLOW_EXIT",
+                f"{rec.get('reason')} at {p(rec.get('price'))}"
+                + (f", {pnl:+d} ticks" if isinstance(pnl, int) else "")
+                + f" ({rec.get('model')}, idea {rec.get('idea')})")
+    return None
+
+
+def forward_orderflow(logs: Path, offsets, opts, channel: Channel, now_ms):
+    """Forwards new error / entry / exit lines of the order-flow execution model's eval logs
+    (logs/orderflow_eval_<day>.log, written by OrderFlowExecutionStrategy). Offsets per file in the state; the first
+    run starts at the end of every existing file (no flood), a file first seen later is read from its start.
+    At most ORDERFLOW_MAX_ERRORS_PER_RUN error messages per run; the rest are summarised in one line."""
+    first = offsets is None
+    offsets = dict(offsets or {})
+    decode = None
+    errors_sent = errors_skipped = 0
+    for f in sorted(logs.glob(ORDERFLOW_GLOB)):
+        try:
+            size = f.stat().st_size
+        except OSError:
+            continue
+        off = offsets.get(f.name)
+        if off is None:
+            off = size if (first and not opts.get("forward_history")) else 0
+        if size < off:
+            off = 0
+        if size > off:
+            with open(f, "rb") as fh:
+                fh.seek(off)
+                chunk = fh.read()
+            complete = chunk[: chunk.rfind(b"\n") + 1]
+            for line in complete.decode("utf-8", errors="replace").splitlines():
+                if '"type":"error"' not in line and '"type":"entry"' not in line and '"type":"exit"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if decode is None:
+                    decode = price_decoder(logs) or False
+                msg = orderflow_message(rec, decode or None)
+                if msg is None:
+                    continue
+                if msg[1] == "ORDERFLOW_ERROR":
+                    if errors_sent >= ORDERFLOW_MAX_ERRORS_PER_RUN:
+                        errors_skipped += 1
+                        continue
+                    errors_sent += 1
+                channel.send(msg[0], msg[1], msg[2], now_ms)
+            off += len(complete)
+        offsets[f.name] = off
+    if errors_skipped:
+        channel.send("WARN", "ORDERFLOW_ERROR", f"{errors_skipped} more order-flow errors this minute (see the eval log)", now_ms)
+    return {k: v for k, v in offsets.items() if (logs / k).exists()}
 
 
 def write_metrics(path: Path, now_ms, facts, procs, disk_free_gb):
@@ -305,6 +408,8 @@ def main(argv=None):
     ap.add_argument("--no-expect-running", dest="expect_running", action="store_false")
     ap.add_argument("--no-process-check", dest="process_check", action="store_false")
     ap.add_argument("--no-forward-alerts", dest="forward_alerts", action="store_false")
+    ap.add_argument("--no-forward-orderflow", dest="forward_orderflow", action="store_false",
+                    help="do not forward order-flow errors / entries / exits from logs/orderflow_eval_*.log")
     ap.add_argument("--forward-history", action="store_true", help="on the first run also forward what is already in alerts.log")
     ap.add_argument("--loop", type=int, metavar="SECONDS", help="keep running, once every SECONDS (instead of Task Scheduler)")
     ap.add_argument("--dry-run", action="store_true", help="print what would be sent; write and send nothing")
@@ -317,7 +422,8 @@ def main(argv=None):
     root = Path(args.root)
     opts = {"down_seconds": args.down_seconds, "min_free_gb": args.min_free_gb, "repeat_minutes": args.repeat_minutes,
             "expect_running": args.expect_running, "process_check": args.process_check,
-            "forward_alerts": args.forward_alerts, "forward_history": args.forward_history, "dry_run": args.dry_run}
+            "forward_alerts": args.forward_alerts, "forward_history": args.forward_history, "dry_run": args.dry_run,
+            "forward_orderflow": args.forward_orderflow}
     env = load_env(root / ".env")
     channel = Channel(root / "logs" / "alerts.log", env, dry_run=args.dry_run)
     if args.test_alert:
