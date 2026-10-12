@@ -76,6 +76,49 @@ order-flow rule except the liquidity heatmap can be backtested.
   generic backtest engine (1-min OHLC) would need a tick-based path. If not: record the answer and keep relying on the
   ~7 days of retained ticks plus Sim forward testing. Update Q13.3 either way.
 
+## TASK (added 2026-10-12) — test Databento historical data for FLOW_V2
+
+- [ ] **Test Databento Historical Data for Flow_v2**
+  - Sign up for Databento and claim the $125 free data credit.
+  - Download a sample session of ES MBO data.
+  - Verify order-book reconstruction, footprint, delta, and heatmap generation.
+  - Measure the percentage of trades with unknown aggressor side.
+  - Evaluate data quality and estimate how much historical data the credit can cover.
+
+## TASK (added 2026-10-12) — Gianluca Bruni strategy: watch the video and complete the review (user)
+
+- [ ] **Watch the whole video** — https://youtu.be/nlLGlVJGrtw ("3x Trading WORLD CHAMPION Reveals the 'Low-Effort'
+  Strategy…", 1:43:09).
+- [ ] **Complete the review** — fill in every **Answer:** line in `docs/dynamic/gianlucaBruniStrategy_toBeReviewed_v1.md`
+  (34 questions, GB-Q1…GB-Q34; each lists the timestamps to watch). Write "backtest it" where the video doesn't settle it.
+  - Video should settle: GB-Q1 (points vs ticks, 01:24:45 / 01:26:14), Q8 (MS low, 01:21:30), Q10 (MS high), Q11 + Q27
+    (trend filter), Q25 (streak rule, 00:37:30–00:39:55).
+  - Our decisions, not in the video: GB-Q2, Q13, Q15, Q23, Q26, Q30, Q33, Q34.
+- **Context:** rules in `docs/dynamic/gianlucaBruniStrategy.md` (draft, not adopted); short notes and source in
+  `docs/video_transcripts/strategies/{distilled,raw}/GianlucaBruni.txt`; screenshots in `C:\yadvendra\New folder\Screenshot
+  2026-10-12 2215..2312`.
+- **Then (Claude):** write `gianlucaBruniStrategy_reviewed_v1.md` (questions + answers), update the strategy file to match,
+  and write a backtest spec. It's testable on the existing @GC 1-minute OHLCV with the D-122 engine; only the daily value
+  area is approximated (GB-Q26).
+
+## TASK (added 2026-10-13) — Gianluca Bruni curiosity backtest on gold, on the VM (user starts it)
+
+- **Plan (self-contained, read first):** `docs/dynamic/gianlucaBruniBacktest_plan_v1.md`. It covers:
+  - best guesses for all 34 GB-Qs (§4), exact rules (§5) and the token-economy rule (§1);
+  - the overfit search (~7,300 full-data runs), then the H1 overfit → H2 test, median of the top 50 (§6–7);
+  - phases (§9) and the resume protocol (§10.4).
+  - Not a FLOW decision; the strategy and to-be-reviewed files stay untouched.
+- **Data is in git** (force-added): `analysis/data/GC_1m_latest.csv`, `analysis/data/gb_vp_check/2072{3,4}.jsonl`.
+- **How it runs:**
+  - Claude phases run in an interactive chat on the VM. On a usage limit the user types `continue`; there's no
+    auto-restart.
+  - Grid runs are plain Python, kept alive by `ops/gb_backtest_supervisor.py` under cron. The VM is **Linux**; see plan
+    §10.5.
+- [ ] **User, on the VM:** the steps in plan §10.5 (branch, supervisor tests, cron lines, then open a chat and say "Run the Gianluca backtest: follow
+  docs/dynamic/gianlucaBruniBacktest_plan_v1.md §10.4").
+- **State:** `reports/gianluca_backtest/state.json`. Progress: `docs/dynamic/gianlucaBruniBacktest_progress.md`.
+  Results: `docs/dynamic/gianlucaBruniBacktest_results_v1.md`.
+
 ## NEXT TASK (added 2026-10-09) — create the master order-flow review file
 
 **[x] Master file built 2026-10-10: `orderFlowRules_toBeReviewed_v1.md` (renamed 2026-10-11 from `..._master_toBeReviewed.md`;
