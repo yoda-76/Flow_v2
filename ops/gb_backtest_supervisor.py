@@ -99,9 +99,12 @@ def pid_alive(pid, image_hint):
     if os.name != "nt":
         try:
             os.kill(pid, 0)
-            return True
         except OSError:
             return False
+        try:
+            return image_hint.lower() in Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace").lower()
+        except OSError:
+            return True   # no /proc: trust os.kill
     try:
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                              capture_output=True, text=True, timeout=30).stdout
@@ -126,10 +129,12 @@ def start_runner(opts, state):
     if opts.dry_run:
         log(f"DRY-RUN would start runner for {state['phase']}")
         return None
+    # low priority either way: BELOW_NORMAL on Windows, nice +10 in its own session on Linux
+    extra = {"creationflags": BELOW_NORMAL | NO_WINDOW} if os.name == "nt" else \
+        {"start_new_session": True, "preexec_fn": lambda: os.nice(10)}
     with open(logfile, "ab") as fh:
         p = subprocess.Popen([opts.python or sys.executable, "-u", str(RUNNER), "--resume"], cwd=str(REPO),
-                             stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                             creationflags=(BELOW_NORMAL | NO_WINDOW) if os.name == "nt" else 0)
+                             stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **extra)
     _CHILDREN.append(p)   # keep the handle: dropping a running Popen raises a ResourceWarning
     write_json(RUNNER_LOCK, {"pid": p.pid, "image": "python", "started": now(), "phase": state["phase"],
                              "log": str(logfile)})

@@ -112,10 +112,9 @@ order-flow rule except the liquidity heatmap can be backtested.
 - **How it runs:**
   - Claude phases run in an interactive chat on the VM. On a usage limit the user types `continue`; there's no
     auto-restart.
-  - Grid runs are plain Python, kept alive by `ops/gb_backtest_supervisor.py` (scheduled task
-    `ops/register_gb_backtest_task.ps1`). It sends Telegram notices via `logs/alerts.log`.
-- [ ] **User, on the VM:** the steps in plan §10.5 (pull, `git checkout -b VM-gianluca-backtest`, run the supervisor
-  tests, register + start the task, then open a chat and say "Run the Gianluca backtest: follow
+  - Grid runs are plain Python, kept alive by `ops/gb_backtest_supervisor.py` under cron. The VM is **Linux**; see plan
+    §10.5.
+- [ ] **User, on the VM:** the steps in plan §10.5 (branch, supervisor tests, cron lines, then open a chat and say "Run the Gianluca backtest: follow
   docs/dynamic/gianlucaBruniBacktest_plan_v1.md §10.4").
 - **State:** `reports/gianluca_backtest/state.json`. Progress: `docs/dynamic/gianlucaBruniBacktest_progress.md`.
   Results: `docs/dynamic/gianlucaBruniBacktest_results_v1.md`.

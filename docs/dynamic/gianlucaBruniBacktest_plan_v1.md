@@ -31,9 +31,10 @@ Contents:
   restart anything in MotiveWave. Never touch `config/`, `flow-core/`, `flow-runtime/` or `build/`. Never run
   `build.sh`. The live Sim runtime on the VM must not notice this work happened.
 - **Never read `.env`.**
-- **CPU:** the VM also runs MotiveWave live. Every process from this work runs at **BELOW_NORMAL** priority, and the
-  runner uses at most `max(1, cores // 2)` worker processes. If `ops/watchdog.py` raises a lag or feed alert while a
-  compute phase runs, set `workers` to 1 in `reports/gianluca_backtest/config.json`.
+- **The VM is Linux** (user, 2026-10-13). Use `python3`, forward slashes and bash.
+- **CPU:** if the VM also runs anything live, it must not be slowed. The runner runs at nice +10 and uses at most
+  `max(1, cores // 2)` worker processes. If anything live complains, set `workers` to 1 in
+  `reports/gianluca_backtest/config.json`.
 - **Token economy (user rule, 2026-10-13): use as few tokens as possible.**
   - Keep tool output small: tail/grep/counts, never whole files or big tables.
   - Read only the plan sections the phase needs.
@@ -383,16 +384,17 @@ compute phases run without Claude. Keep the progress file's checklist current en
   resets. A brand-new chat picks up the same way (§10.4).
 
 ### 10.2 Machinery
-- **`ops/gb_backtest_supervisor.py --loop`**, started by the scheduled task `FLOW-GB-Backtest`
-  (`ops/register_gb_backtest_task.ps1`: at logon + re-tried every 30 min, single instance, no time limit). Every 10 min:
-  - **compute phase:** if the runner isn't running, start `python analysis/gianluca_backtest/runner.py --resume` at
-    BELOW_NORMAL priority, with output in `reports/gianluca_backtest/runner_logs/`. A runner exit that doesn't advance
+- **`ops/gb_backtest_supervisor.py --loop`**, kept alive by **cron** (§10.5: `@reboot` + every 30 min under
+  `flock -n`, so exactly one copy runs and a dead one comes back). `ops/register_gb_backtest_task.ps1` is the Windows
+  equivalent and isn't used on this VM. Every 10 min:
+  - **compute phase:** if the runner isn't running, start `python3 analysis/gianluca_backtest/runner.py --resume` at
+    nice +10 in its own session, with output in `reports/gianluca_backtest/runner_logs/`. A runner exit that doesn't advance
     the phase counts as an attempt; 4 in a row → **STUCK**.
   - **claude phase:** start nothing; send one notice: "phase X needs Claude — say continue".
   - **done / stuck:** send one notice.
   - It never starts or stops Claude.
-- **Notifications:** one line appended to `<FLOW_HOME>/logs/alerts.log` (`[INFO] GB backtest: …`). `ops/watchdog.py`
-  already forwards new lines there to Telegram.
+- **Notifications:** one line appended to `<FLOW_HOME>/logs/alerts.log` (`[INFO] GB backtest: …`). These reach Telegram
+  only if `ops/watchdog.py` runs on this VM with the bot configured. Otherwise check `--status` (§10.6).
 - **`state.json`:** `{"phase": "...", "kind": "claude"|"compute"|"done"|"stuck", "attempts": n, "note": "..."}`.
   - P0 creates it.
   - **Only the work itself advances `phase`:** the Claude chat when a Claude phase's done-criteria hold, the runner
@@ -431,23 +433,29 @@ compute phases run without Claude. Keep the progress file's checklist current en
 6. Ask the user only when something can't be decided from this plan; otherwise decide and log the decision.
 7. Never weaken a hard rule (§1) to get unblocked.
 
-### 10.5 What the user does on the VM (once)
-1. Pull the branch with these files (the data is in it, see §2), then `git checkout -b VM-gianluca-backtest`.
-2. Run `python ops\test_gb_backtest_supervisor.py`; all tests should pass.
-3. `powershell -ExecutionPolicy Bypass -File ops\register_gb_backtest_task.ps1`, then `Start-ScheduledTask
-   FLOW-GB-Backtest`.
-4. Open Claude Code in the repo and say: **"Run the Gianluca backtest: follow
-   docs/dynamic/gianlucaBruniBacktest_plan_v1.md §10.4."** After that, `continue` is enough.
+### 10.5 What the user does on the VM (once, Linux)
+1. `git fetch origin && git checkout -b VM-gianluca-backtest origin/orderflow-rules-review`. The data is in the branch
+   (§2).
+2. `python3 ops/test_gb_backtest_supervisor.py`; all tests should pass.
+3. `crontab -e` and add these two lines (replace `/path/to/FLOW_V2`):
+   ```
+   @reboot      cd /path/to/FLOW_V2 && flock -n /tmp/gb_supervisor.lock python3 ops/gb_backtest_supervisor.py --loop >> reports/gb_supervisor_cron.log 2>&1
+   */30 * * * * cd /path/to/FLOW_V2 && flock -n /tmp/gb_supervisor.lock python3 ops/gb_backtest_supervisor.py --loop >> reports/gb_supervisor_cron.log 2>&1
+   ```
+   Create `reports/` first if it's missing: `mkdir -p reports`.
+4. Open Claude Code in the repo (inside `tmux` so it survives SSH disconnects) and paste the VM prompt. After that,
+   `continue` is enough.
 
 ### 10.6 Checking on it
-- Telegram notices.
-- On the VM: `python ops\gb_backtest_supervisor.py --status`, the progress file, and `runs/*.jsonl` line counts.
+- Telegram notices, if the watchdog runs there.
+- `python3 ops/gb_backtest_supervisor.py --status`, `tail reports/gianluca_backtest/supervisor.log`, the progress file,
+  and `wc -l reports/gianluca_backtest/runs/*.jsonl`.
 
 ### 10.7 Stopping / fixing
-- **Stop:** `Unregister-ScheduledTask FLOW-GB-Backtest`, end the `python …gb_backtest_supervisor.py` process, and end
-  the process in `reports/gianluca_backtest/runner.lock.json`.
+- **Stop:** remove the two cron lines, `pkill -f gb_backtest_supervisor.py`, and kill the PID in
+  `reports/gianluca_backtest/runner.lock.json`.
 - **After STUCK:** fix the cause (state.json `note`, the progress file's BLOCKED section), then run
-  `python ops\gb_backtest_supervisor.py --reset-stuck`.
+  `python3 ops/gb_backtest_supervisor.py --reset-stuck`.
 
 ## 11. Estimates
 
@@ -459,7 +467,7 @@ compute phases run without Claude. Keep the progress file's checklist current en
 | H2 runs | ~51 | |
 | **Total** | **~14,000 backtest runs** | |
 | Run cost | | Pure Python: roughly 0.5–3 s per full-data run (5m TF slowest) once features are cached; measured in P2 |
-| Compute | | About 4–10 CPU-hours. With 2 BELOW_NORMAL workers, about **2–6 hours** of wall clock. |
+| Compute | | About 4–10 CPU-hours. With 2 low-priority workers, about **2–6 hours** of wall clock. |
 | Claude phases | | P0–P2 is the big one (build + check): about 2–4 hours of session time, likely spread over 1–2 usage windows. P4, P6 and P8 take about 30–60 min each. |
 | **Wall clock end to end** | | Likely **10–20 hours**, up to ~1.5 days if usage limits bite during the build phases. |
 
