@@ -3,7 +3,7 @@
 Written 2026-10-03, alongside the engine itself (`docs/dynamic/backtestEnginePlan.md` has the full design and
 scope decisions — read that first if you haven't). This doc is the how-to: turn a strategy idea into one new
 Java class that plugs into `BacktestEngine` with no engine changes, the same "a new strategy touches one box"
-rule the live `FlowStrategy` interface follows (docs/architecture.md "Adding a strategy").
+rule the live `FlowStrategy` interface follows (README "Adding a strategy").
 
 **Scope reminder, because it shapes everything below**: this engine tests **pure price-action / bar-close signal
 logic on 1-minute OHLC bars only** — no tick data, no DOM, no footprint/VWAP/volume-profile/big-trades/liquidity-
@@ -75,7 +75,7 @@ at all for something trivial); `onBar` feeds them; `entrySignal` reads them and 
 
 `MarketStructureBacktestStrategy` happens to support three interchangeable stop-sizing conventions
 (`MarketStructureBacktest.StopRule` — fixed tick buffer, zone-size multiple, fixed price distance), but that's
-**internal to that one strategy**, not a facility `BacktestStrategy` provides generically. docs/architecture.md's own rule:
+**internal to that one strategy**, not a facility `BacktestStrategy` provides generically. README's own rule:
 don't extract a shared mechanism until a second real strategy actually needs the same thing. If your strategy
 wants multiple stop conventions too, copy the pattern (an enum + a param), don't try to reuse `StopRule` itself
 unless you're genuinely doing the same thing it does.

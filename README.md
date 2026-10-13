@@ -4,8 +4,8 @@
 trades on a practice account when the conditions it was taught show up.**
 
 This page explains what FLOW is, what it looks at, how it decides to trade, how it protects the account, and what you
-get to review afterwards. It is written for traders. If you want the engineering detail, see
-[docs/architecture.md](docs/architecture.md).
+get to review afterwards. It is written for traders. The engineering detail is in the
+`docs/` folder (links at the bottom).
 
 ---
 
@@ -244,7 +244,6 @@ Order-flow ideas go straight to stages 1 and 2.
 
 ## For developers and for setting up a machine
 
-- [docs/architecture.md](docs/architecture.md): how the system is built (the technical version of this page).
 - [docs/configuration.md](docs/configuration.md): every setting and how to change it.
 - [docs/runbook-ec2.md](docs/runbook-ec2.md) and [docs/runbook.md](docs/runbook.md): setting up and running a machine.
 - [docs/backtest-strategy-guide.md](docs/backtest-strategy-guide.md): adding an idea to the backtester.

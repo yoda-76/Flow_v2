@@ -135,7 +135,7 @@ seen working are marked.
    checkbox on that same panel **[FROM MOTIVEWAVE DOCS; seen enabled and confirmed
    via the account selector reading "simulated", 2026-09-12; again on the laptop, 2026-09-27]**. This is the
    platform-wide guarantee that no order can reach a real account
-   (`CLAUDE.md`, docs/architecture.md "Safety"). **Confirm it on every new machine and every
+   (`CLAUDE.md`, README "Safety"). **Confirm it on every new machine and every
    activation**; a past confirmation does not carry over. If the account shown is
    anything other than the Simulated one, **stop** — that is a safety stop, not a
    preference.
@@ -253,7 +253,7 @@ batch in `todo.md` §2 is the plan for those.
   a re-added study refuse to arm, D-24?) — don't, until it has been tried on purpose.
 - **A position is open when MotiveWave/the machine restarts:** the runtime **refuses to
   arm** and journals what it found; it does not adopt or flatten it. You clear it by
-  hand (docs/architecture.md "Restart with a live position"). Whether `onActivate` sees the live
+  hand (README "Restart with a live position"). Whether `onActivate` sees the live
   position immediately after a restart is **[UNKNOWN]** (`plumbingEdgeCases.md`
   §11) — after any restart, look at the account before arming.
 
@@ -557,7 +557,7 @@ hours. Rows marked **Already checked** are here so the laptop's Claude does not 
 | D3 | **The recorders with ticks:** footprint, VWAP, big trades, OHLCV `bars/`; volume profile after the D-104 refactor (`volume_profile_feature_<date>.log` lines should look like the old ones). | `ls data/`; `status.py` `data: ok`; the report's "Recorded data" table. | All four files appear once trades/bars occur; no `**missing**` for liquidity/market-structure. |
 | D4 | **Big-trade Min Size is still the test value 1** → nearly every tick is a "big trade" (noisy chart, large `data/big_trades/`). | The user chooses 1 (capture test) or 10 before starting. | Decision recorded. |
 | D5 | **Laptop performance.** The risk chain **blocks new entries** (a `lag` verdict, not a disarm) while the event queue is backed up (depth ≥ 1000, `lagQueueDepthThreshold`) or one event took ≥ 2 s (`lagProcessingMsThreshold`); a slower machine may trigger it and the strategy would silently skip entries. | Watch the report's *What the risk chain blocked* section for `lag` blocks, the heartbeat gaps, and MotiveWave's memory during the session. | No `lag` blocks; the longest heartbeat gap is ~10 s. |
-| D6 | **Laptop power/sleep.** Lid close, sleep, hibernate, battery saver, Wi-Fi power saving or a Windows-Update restart will stop the study mid-session — possibly **with a position open**. | Before the session: plugged in, power plan "never sleep", **lid-close action = do nothing**, Wi-Fi power saving off (or wired), updates paused. | The session runs uninterrupted; `status.py` stays `ALIVE`. If it is interrupted with a position open: the runtime **refuses to arm** on restart and does not adopt or flatten it (docs/architecture.md) — clear it by hand. |
+| D6 | **Laptop power/sleep.** Lid close, sleep, hibernate, battery saver, Wi-Fi power saving or a Windows-Update restart will stop the study mid-session — possibly **with a position open**. | Before the session: plugged in, power plan "never sleep", **lid-close action = do nothing**, Wi-Fi power saving off (or wired), updates paused. | The session runs uninterrupted; `status.py` stays `ALIVE`. If it is interrupted with a position open: the runtime **refuses to arm** on restart and does not adopt or flatten it (README) — clear it by hand. |
 | D7 | **Entry-time window.** `lvn_fade_test` has a 2-minute warm-up after the study starts, then entries stop 15:45 CT (02:15 IST) and open positions flatten from 15:55 CT (02:25 IST). | Plan the session inside that window. | No entries before the warm-up ends. |
 | D8 | **Optional flatten test in a watched window (D-92)** using a git-ignored `config/risk.local.json` (`flattenLeadMinutes` 400, `noEntryLeadMinutes` 405); delete the override afterwards. | `todo.md` handoff, Phase 2. | `SESSION_FLATTEN_DUE`, flat account, **no disarm**; override removed. |
 | D9 | **Stop conditions** — an account that is not the Simulated one anywhere; an unexplained fill/position; kill switch; repeated disarms; a stuck resting order. | Watch throughout. | None occur; if one does, stop and tell the user. |
@@ -571,7 +571,7 @@ hours. Rows marked **Already checked** are here so the laptop's Claude does not 
 
 ## 14. Sources
 
-`docs/configuration.md` (settings) · `docs/architecture.md` (architecture, "Commands you run",
+`docs/configuration.md` (settings) · `README.md` (architecture, "Commands you run",
 "Safety") · `CLAUDE.md` (rules incl. the order-placement exceptions) ·
 `docs/dynamic/decisions.md` D-92 (flatten), D-93 (no watchdog), D-98/D-100/D-101
 (paths), D-99 (partial fills), D-102/D-103 (first deploy, startup check) ·

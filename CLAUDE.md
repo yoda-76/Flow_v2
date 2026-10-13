@@ -7,8 +7,8 @@ doesn't repeat what those two already establish and that still applies here
 (verify against the real thing before trusting docs, decisions are
 provisional and dated, experiments are throwaway).
 
-See [README.md](README.md) for what this project is (plain-language, for traders) and
-[docs/architecture.md](docs/architecture.md) for the architecture decisions already made. This file is process/rules only.
+See [README.md](README.md) for what this project is and the architecture
+decisions already made. This file is process/rules only.
 
 ## What this repo is, relative to its siblings
 
@@ -33,8 +33,7 @@ See [README.md](README.md) for what this project is (plain-language, for traders
 ```
 FLOW_V2/
 ├── CLAUDE.md          this file
-├── README.md          what this project is, in plain language for a trader
-├── docs/architecture.md  architecture, repo layout, open questions (the old README)
+├── README.md          what this project is, architecture, open questions
 ├── docs/dynamic/      decisions.md, findings.md — working record for THIS system
 ├── data/              retained per-construct data, rolling 7 trading days (D-88), gitignored
 ├── analysis/          offline Python report/status/viewer scripts (read-only over logs/ and data/)
@@ -47,7 +46,7 @@ FLOW_V2/
 ```
 
 (`flow-core/` and `flow-runtime/`'s internal layout is sketched in
-docs/architecture.md's "Repo layout" section and is explicitly tentative — don't treat
+README.md's "Repo layout" section and is explicitly tentative — don't treat
 it as decided until code exists and a second strategy has tested the
 boundaries.)
 
@@ -56,7 +55,7 @@ boundaries.)
   `findings.md` (the empirical evidence behind them, tagged `[DOC]`,
   `[LIVE]`, or `[CODE]`). Same convention as both siblings. Decisions here
   are the current best answer, not final — expect the open questions
-  tracked in docs/architecture.md and `docs/dynamic/decisions.md` to turn into
+  tracked in README.md and `docs/dynamic/decisions.md` to turn into
   decisions one at a time as they're tested, and expect some of those
   decisions to get reopened later.
 - **`flow-core/`, `flow-runtime/`, `build/`** — no longer empty (building
@@ -64,7 +63,7 @@ boundaries.)
   strategies,backtest}` holds the SDK-free core and strategy plug-ins;
   `flow-runtime/src/com/flow/rt` holds the SDK adapters, the deployed
   `FlowRuntimeStudy`, and `OrderGateway`; `build/build.sh` compiles both,
-  runs every synthetic + safety test, and deploys. docs/architecture.md's "Repo layout"
+  runs every synthetic + safety test, and deploys. README's "Repo layout"
   section is the authoritative structure description — this bullet isn't
   duplicating it, just noting these directories are real now.
 
@@ -82,7 +81,7 @@ Same hard rule as both siblings, no exceptions carried over by default:
 ## Hard rule — never place an order
 
 Carried over from `../motivewave/CLAUDE.md`, and structurally reinforced by
-the architecture in docs/architecture.md (strategies emit `Intent`, never hold an
+the architecture in README.md (strategies emit `Intent`, never hold an
 `OrderContext`):
 
 - **Never submit, modify, or cancel a real order — on any account,
@@ -182,11 +181,11 @@ insulated from the platform underneath changing.
 ## Architecture stays provisional by design
 
 Decisions in `docs/dynamic/decisions.md` are the current best answer, not
-final. The open questions tracked in docs/architecture.md and `docs/dynamic/
+final. The open questions tracked in README.md and `docs/dynamic/
 decisions.md` (kept in sync between the two, `decisions.md` authoritative)
 are expected to reshape parts of the design as they get tested. When
 writing code in `flow-core/`/`flow-runtime/`: keep the layer boundaries
-from docs/architecture.md's diagram
+from README.md's diagram
 (feed → ingest → features → market state → strategy → execution → journal)
 real, not just diagrammed — a strategy plug-in should be swappable without
 touching anything left of it, and nothing right of the strategy boundary
