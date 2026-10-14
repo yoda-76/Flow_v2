@@ -4722,6 +4722,27 @@ readable rather than being silently rewritten.
   16 open points. A positive risk-adjusted number here means the setup logic is worth a forward-test slot once
   reviewed, not that this exact parameterization should go live as-is.
 
+- **D-123** (2026-10-06) — **The feed watchdog counts depth as proof the feed is alive; trades alone no longer
+  decide "stale".** Found while checking the VM's stall alerts (`logs/alerts.log`, 334 `FEED_STALE` since 10-02):
+  all 166 stalls in the raw-log window (from 10-05 19:09 UTC) had the depth feed still sending (median 82 depth
+  updates during each silence, minimum 17); the silence before each alert was ~19.5 s, the 20 s no-trade limit. So
+  these were quiet-market gaps in GC trades, not a broken feed. The SDK exposes no connection-status API (checked
+  2026-10-06: no connect/disconnect callback on `Study`, and the `Service` enum only names vendors), so the watchdog
+  can only infer liveness from market data.
+
+  **Decided (user, "2")**: `Pipeline.checkFeed` keeps a liveness clock (`lastFeedLocalMs`) that a `DomEvent` also
+  refreshes. The STALE check uses it. **Leaving STALE still needs a trade**: the resume path (`data_gap`, the
+  settle, and `LiveOrderTracker.feedResumeCheck`'s bracket check) needs a trade price, so depth never ends an outage
+  on its own. Consequence: a real outage that ends with depth but no trades keeps entries blocked until the next
+  trade. That delay is the conservative side. The `FEED_STALE` journal field is renamed `lastFeedAgeMs`; nothing
+  reads the old name. `feedStaleSeconds` (20) is unchanged.
+
+  **Not decided / not covered**: a trade-feed-only failure (depth still flowing, no trades for a real reason) now
+  raises no alert. That is the accepted trade-off. The 2026-10-02..04 stalls were not checked (no raw log then).
+  Verified by `FeedWatchdogTest` (3 new checks, all 35 pass), `ReplayEquivalenceTest`, `RecordingReplayTest`, and
+  the other core test classes, compiled to a scratch directory (not `build.sh`, which deploys). Live effect is not
+  yet observed.
+
 Platform questions get answered by a throwaway study in
 `../motivewave/experiments/`, landing in that repo's `findings.md`; system
 questions are decided directly, no experiment needed. Either way the

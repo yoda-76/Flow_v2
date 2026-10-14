@@ -87,13 +87,18 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
   // the ACCOUNT's position for changes the study did not cause (a manual close, the platform's own close dialog).
   private volatile Runnable accountWatch;
 
-  // F-19 (2026-09-28, the 21:53 IST Rithmic disconnect): a feed watchdog. If no tick arrives for feedStaleSeconds
+  // F-19 (2026-09-28, the 21:53 IST Rithmic disconnect): a feed watchdog. If no market data arrives for feedStaleSeconds
   // during the trading window the feed is STALE (ALERT, new entries blocked by the risk chain's "feed" filter); the
   // first tick after that journals a `data_gap`, tells the listener (the runtime decides what to do with an open
   // bracket) and starts SETTLING; feedSettleSeconds of continuous ticks later it is LIVE and entries are allowed again.
+  // 2026-10-06: "market data" = trades OR depth (DomEvent). A quiet market has no trades for 20 s+ while the depth feed
+  // keeps sending, which used to count as an outage (166 false FEED_STALE alerts on 2026-10-05). Depth only ever keeps
+  // the feed LIVE: leaving STALE still needs a trade, so the bracket check on resume (which needs a trade price) runs
+  // exactly as before.
   private enum FeedState { LIVE, STALE, SETTLING }
   private FeedState feedState = FeedState.LIVE;        // drain-thread-only
   private long lastTickLocalMs = Long.MIN_VALUE;       // local clock of the last tick handled
+  private long lastFeedLocalMs = Long.MIN_VALUE;       // local clock of the last tick OR depth update: the liveness clock
   private Integer lastTickPriceTicks = null;
   private long staleSinceLocalMs = 0;
   private Integer priceBeforeGap = null;
@@ -520,14 +525,20 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
         }
       }
       lastTickLocalMs = now;
+      lastFeedLocalMs = now;
       lastTickPriceTicks = te.priceTicks();
       return;
     }
-    if (!(e instanceof ClockEvent) || lastTickLocalMs == Long.MIN_VALUE) return;
-    long age = now - lastTickLocalMs;
+    if (e instanceof DomEvent) { // 2026-10-06: depth is proof the feed is alive; it never ends a STALE (see above)
+      lastFeedLocalMs = now;
+      return;
+    }
+    if (!(e instanceof ClockEvent) || lastFeedLocalMs == Long.MIN_VALUE) return;
+    long age = now - lastFeedLocalMs;
     if (feedState != FeedState.STALE && age > staleMs && riskChain.marketExpectedOpen(riskNowMs())) {
       if (feedState == FeedState.LIVE) { // (a relapse while SETTLING keeps the original gap's start)
-        staleSinceLocalMs = lastTickLocalMs;
+        // the gap is measured from the last TRADE (that is what the bracket check needs); depth-only history has none
+        staleSinceLocalMs = lastTickLocalMs == Long.MIN_VALUE ? lastFeedLocalMs : lastTickLocalMs;
         priceBeforeGap = lastTickPriceTicks;
       }
       feedState = FeedState.STALE;
@@ -535,7 +546,7 @@ public final class Pipeline implements Sequencer.ExceptionHandler {
           .field("type", "FEED_STALE")
           .field("reason", "no market data for " + (age / 1000) + "s during the trading window")
           .field("seq", e.seq())
-          .field("lastTickAgeMs", age)
+          .field("lastFeedAgeMs", age)
           .fieldOrNull("lastPriceTicks", lastTickPriceTicks)
           .build());
       riskChain.setFeedBlock("no market data for " + (age / 1000) + "s");

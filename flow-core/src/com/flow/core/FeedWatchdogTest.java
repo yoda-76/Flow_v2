@@ -86,6 +86,8 @@ public final class FeedWatchdogTest {
 
     void tick(long t, int px) { p.handle(new TickEvent(++seq, t, t, px, 1, true, px, px, 0L, 0L)); }
 
+    void dom(long t) { p.handle(new DomEvent(++seq, t, t, 1000, 1.0, 1001, 1.0, List.of(), List.of())); }
+
     /** One clock event per second from a (exclusive) to b (inclusive). */
     void clocks(long a, long b) { for (long t = a + 1000; t <= b; t += 1000) clock(t); }
 
@@ -112,6 +114,7 @@ public final class FeedWatchdogTest {
 
   public static void main(String[] args) throws Exception {
     testStaleGapSettleLive();
+    testDepthKeepsTheFeedLiveInAQuietMarket();
     testWatchdogOffAndOutsideTheWindow();
     testRelapseWhileSettling();
     testHeartbeatCarriesTheFeedState();
@@ -164,6 +167,27 @@ public final class FeedWatchdogTest {
     check("...with the duration and the jump", lines.stream().anyMatch(l -> l.contains("\"type\":\"data_gap\"")
         && l.contains("\"durationMs\":20000") && l.contains("\"jumpTicks\":10")));
     checkEq("feed_live journaled once", Rig.count(lines, "\"type\":\"feed_live\""), 1);
+  }
+
+  /** 2026-10-06: a quiet market (no trades for a minute) with depth still flowing is LIVE; depth AND trades silent is STALE. */
+  private static void testDepthKeepsTheFeedLiveInAQuietMarket() throws Exception {
+    Rig r = new Rig(",\"feedStaleSeconds\":5,\"feedSettleSeconds\":3");
+    long t0 = ct(23, 10, 0, 0);
+    r.clock(t0);
+    r.tick(t0, 1000);
+    for (long t = t0 + 1_000; t <= t0 + 60_000; t += 1_000) {
+      r.dom(t);
+      r.clock(t);
+    }
+    check("60 s with no trades but depth every second: entries allowed", r.tryEnter(t0 + 60_000).allowed());
+    checkEq("...and no FEED_STALE alert", r.alerts.size(), 0);
+    r.clocks(t0 + 60_000, t0 + 66_000);
+    RiskChain.Result stale = r.tryEnter(t0 + 66_000);
+    check("depth AND trades silent for 6 s: entries blocked by the feed filter", !stale.allowed()
+        && r.filterThatBlocked(stale).startsWith("feed: no market data for 6s"));
+    checkEq("...one operator alert for that outage", r.alerts.size(), 1);
+    List<String> lines = r.lines();
+    check("...journaled with lastFeedAgeMs", Rig.count(lines, "\"lastFeedAgeMs\":") == 1);
   }
 
   private static void testWatchdogOffAndOutsideTheWindow() throws Exception {

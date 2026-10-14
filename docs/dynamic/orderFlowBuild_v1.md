@@ -40,6 +40,22 @@ recorded sessions of 2026-09-26..29 with 0 errors. **Not yet run live in MotiveW
 - `build.sh` replays the committed 5-minute GC fixture through the full strategy and fails on any error.
 - All 14 recorded sessions on the dev machine replay with 0 engine / 0 strategy errors.
 
+## Execution bars: 1 minute (changed 2026-10-12, VM)
+
+The user asked for the order-flow execution bars to use the same 1-minute timeframe as the market-structure chart.
+New key `barSeconds` in `OfConfig`: `0` (code default) keeps the 500-trade bars (`barTrades`); `> 0` builds
+clock-aligned time bars of that many seconds. `config/orderflow.json` now sets `"barSeconds": 60`.
+
+- A bar closes on the clock 200 ms after its minute ends, or earlier if a trade from a later minute arrives. A late
+  print from a minute already closed goes into the next bar. Minutes with no trades make no bar.
+- Every setting counted in bars is now counted in minutes: readiness 5 bars = 5 minutes; `avgWindowBars` 20,
+  `readValidBars` 3, `exhaustionBars` 3, `momentumBars` 3, `trappedSmallBars` 5, `retestMaxBars` 10. These, and
+  `maxStopTicks` 80 (set from 500-trade bar ranges, build note B2), were not re-tuned for 1-minute bars.
+- Replay of one real session (VM, 2026-10-08/09, 132,689 trades): 1-minute bars = 1,649 bars, 6 entries
+  (1 win, 5 losses, −24 ticks gross); 500-trade bars = 265 bars, 1 entry (−6 ticks). 0 errors either way.
+  One session, not a result.
+- Tested in `OrderFlowEngineTest` (7 time-bar checks).
+
 ## Telegram alerts (added 2026-10-12)
 
 `ops/watchdog.py` (scheduled every minute on the VM) now also tails `logs/orderflow_eval_<day>.log` and forwards
@@ -94,6 +110,76 @@ POC/HVN blocker in 11, "no target at 2R" in 10, stop too wide in 3, chasing in 2
 **No entries.** That is the
 course's "most places are no trade" applied strictly. Three days of data is not a basis for tuning. The VM's
 recordings (Drive sync) are the next research input.
+
+## First live Sim trades (2026-10-13, VM) — findings, no code changed
+
+Instance `inst1160401828`, armed `SIM_LIVE` from 2026-10-12 15:57 UTC, 1-minute execution bars. 2026-10-12 (Columbus
+Day, range 4183.5–4196.6) gave no market-structure event and no idea in 4 hours. On 2026-10-13 up to 15:31 UTC it
+opened 38 ideas, logged 975 evaluations and made 4 entries. Every fill was on account `simulated`, the heartbeats were
+all healthy, and there were 0 strategy errors. Cash went from 77,400 to 77,720 (+$320), which matches the fills.
+
+| # | Fill (UTC) | Idea (market structure) | Entry fill | Stop / target (label) | R:R | Result |
+|---|---|---|---|---|---|---|
+| 1 | 09:49 | I25: TJL_FORMED 09:31, trend DOWN, TJL2 4217.7–4217.9 | 4207.3 | 4208.7 / 4203.3 (`session:ASIA:HVN`) | 2.6 | stop, −14 ticks |
+| 2 | 12:34 | I32: FLIP to DOWN 12:34, DT 4212.9–4214.6 | 4206.4 | 4209.4 / 4197.3 (`session:OPEN:POC`) | 2.78 | stop, fill 4209.6 (2 ticks of slippage), −32 |
+| 3 | 12:50 | I32 | 4206.2 | 4207.3 / 4203.8 (`VWAP`) | 2.5 | stop, −11 |
+| 4 | 12:51 | I32 | 4206.1 | 4208.0 / 4197.3 (`session:OPEN:POC`) | 4.94 | target, +89 |
+
+All four were shorts and all were model **M5**, with a +2 score ("retest held") and no model at −2.
+
+**The logs explain every stage of these trades.** Each one was checked by hand against the code:
+- **Idea:** `idea_open` in the eval log. Its zone matches the market-structure event at the same minute.
+- **Evaluation:** an `eval` line with all eight models (score, reads, stopRef, location, note) and the plan.
+- **Stop:** the M5 `stopRef` plus `stopBufferTicks` 5.
+- **Target:** the nearest candidate at least 2 × the risk away. The full candidate list is logged.
+- **Risk:** a `risk_verdict` in `decisions.jsonl` covering all eight filters.
+- **Execution:** `real_order_submitted`, `order_fill` and `entry_execution` (slippage against the signal and the
+  touch, submit-to-fill time), then the bracket in `LIVE_BRACKET_SUBMITTED`.
+- **Position management:** a fixed bracket only, with no trailing stop and no move to breakeven. The exit is the bracket
+  leg's `order_fill`, followed by the other leg's cancel and `POSITION_CLOSED`.
+- **Per-idea cap:** idea I32 used all 3 entries allowed per zone (`maxEntriesPerZonePerSession`) and then closed on
+  "zone or trend changed".
+
+**Findings to decide on (not fixed; the user asked to let it run unchanged):**
+1. **M5 does not check location or the stall** (`Models.java` `m5`). Gap answers G0.5 and the M5 row require
+   "any V1 location" (LVN, VAH/VAL, POC, VWAP or the idea's zone) and "a 2-bar stall (no new extreme)". The code needs
+   only the flip, the micro break of structure and the retest, and M5's "location" is its own break-of-structure level.
+   The result:
+   - Entries were 6–10 points away from the idea zone: trade 1 was 105 ticks below its zone, trades 2–4 were 67 ticks
+     below theirs.
+   - Trade 1 was not within the 10 ticks of `locationMaxDistanceTicks` of any V1 level (the nearest was VAL, 15 ticks
+     away).
+   - M5 is also noisy: it scored +2 and then −2 on the very next bar after trades 1 and 2.
+2. **Fast re-entry on the same idea.** Trade 4 entered 21 s after trade 3 stopped out. The rules allow this (3 per zone,
+   `minDwellMs` 5 s), but it lets a losing setup repeat within a minute.
+3. **The strategy and the account diverge on a target touch.** On trade 4 the strategy logged `target_hit` at 13:05:22
+   when price touched 4197.3. The Sim limit filled only when price traded through it, 48 s later at 4197.2. For those
+   48 s the strategy treated itself as flat while the account was short 1. Nothing happened, because the idea closed,
+   but a new go in that window would have met a live position. The same gap applies to stops. The runtime's
+   "bracket-only" skip prevented a double exit.
+4. **The planned entry is not the fill.** The plan's entry and R:R use the bar close. Fills differed by 1–2 ticks
+   (trade 1: plan 113, fill 114). This is visible in the logs and was harmless here, but the R:R gate is checked
+   against the plan, not the fill.
+5. **The idea's origin is not in `idea_open`.** It does not say which level created the idea (TJL2, DT or DB), the
+   trend, or the market-structure event. Today it was matched by timestamp to `market_structure_feature_<day>.log`.
+6. **The daily loss guard is effectively off** for this test (`config/risk.json`: `dailyLossLimitTicks` 90000,
+   `maxReversalsPerSession` 5000). Only `maxEntriesPerSession` 6 bounds a bad day.
+7. **Cosmetic:** at every study start, `FEED_STALE` / `data_gap` report an epoch-sized duration ("no market data for
+   1791819715s"), because there is no previous price yet. It fires one misleading Telegram alert per restart.
+
+**Backup gaps (checked on Drive, 2026-10-13):**
+- `--min-age 1h` skips any file written in the last hour. The running instance's `decisions.jsonl` / `raw.jsonl` get a
+  heartbeat every 10 s, so **they are never uploaded while the study runs**. They go up only on the first nightly run at
+  least an hour after the study is removed.
+- Files last written around the 22:00 UTC reopen (for example the 20737 `bars` / `footprint` / `vwap` files) slip one
+  night.
+- Never uploaded:
+  - `data/liquidity_map/` (≈ 0.7–1.6 GB a day). Its `--mode liquidity` exists but has no timer, and nothing is on Drive.
+  - `logs/watchdog_metrics.csv` and `watchdog_state.json`.
+  - MotiveWave's own `~/.motivewave/output/` logs.
+  - The systemd journals of the notifier and the watchdog.
+- **Disk use from the open** (2026-10-12 22:00 UTC) **to 15:45 UTC** was ≈ 0.96 GB: `liquidity_map` 675 MB, the
+  running `raw.jsonl` 231 MB, `decisions.jsonl` 26 MB, everything else ≈ 30 MB.
 
 ## Not built yet (follow-ups)
 

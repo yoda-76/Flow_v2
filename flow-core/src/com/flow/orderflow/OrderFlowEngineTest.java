@@ -151,6 +151,28 @@ public final class OrderFlowEngineTest {
     } catch (IllegalAccessException ex) { throw new IllegalStateException(ex); }
     check("config overlay sets int/double/boolean", oc.barTrades == 300 && oc.imbalanceRatio == 4.0 && !oc.pShapeLongFilter);
 
+    // ---------------------------------------------------------------- time bars (barSeconds, 2026-10-12)
+    OfConfig tc = OfConfig.defaults();
+    tc.barSeconds = 60;
+    tc.barTrades = 3; // ignored with time bars
+    OrderFlowEngine tb = new OrderFlowEngine(tc);
+    long m0 = T0; // 13:30:00.000, minute-aligned
+    for (int i = 0; i < 5; i++) tb.onTrade(m0 + 1_000L * i, 100 + i, 1, true, 5000 + i);
+    check("time bars: barTrades is ignored", tb.barCount() == 0);
+    tb.onClock(m0 + 59_000);
+    check("time bars: still open inside the minute", tb.barCount() == 0);
+    tb.onClock(m0 + 60_100);
+    check("time bars: still open within the close grace", tb.barCount() == 0);
+    tb.onClock(m0 + 60_300);
+    check("time bars: the clock closes the bar after the boundary", tb.barCount() == 1 && tb.lastClosed().trades == 5);
+    tb.onTrade(m0 + 59_900, 104, 1, false, 6000); // late print of the closed minute
+    check("time bars: a late print does not reopen the closed bar", tb.barCount() == 1 && tb.lastClosed().trades == 5);
+    tb.onTrade(m0 + 61_000, 105, 1, true, 6001);
+    tb.onTrade(m0 + 120_500, 106, 1, true, 6002); // next minute, before any clock event
+    check("time bars: a trade in a later minute closes the forming bar", tb.barCount() == 2 && tb.lastClosed().trades == 2);
+    tb.onTrade(m0 + 300_000, 107, 1, true, 6003); // minutes with no trades: no empty bars
+    check("time bars: quiet minutes make no empty bars", tb.barCount() == 3 && tb.lastClosed().trades == 1);
+
     if (failures > 0) {
       System.out.println(failures + " FAILURE(S)");
       System.exit(1);

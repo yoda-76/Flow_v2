@@ -19,7 +19,9 @@ import java.nio.file.Path;
  */
 public final class OfConfig {
   // ---- bars and footprint (gapAnswers §3) ----
-  public int barTrades = 500;                 // E3: 500-tick candles
+  public int barTrades = 500;                 // E3: 500-tick candles (used when barSeconds is 0)
+  public int barSeconds = 0;                  // > 0: time bars of this many seconds, clock-aligned (60 = the chart's
+                                              // 1-minute bars, user 2026-10-12); 0: trade-count bars (barTrades)
   public int footprintRowTicks = 6;           // E5: keep above 5 for Gold (6/7/10)
   public double imbalanceRatio = 3.0;         // E5: 300 %
   public double imbalanceMinVolume = 3;       // dominant side minimum

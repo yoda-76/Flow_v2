@@ -27,12 +27,19 @@ public final class OrderFlowEngine implements Feature {
   private static final int KEEP_BARS = 400;
   private static final int KEEP_PRINTS = 2_000;
   private static final int ROLL_JUMP_TICKS = 300; // contract roll detection (G26)
+  // time bars: the clock closes a bar this long after its end, so trades stamped just before the boundary (exchange
+  // time) that arrive a little after it (local clock) still land in it
+  private static final long TIME_BAR_CLOSE_GRACE_MS = 200;
 
   private final OfConfig c;
   private final ProfileBook profiles;
   private final List<OfBar> bars = new ArrayList<>();        // closed bars, oldest first
   private OfBar forming;
   private long barCount;
+  // time bars (barSeconds > 0): the clock bucket the forming bar covers, and the last closed one. A late trade from an
+  // already-closed bucket goes into the next bar rather than reopening the old one.
+  private long formingBucket;
+  private long lastClosedBucket = Long.MIN_VALUE;
 
   private final List<AggPrint> prints = new ArrayList<>();   // closed aggressor orders + bursts, oldest first
   private final List<AggPrint> tracking = new ArrayList<>(); // response still pending
@@ -121,6 +128,9 @@ public final class OrderFlowEngine implements Feature {
 
     profiles.onTrade(t, price, size);
 
+    // time bars: a trade in a later bucket closes the forming bar first (before the aggressor order takes its bar index)
+    if (timeBars() && forming != null && bucket(t) > formingBucket) closeBar();
+
     // aggressor order aggregation (fills of one aggressor order arrive consecutively)
     if (openOrder != null && aggOrderId == openOrderId && openOrder.buy == isAsk) {
       openOrder.size += size;
@@ -134,9 +144,12 @@ public final class OrderFlowEngine implements Feature {
     }
 
     // execution bar
-    if (forming == null) forming = new OfBar(barCount, t, price, c.footprintRowTicks);
+    if (forming == null) {
+      forming = new OfBar(barCount, t, price, c.footprintRowTicks);
+      if (timeBars()) formingBucket = lastClosedBucket == Long.MIN_VALUE ? bucket(t) : Math.max(bucket(t), lastClosedBucket + 1);
+    }
     forming.add(t, price, size, isAsk);
-    if (forming.trades >= c.barTrades) closeBar();
+    if (!timeBars() && forming.trades >= c.barTrades) closeBar();
 
     // responses
     for (Iterator<AggPrint> it = tracking.iterator(); it.hasNext(); ) {
@@ -148,6 +161,8 @@ public final class OrderFlowEngine implements Feature {
 
   public void onClock(long t) {
     profiles.onClock(t);
+    // time bars close on the clock at the boundary (+ grace), not only when the next trade arrives
+    if (timeBars() && forming != null && t >= (formingBucket + 1) * barMs() + TIME_BAR_CLOSE_GRACE_MS) closeBar();
     long sec = Math.floorDiv(t, 1000L);
     if (lastPrice != null && sec != lastSecond) {
       int i = (int) Math.floorMod(sec, 3600L);
@@ -191,9 +206,14 @@ public final class OrderFlowEngine implements Feature {
     if (prints.size() > KEEP_PRINTS) prints.remove(0);
   }
 
+  private boolean timeBars() { return c.barSeconds > 0; }
+  private long barMs() { return c.barSeconds * 1000L; }
+  private long bucket(long t) { return Math.floorDiv(t, barMs()); }
+
   private void closeBar() {
     OfBar b = forming;
     forming = null;
+    if (timeBars()) lastClosedBucket = formingBucket;
     b.close(c);
     bars.add(b);
     barCount++;
