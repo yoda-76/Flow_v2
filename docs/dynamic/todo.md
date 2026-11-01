@@ -5,6 +5,25 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
+## SESSION HANDOFF (2026-11-02) — Matteo Conti's 3 NQ strategies: backtested, base configs fixed, analysis next
+- **Rules (distilled, all doubts resolved by the user):** `docs/video_transcripts/strategies/distilled/MatteoConti_{1_VaultBreak,2_VwapPullbackADX,3_OvernightBiasORB}.txt`.
+  Each file opens with a **BASE CONFIGURATION — FIXED 2026-11-02** block holding the exact command line.
+- **Base configs (user, 2026-11-02):** S1 = rules + session open at the 17:00 CT Globex open (`--open-ref globex1700`);
+  S2 = rules + trailing TP and SL (`--trail both`), edge unconfirmed; S3 = all defaults.
+- **Scripts** (`analysis/gb_nq_backtest/`): `vault_break.py`, `vwap_adx.py`, `overnight_orb.py` — stdlib only, NQ 1m CSV.
+  Script defaults are the pre-sweep bases (kept for reproducibility); the fixed bases are reached with the flags above.
+- **Results:** `docs/dynamic/matteoConti_{vaultBreak,vwapAdx,overnightOrb}_backtest_v1.md`; sweep tables
+  `reports/{s1_sweep,s2_sweep,orb}/sweep.txt`. S1 PF 1.34 / S2 PF 1.19 / S3 PF 1.56 on 1 NQ, all history.
+- **CLAUDE.md:** gold-only rule lifted 2026-11-01 (code `InstrumentPolicy` still enforces gold-only).
+- **Research logs (canonical, updated 2026-11-02):** `docs/dynamic/strategies/{vault_break,vwap_pullback_adx,overnight_bias_orb}.md`.
+- **Done 2026-11-02:** edge-vs-overfit tests (S1 and S3 real on NQ, weaker on MES; S2 unconfirmed); prop sims with
+  `analysis/gb_nq_backtest/prop_multi.py` (multi-strategy, minute-level, LucidPro rules from `lucid_replay.py` / `prop_sim.py`).
+  **Chosen portfolio: S1 + S3 at 1 MNQ each on LucidPro 25K** — 73.1% eval pass rate (median 35 trading days), funded ≈ $1,800/yr paid
+  out (Lucid rules), one funded breach in 7 years. S2 and the Daily Anchored VWAP strategy were tested as a third leg and left out.
+- **Next (user to direct):** evaluation/activation fees (needed for net results), funded-phase sizing (e.g. 2 MNQ each once a buffer
+  exists), price-scaled TP/SL for S1, roll-adjusted data, confirm Lucid's real rules. Live use needs `InstrumentPolicy` (gold-only in code)
+  changed separately.
+
 ## SESSION HANDOFF (2026-10-12) — order-flow execution model: read this first if you are a new chat
 
 **Where things are.** All order-flow work lives on branch **`orderflow-rules-review`** (pushed; `64d0063` = the build).
@@ -63,6 +82,12 @@ Strategy id **`orderflow_execution`**; every tunable in **`config/orderflow.json
 - **VM `config/risk.local.json` retention override must be removed** (else raw journals deleted after 48 h).
 - Merge the branch to `main` once the Sim run looks good (user's call).
 
+## TASK (added 2026-10-17) — merge branch `orderflow-rules-review` to `main`
+
+- [ ] **Merge `orderflow-rules-review` into `main`** (user's call on timing; push/merge only when the user asks). Before
+  merging: review the branch against `main`, and decide whether the untracked `.claude/skills/lightweight-charts*`
+  (installed 2026-10-17) and `analysis/gb_nq_backtest/`, `rawdata/` belong in the commit.
+
 ## TASK (added 2026-10-11) — check whether Rithmic offers historical tick data for order-flow backtesting
 
 **[ ] Open.** Find out whether we can download **historical tick data (time & sales with bid/ask aggressor side)** for Gold
@@ -118,6 +143,36 @@ order-flow rule except the liquidity heatmap can be backtested.
   docs/dynamic/gianlucaBruniBacktest_plan_v1.md §10.4").
 - **State:** `reports/gianluca_backtest/state.json`. Progress: `docs/dynamic/gianlucaBruniBacktest_progress.md`.
   Results: `docs/dynamic/gianlucaBruniBacktest_results_v1.md`.
+
+## TASK (added 2026-10-14) — Compare Databento trades with FLOW's recorded order-flow constructs, then fix the constructs
+
+- **Why:** a backtest on Databento data is only usable live if the MotiveWave/Rithmic constructs agree with it. First
+  check (1 quiet day, 2026-10-12, session 20737, 14:58–21:00 UTC; `rawdata/glbx-mdp3-20261012.trades.dbn.zst` vs
+  `gdrive_mirror/2026-10-12/data/`): volume/delta/side agree, but the recording has defects. Findings are in this chat only;
+  re-derive with the points below.
+- **Found so far:**
+  - **`big_trades` repeats trades:** the same trade is re-written in hundreds of consecutive 1-second rows (one 18-lot
+    appears 826 times). 19,502 of 29,563 rows (66%) are copies; 8 minutes hold 85% of the apparent volume.
+    Consumers must de-dupe on (ts, price, size, side), or the writer must be fixed. **Check first whether it's intended**
+    (a retention window re-written each second); if not, it's a bug.
+  - **Merged fills:** FLOW merges same-moment fills into one print; Databento has one print per fill. Define "big trade"
+    on volume summed per (price, side, ~50 ms window) in both places.
+  - **Side:** FLOW's `ask` flag agrees with Databento `B`/`A` on ~96% of matched trades. In Databento `B` = buy aggressor,
+    `A` = sell aggressor (`docs/dynamic/databento.txt` reads it the other way; don't follow that).
+  - **Timestamps:** FLOW is a median +1 ms vs Databento (p90 +4 ms).
+  - **Possible gap:** 155 of 5,470 seconds differ in volume; worst around 15:35–15:40 UTC (FLOW 0, Databento 8–11).
+- [ ] **Compare more days** (a heavy one too, e.g. NFP/FOMC/CPI) from the Drive backups: `footprint`, `big_trades`, `bars`,
+  `vwap`, `volume_profile`. Download Databento GC trades (`GC.FUT`, parent) for the same days, filter to the front month
+  (the instrument with the most volume; spreads have negative prices).
+- [ ] **Compare the footprint construct** (not checked yet): per price/side volume per bar vs Databento.
+- [ ] **Compare book data** (heatmap/absorption inputs): not tested at all. Needs MBO (or MBP-10) for the same day vs the
+  recorded `liquidity_map`; also settle how many depth levels the live feed delivers (G4.7 in
+  `orderFlowRules_gapAnswers_v1.md`).
+- [ ] **Fix the constructs** from what the comparison shows (repeat bug first), with tests; flag findings before
+  changing code outside this scope.
+- **Tooling so far (scratch, not in the repo):** a stdlib DBN decoder (Python 3.14 `compression.zstd`) and comparison
+  scripts; promote the decoder into `analysis/` when this task starts. `rawdata/` is not gitignored: add it before any
+  `git add .` (Databento data must not be redistributed).
 
 ## NEXT TASK (added 2026-10-09) — create the master order-flow review file
 

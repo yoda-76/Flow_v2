@@ -230,8 +230,10 @@ there starts with **no memory of the first machine's chats** — everything it n
   a real-account order. On any new machine it must be enabled **before the study is added**, and confirmed at every
   activation. If anything indicates a non-Simulated account, **stop and tell the user** (safety stop, not a
   consent request).
-- **Only gold (`@GC` / a `GC` contract) may be traded, for now** (user, 2026-09-27). The runtime enforces it
-  (`InstrumentPolicy`: `REFUSE_TO_ARM` on any other chart, and no order of any kind there).
+- **The gold-only rule is lifted** (user, 2026-11-01). From 2026-09-27 only gold (`@GC` / a `GC` contract) could
+  be traded; the user lifted that on 2026-11-01 so MNQ (Matteo Conti "Vault Break") can be worked on. **The code
+  still enforces gold-only** (`InstrumentPolicy`: `REFUSE_TO_ARM` on any other chart, and no order of any kind
+  there) until that is changed separately. Sim-only and every other order rule are unchanged.
 - **"Sim Trade Only" stays enabled at all times, on every machine, until the user explicitly says otherwise**
   (user, 2026-09-27) — enable it before Rithmic is connected (`docs/runbook.md` §4).
 - **Per-machine differences go in `config/risk.local.json`** (git-ignored, optional; D-106), never in the tracked
@@ -239,10 +241,14 @@ there starts with **no memory of the first machine's chats** — everything it n
 - **Claude cannot drive MotiveWave's GUI.** The user adds/removes/activates the study; Claude reads MotiveWave's log
   (`%APPDATA%\MotiveWave\output\`) and the journal afterwards.
 - Push/commit only when the user asks (`docs/working-agreements.md` §6).
+- **VM work goes to a `VM`-prefixed branch, never straight to `main`.** Any code, doc or config change made on the
+  VM is pushed to a branch whose name starts with `VM` (`VM`, or `VM-<topic>`). The dev machine's Claude reviews that
+  branch against `main` and merges into `main` only when the user asks. Do not touch the VM's FLOW_HOME or its
+  config from the dev machine's side.
 
 ## Model mode toggle (added 2026-09-27)
 
-**CURRENT MODE: `REGULAR`**   ← the switch. Change this one word (`REGULAR` or `SUPER`) to change how work is split.
+**CURRENT MODE: `SUPER`**   ← the switch. Change this one word (`REGULAR` or `SUPER`) to change how work is split.
 The user picks the session's own model with `/model`; this section says who does *which work*.
 **The toggle only chooses models. It never changes what is authorized** — the Sim pre-authorization (third
 exception) and every hard rule stay exactly as written, whatever the mode. "Regular mode" / "super mode" in

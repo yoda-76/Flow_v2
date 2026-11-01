@@ -1,0 +1,130 @@
+MATTEO CONTI — STRATEGY 3 of 3: OVERNIGHT-BIAS OPENING-RANGE BREAKOUT (LONG + SHORT, 15-MINUTE) — DISTILLED RULES
+Source: strategies/raw/Matteo_Conti_2.md; timestamps from strategies/raw/"Matteo_Conti_2 timeestamps.md" [hh:mm:ss].
+Distilled 2026-11-01. v2 (2026-11-02): user's answers folded in — each doubt now has a DEFAULT (coded rule) and
+coded ALTERNATIVES (e.g. 6B) to test one at a time. All defaults may be tweaked after the backtest (user).
+Legend: [Q] = stated by the speaker (quote checked against the timestamped transcript).
+        [I] = inferred from his examples / wording.   [U] = user's decision (he never says it).
+        Codes like 6B = a variant to backtest; the code with "default" is what the base run uses.
+Speaker's numbers are his own claims (unverified). Built and tested on NQ.
+Sister files: MatteoConti_1_VaultBreak.txt, MatteoConti_2_VwapPullbackADX.txt.
+
+BASE CONFIGURATION — FIXED 2026-11-02 (user), for the analysis phase: the BASE SPEC below, all defaults, unchanged.
+  Command: python analysis/gb_nq_backtest/overnight_orb.py --out <dir>   (defaults are already 1 NQ, $4.60 RT)
+  Evidence: docs/dynamic/matteoConti_overnightOrb_backtest_v1.md.
+
+BASE SPEC (all defaults): NQ, 15m bars, America/Chicago. ONR = 00:00–08:30 CT. Bias from where the 08:30 open sits in
+the ONR thirds. OR = the 08:30–08:45 bar. Enter when a bar closes beyond the OR in the bias direction with ADX(14) > 20;
+fill at the next open. One trade per day. SL = 0.30 × vol from the fill, TP = 3 × the SL distance, time exit 14:30 CT.
+Vol = SMA(15) of daily true range over 00:00–16:00 CT sessions (same as strategy 1).
+
+======================================================================
+PART A. SETUP
+======================================================================
+A1. Instrument: NQ (MNQ for us). Timeframe 15m. LONG AND SHORT. US Central, DST-aware. [Q]
+A2. Size: 1 contract for explanation; live ~5 MNQ. [Q]
+Rationale: overnight price discovery gives the day's direction; an OR break in that direction confirms it. High R:R;
+he says it suits a FUNDED account more than a challenge (low frequency). [Q]
+
+======================================================================
+PART B. LEVELS
+======================================================================
+B1. ONR START. Whiteboard "from like 11 p.m. Central time to 8:30"; chart "overnight range that starts at midnight
+    central time" [01:04:25–01:04:28]; "purely during the overnight session". [Q]
+    1A default: 00:00 CT (chart = coded version; every other level is midnight-anchored). [U]
+    1B: 23:00 CT (whiteboard, literal).   1C (control only): 17:00 CT Globex open.
+B2. ONR END / BASIS. Ends at 08:30 "when market open". [Q]
+    2A default: highs/lows of all 15m bars up to the bar closing at 08:30 (08:30 bar excluded). [U]
+    2B: bar closes only.
+B3. PRICE AT 08:30. "The price at 8:30 when it opens". [Q]
+    3A default: open of the 08:30 CT bar. [U]   3B: close of the 08:15 bar.   3C (unlikely, uses post-open info): close
+    of the 08:30 bar.
+B4. THIRDS. pos = (open − ONR low) / (ONR high − ONR low). Must be "within the top third or bottom third"; just
+    inside the middle = no bias [00:42:12–00:42:28]; "33%" each [00:38:42]. [Q]
+    4A default: long if pos ≥ 2/3, short if pos ≤ 1/3, else no trade; an open above the ONR high / below the low
+        counts as top / bottom third. [U]
+    4B: strict inequalities.   4C: open outside the ONR → no trade.   4D: 33% / 67% (check only).
+B5. OPENING RANGE (OR) = high/low of the 08:30–08:45 CT bar. [Q]
+B6. DAILY VOLATILITY — shared with strategy 1 ("the same calculation that was used in the first strategy ... Yes sir"
+    [00:43:50–00:43:54]; "15 period moving average of ATR ... Not an ATR with a look back of 15" [00:44:30–00:44:37]).
+    5A default: SMA(15) of daily true range, sessions 00:00–16:00 CT, today excluded (= strategy 1's B3/B4). [U]
+    5B: MA15 of ATR(14).   5C: EMA instead of SMA.   5D: Globex-day sessions (17:00–16:00 CT).   5E: plain H − L.
+    Use the same variant for strategies 1 and 3: one variant matching both of his result sets is stronger evidence.
+B7. HOLIDAYS / EARLY CLOSES: as strategy 1 — skip trading that day; the session still counts in the vol average if
+    any trading happened. [U]
+
+======================================================================
+PART C. ENTRY
+======================================================================
+C1. Long-bias day: a 15m bar CLOSES above the OR high with ADX > 20 on that bar; short-bias day: CLOSES below the OR
+    low with ADX > 20. ADX slope irrelevant. Read ADX at the signal bar's close. [Q] [00:41:16–00:41:38]
+C2. Fill: market order at the OPEN of the next bar. [Q]
+C3. Bias is not invalidated by price action inside the OR bar or by a break of the opposite side first
+    [00:46:34–00:46:48]; he rejects extra invalidation conditions [00:46:51–00:47:07]. [Q]
+C4. One trade per day. [Q]
+C5. EARLIEST ENTRY. Chart example: "we wait like the first one after 9 central time" [01:05:16–01:05:18]; entry
+    "not on the candle that broke the opening range high ... because it's after 9:30" [01:05:47–01:05:55]. [Q]
+    The first possible signal bar (08:45–09:00) closes at 09:00 and fills at 09:00, so "after 9" is already true.
+    6A default: no extra time rule; first fill 09:00 CT. ("9:30" most likely Eastern = 08:30 CT.) [U]
+    6B: first fill 09:30 CT.   6C: first fill 09:15 CT.
+    Most likely to change the trade count.
+C6. FRESH CROSS OR STATE. "breaks above the opening range high and closes above" with ADX > 20 on that candle; the
+    interviewer: could be entered at 2 PM "if it stays inside the opening range the whole time" [00:46:24–00:46:34].
+    7A default: STATE — any bar after the OR closing beyond it in the bias direction with ADX > 20. [U]
+    7B: fresh cross (previous bar closed at or inside the OR).   7C: first break only (if its ADX ≤ 20, no trade that
+    day).   7D (low prior): intrabar stop order at the OR boundary.
+C7. ADX. No length given; "above 20" only. [Q]
+    8A default: Wilder ADX(14) on 15m bars, continuous through the overnight session. [U]
+    8B: reset at 08:30.   8C: lengths 10 and 20.   8D: platform built-in ADX (smoothing may differ).
+C8. LAST ENTRY. Not stated; interviewer mentions a 2 PM entry [00:46:24].
+    9A default: last signal bar closes at 14:15 → last fill 14:15. [U]   9B: last fill 14:00.
+    9C: no cutoff except no fill at/after 14:30 (= 9A in practice).   9D: 12:00 / 13:00 (only to see late-trade share).
+
+======================================================================
+PART D. EXITS
+======================================================================
+D1. STOP. "Stop loss is going to be 30% of the ATR of the past 15 sessions" [00:43:37–00:43:47]. Stop-market. [Q]
+    10A default: fill ∓ 0.30 × vol. [U]   10B: from the signal bar's close.   10C (unlikely): OR boundary ∓ 0.30 × vol.
+D2. TARGET. "three times this range. So like reward to risk ratio ... is actually a 3x" [00:44:03–00:44:09]. Limit. [Q]
+    11A default: 3 × the stop distance (= 0.90 × vol). [U]   11B / 11C (controls only, contradict "3x R:R"):
+    3 × OR width / 3 × ONR width.
+D3. TIME EXIT. "at 4:30 ... sorry, 2:30 central time" [00:46:13–00:46:17]; this exit is "mostly hit". [Q]
+    12A default: flat at the 14:30 CT open. [U]   12B (unlikely): close of the 14:30 bar.   12C: 13:30 CT (zone slip).
+D4. INTRABAR ORDER / TICKS.
+    13A default: TP and SL both inside one bar → stop first, entry bar included (user's rule from strategies 1–2). [U]
+    13B: resolve on 1-minute data.
+    Ticks: round the stop away from entry and the TP toward it, to 0.25 (or no rounding; 1 tick = $5 on NQ).
+
+======================================================================
+PART E. HIS RESULTS — what to compare against (claims, unverified)
+======================================================================
+E1. Total ≈ $200,000 on 1 NQ "in this specific period" [01:16:03–01:16:10], said to be mainly out-of-sample.
+    Test 2023→today and 2018→today.
+E2. Trade count ≈ 200 [01:14:50] — may be the short side only (it follows the short-side stats), i.e. ~400 total.
+E3. Win rate 53% overall, short 50% → long ≈ 56% (derived).
+E4. "1.4 with a 53%" overall, "50% win rate with a 1.6" short [01:14:44–01:14:46]: payoff ratio OR profit factor.
+    Payoff 1.4 → PF ≈ 1.58, ≈ 0.27R/trade. PF 1.4 → payoff ≈ 1.24, ≈ 0.19R/trade. Doesn't change any rule.
+    RESOLVED by backtest (2026-11-02): PAYOFF RATIO. Base run since 2023: overall 52.5% / payoff 1.39; short side
+    50.0% / payoff 1.60 — matches his figures exactly. See docs/dynamic/matteoConti_overnightOrb_backtest_v1.md.
+E5. Outliers $88,000 from 53 trades [01:16:14–01:16:18] → also test with the largest trades removed.
+E6. Time exits "mostly hit" → log exit share by type. Equity curve not in drawdown after 2023.
+Sanity: total P&L ≈ trades × expectancy (R) × stop size ($).
+
+======================================================================
+PART F. COMMON TO ALL THREE STRATEGIES (portfolio + bench rules — repeated in each file)
+======================================================================
+F1. Run all three simultaneously; pairwise correlation < 0.25; each alone ≈ 40% pass probability; ~5 trading days
+    to pass at ~5 MNQ each. [Q]
+F2. Fully automated. TP = limit order, SL = stop-market. [Q]
+F3. Flat before the market close. [Q]
+F4. BENCH RULE: investigate after 2 failed challenges in a row; Monte Carlo the trade list for a drawdown
+    distribution; current DD beyond its 75th percentile → bench; un-bench at a new equity-curve all-time high.
+    Monte Carlo method not specified. (Full text in MatteoConti_1_VaultBreak.txt, F4.)
+
+======================================================================
+PART G. TEST PLAN
+======================================================================
+G1. Run the base spec; compare trade count, win rate (all / long / short), total P&L, time-exit share with PART E.
+G2. Change one factor at a time: 1B, 2B, 3B, 4B, 4C, 5B–5E, 6B, 6C, 7B, 7C, 8B, 8C, 9B, 10B, 11B, 11C, 12B, 13B.
+G3. Combine only the 2–3 variants that move closest to his numbers. Match ranges, not exact figures (~200 trades →
+    $10–20k differences are noise). Many variants make a curve-fit likely: prefer the simplest variant in range and
+    keep 2023→today as the final check.

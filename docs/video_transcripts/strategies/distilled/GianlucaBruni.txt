@@ -1,0 +1,204 @@
+GIANLUCA BRUNI — VALUE-AREA BREAK + PRICE-EFFICIENCY MOMENTUM STRATEGY (DISTILLED RULES)
+Source: strategies/raw/GianlucaBruni.txt (YouTube "3x Trading WORLD CHAMPION Reveals the 'Low-Effort' Strategy...", nlLGlVJGrtw)
+        + 18 screenshots from the video supplied by the user 2026-10-12 (C:\yadvendra\New folder\Screenshot 2026-10-12 2215..2312).
+Distilled 2026-10-12 (v2: screenshots folded in). Only strategy content kept: entry/exit/structure rules, filters, risk
+model, validation method. Dropped: life story, mindset talk, prop-firm pitch / prop simulation results, software plug.
+Timestamps [hh:mm:ss] point into the video.
+Legend: [Q] = quantified by the speaker. [S] = confirmed / resolved from a screenshot.
+        [D] = discretionary / not fully defined — needs a definition before it can be coded.
+        [?] = still open — needs a decision (or more footage).
+Speaker's numbers are his own claims (unverified). Example chart is NQ (CME, 15m, ETH); he mentions forex too.
+Nothing here is gold-specific.
+
+======================================================================
+PART A. CHART SETUP
+======================================================================
+A1. One timeframe only: 15-minute. Analysis AND entry on the same timeframe; never switch timeframes.
+    [Q][S] Whiteboard header reads "15 TF"; chart is NQ1! 15. (The transcript's "50inut" at 01:10:21 was a mishearing.)
+A2. Session volume profile (TradingView "SVP HD"): POC, VAH, VAL per session. [Q][S][01:01:08]
+    [S] On his NQ chart (ETH, UTC+2) each profile starts at ~00:00 UTC+2 = 18:00 New York = CME Globex daily open.
+        So "session" = the full electronic trading day (Globex 18:00-17:00 ET), NOT London/NY sub-sessions.
+    [D] Value-area % not stated (SVP HD default 70%).
+A3. Volume moving average, length 20, on bar volume (plotted as a line over the volume bars). [Q][S][00:51:41]
+    [?] "simple MA ... 20" once, "EMA" afterwards. SMA vs EMA undecided.
+A4. ATR Percentile indicator: ATR length 14, percentile lookback 200 (regime filter, Part F). [Q][00:28:41]
+A5. BOCPD indicator (Bayesian Online Change Point Detection). [S] His panel ("AE - BCP...") shows:
+    Changepoint 2%, Regime Age <N> bars, MAP Length <N> bars, Last Break, Hazard H 2%, Monitor = Volatility,
+    Mean Regime = 50 bars. So: change-point detection run on VOLATILITY, hazard 2% (= expected regime length 50 bars),
+    and "regime age" is counted in BARS. (Values seen on the chart: 30, 39, 50, 52, 60 bars.)
+
+======================================================================
+PART B. MEASURABLE PRIMITIVES
+======================================================================
+B1. VALID CANDLE: body size > the candle's longest wick (upper or lower, whichever is bigger), in ticks. [Q][S][01:12:44]
+    Whiteboard: body 4 / wick 3 -> valid; body 3 / wick 6 -> not valid. Chart: body 16 / wick 56 -> not valid;
+    body 54 / wick 24 -> valid. [01:20:41, 01:21:12]
+B2. ENGULFING (his definition — NOT the textbook bullish engulfing): the candle's body CLOSES beyond the previous
+    candle's high (long) / low (short), i.e. beyond the previous candle's wick extreme. Candle size does not matter.
+    Close must be beyond the previous high by >= the threshold (B4). [Q][01:06:51-01:08:06, 01:24:45, 01:26:14]
+    [S] Previous candle need NOT be opposite colour: whiteboard shows blue engulfing blue; chart re-entries engulf
+        green candles.
+B3. VAH BREAK: candle closes above the previous session's VAH (long) by >= the threshold (B4). Smaller close-through
+    = not broken; wait for another candle. [Q][S][01:17:52-01:19:00] Whiteboard: 0.6 beyond the line = broken,
+    0.4 = not.
+B4. THRESHOLD for B2/B3: 0.6 for forex, 6 for NQ. [Q][01:17:44, 01:24:53]
+    [?] Unit. TradingView's ruler shows "points (pct) ticks" (e.g. his stop label "28.25 (0.095%) 113"), and he reads
+        the first number — so 6 on NQ is most likely 6 POINTS (= 24 ticks). For gold there is no value: must be set by
+        backtest (rough NQ-equivalent by volatility would be a few dollars on GC, but that is a guess).
+B5. PRICE EFFICIENCY ("low effort, big result") — the volume condition on the trigger candle. [Q][S]
+    (a) REDUCING VOLUME: trigger candle's volume < previous candle's volume (falling while price engulfs), even if
+        still above the MA. [01:12:58, 01:19:12]
+    (b) LOW EFFORT: trigger candle's volume < volume MA(20), even if rising vs the previous candle. [01:26:50, 01:27:17]
+    Either (a) or (b) satisfies the entry. Both = "combination". Fails if volume is rising AND above the MA
+    ("high effort, high result") -> no trade. [01:28:00, 01:29:00]
+    [S] Whiteboard (00:54:23): two red candles, then two blue candles each closing above the previous high; volume
+        bars red-red above the MA, then blue-blue smaller and falling to the MA line. The rule as spoken is
+        one-bar (trigger vs previous, 01:19:12); the sketch is consistent with that.
+B6. MARKET STRUCTURE LOW (longs; mirror = MS HIGH for shorts). [Q][S][01:12:10-01:16:01, 01:20:16-01:22:40]
+    - Take the most recent pullback before the breakout (break of structure).
+    - Walk back from the breakout; take the CLOSEST valid (B1) bearish candle in that pullback.
+    - None in this pullback -> go back to the previous pullback and repeat.
+    - MS low = the LOWEST LOW of that pullback ("we don't check if this candle is valid, we take the lowest level").
+      [S] On the NQ chart the MS-low line sits at the swing low of the pullback (~29,640), not at the valid candle.
+    - A low not anchored by a valid candle "means nothing" when broken. [01:15:22]
+    [D] "Breakout / break of structure" itself is not defined (presumably: close above the prior swing high).
+B7. MARKET STRUCTURE HIGH = TARGET CEILING for longs. [S] On the whiteboard it's the peak marked "K"; on the NQ chart a
+    line at the prior swing high (~29,966) — the high made BEFORE the pullback into the previous value area.
+    [01:04:00, 01:27:28]
+
+======================================================================
+PART C. SETUP (LONG; short is the mirror — "you do the same thing for highs" [01:16:01])
+======================================================================
+C1. TREND FILTER: today's (developing) value area has shifted UP vs the previous session's value area -> trending long.
+    [Q][S][01:00:55, 01:19:45] Chart (222143): a staircase of daily value areas each higher than the last; the
+    18 Sep VA (~29,650-29,980) overlaps the 17 Sep VA (~29,560-29,800) and still counts.
+    [?] Exact test still a choice. Suggested: VAH_today > VAH_prev AND VAL_today > VAL_prev (overlap allowed).
+C2. Mark the MS low (B6) and MS high (B7).
+C3. WAIT for price to pull back INTO the previous session's value area. A wick touch is enough. [Q][S][01:01:33, 01:23:38]
+C4. VALIDITY: the MS low must not be broken. Breaking the previous VAL does NOT invalidate — only the MS low does.
+    [Q][01:05:07-01:05:20] MS low broken -> setup cancelled; a trigger after that has negative expectancy. [01:11:32]
+C5. After the move completes, a new setup needs price to come back to the NEW previous session's value area. [01:10:44]
+
+======================================================================
+PART D. ENTRY, STOP, TARGET, RE-ENTRY
+======================================================================
+D1. FIRST TRADE trigger — on ONE candle close, all of: [Q][01:18:58-01:19:17]
+    - closes above the previous-session VAH by >= threshold (B3, B4), AND
+    - is an engulfing (B2) by >= threshold, AND
+    - meets the volume condition (B5 a or b).
+    Engulfs before the VAH break do not count ("premature"). [01:25:20-01:25:34]
+D2. Entry: market, at the trigger candle's close. [Q]
+D3. Stop: the trigger candle's low. [Q][S] NQ trade 1: entry 29,780.75, stop 29,752.75 (28.25 pts / 113 ticks).
+D4. Target: 1:2 R:R fixed (tested 1:1..1:5; 1:2 best). [Q][S] NQ trade 1: target +56.25 pts, R:R 1.99, closed at target.
+D5. CEILING: never target or trade beyond the MS high. If 1:2 would pass it, target the MS high (lower R:R accepted).
+    Anything open is closed at the MS high. Once the MS high is reached, the setup is over. [Q][S][01:11:05, 01:29:09]
+    [?] No minimum R:R given for when the ceiling is very close.
+D6. CONTINUATION / RE-ENTRY: after the first trade, every later candle that is an engulfing (>= threshold) AND meets
+    the volume condition is another entry: stop = its own low, target 1:2, capped at the MS high. [Q][S][01:08:30, 01:28:20]
+    Only if the first trade (the VAH break) was taken. [01:09:32]
+    [S] NQ trade 2 (230055): entry ~29,851.75, stop ~29,822.75, taken after trade 1 had already hit target; ceiling line
+        at ~29,966 visible above.
+    [?] Overlap with an open trade never shown (both examples were flat first). Our max-1-contract cap settles it:
+        no re-entry while a position is open.
+    [?] Re-entry need not re-break the VAH (it's already above it) — appears to be engulf + volume only.
+D7. NEWS: no trade when high-impact news (NFP, CPI...) falls during the trigger; the strategy also tests poorly on
+    heavy-news days. [Q/D][01:17:02-01:17:21] [?] Scope: the trigger window or the whole day.
+D8. No other invalidation: a pullback that does not break the MS low and then triggers is valid. [01:18:42-01:18:58]
+
+======================================================================
+PART E. META-LABEL (SETUP RATING) — 5 yes/no questions, 1 point each [S: 221536][00:56:11-00:58:20]
+======================================================================
+E1. Is this setup in my best regime? (his: HIGH volatility, ATR pct 51-75)
+E2. Is this the best trade based on autocorrelation? (his: L-L-L-W-(W) — the trade after the first win that ends a
+    loss streak; see G3)
+E3. Is it the best freshness? (his: FRESH, regime age 0-30 bars)
+E4. Which price efficiency? [S] Point goes to "REDUCING VOLUME" (ticked on the board; "low effort" not ticked).
+E5. In which session was it taken? (his: New York > London) [00:57:40]
+    [?] With the profile session being the whole Globex day (A2), "New York" here must mean the trigger TIME falls
+        in NY hours. NY hours not defined (RTH 09:30-16:00 ET? 08:00-17:00?).
+Every score is still traded — the score only sets size. [00:59:30]
+"Best" for E1-E5 is per-strategy and must come from our own backtest breakdowns, not his values.
+
+======================================================================
+PART F. FILTER DEFINITIONS USED BY THE RATING
+======================================================================
+F1. VOLATILITY REGIME = ATR(14) percentile over 200 bars: 0-25 LOW, 26-50 MEDIUM, 51-75 HIGH, 76-100 EXTREME.
+    [Q][00:27:50-00:28:24] Know the regime before trading every day ("mandatory"). Computed on the 15m chart (A1).
+F2. REGIME FRESHNESS = BOCPD regime age (A5), in bars: 0-30 FRESH, 31-60 MATURE, 61-100 OLD. [Q][S: 230903]
+    Board writes "Regimes age 0-100"; panel shows bars -> read as bars since the last volatility change point.
+    [D] We would implement BOCPD ourselves: volatility series (which one? ATR? bar range? returns^2?), hazard 1/50.
+F3. SESSION: measure expectancy per session; NY best for him. [00:57:40]
+F4. Re-check which regime / freshness / session is "best" every 100 trades. [00:49:41]
+
+======================================================================
+PART G. RISK MODEL (half his profit came from this, he says) [00:11:14-00:11:35]
+======================================================================
+G1. Size = fraction of Kelly by meta-label score [S: 221536]:
+    5/5 -> 1/2 Kelly   4/5 -> 1/4 Kelly   3/5 -> 1/5 Kelly   2/5 -> 1/6 Kelly
+    1/5 -> "risk very little" (no number)   0/5 -> not stated.   Full Kelly never.
+    [D] 1/5 and 0/5 need a number (e.g. 1/8 and 1/10 Kelly, or 0/5 = skip).
+    NOTE for FLOW: our cap is 1 contract, so Kelly sizing can only scale DOWN (0 or 1 lot) unless the cap changes.
+G2. AUTOCORRELATION ("memory") of the trade win/loss sequence: [S: 230600-230802][00:30:48-00:36:03, 00:43:39-00:45:47]
+    - Compare the unconditional win rate with the conditional win rate (COWR). Board example: unconditional 40%;
+      sequence W-L-L-W-W-L, wins among trades that follow a loss = 2/6.
+    - His 0-10 strength scale: 0-2 none (random), 3-5 basic, 6-8 strong, 9-10 probably overfit. Same for negative.
+    - Positive -> wins/losses cluster (trend strategy in trends). Negative -> they alternate (mean reversion).
+    - His strategy: 7.9 "memory strength"; after a win, 52.5% the next is a win. [01:35:37]
+    [D] The formula mapping (COWR vs unconditional) -> 0-10 is not given; we'd define our own (e.g. a scaled
+        difference, or a lag-1 autocorrelation of the ±1 outcome series with a significance test).
+G3. TRADE SELECTION BY STREAK (positive autocorrelation): [S]
+    - BEST: L-L-L-W-(W) — the trade right after the FIRST win that ends a loss streak -> biggest size. If
+      autocorrelation is only basic (3-5), still the big trade but smaller. [00:35:25]
+    - SKIP: W-W-W-L-(L) — the trade right after the FIRST loss that ends a win streak (circled on the board):
+      "I don't take this trade, never". [00:38:04-00:39:50]
+    - Later trades inside a loss streak: TAKEN, lowest size ("worst setup, still profitable") — needed to catch the
+      flip back to a win.
+    [?] This is my reading of a garbled exchange + the circle on the board; low risk, but confirm it if you can.
+G4. Autocorrelation decays like any metric: 8 -> 4 (= -50%) is weaker -> risk less. At ~0, stop using it (the edge
+    itself may remain) until ~100 more trades re-validate it (board: "0-100 -> 5"). [00:45:00-00:45:56]
+
+======================================================================
+PART H. VALIDATION PROTOCOL (how he decides the edge is real)
+======================================================================
+H1. In-sample / out-of-sample: build on one period (e.g. 2024-25), test unchanged on unseen data (e.g. 2026).
+    NEVER change rules during the OOS test. [00:14:03-00:15:08, 00:19:47-00:20:12]
+H2. Judge on expectancy (R per 1R risked) and Sharpe, not win rate. [00:23:05-00:24:30]
+    (His example "0.2 expectancy, risk $1,000 -> $1,200" is misspoken; 0.2R = +$200 per $1,000 risked.)
+H3. Degradation IS -> OOS (and live vs backtest): ~20-25% drift normal; >=30% drop = warning -> lower risk, run a
+    failure test; >=50% drop = edge not solid. [00:15:08-00:15:25, 00:20:56-00:22:13]
+    [S] His software draws exactly these lines: "warning" = half the record (-50%), "extreme positive" = +50%.
+H4. Sharpe: >=1.5 good, ~1.4 still good, <1 not good. [00:17:22]
+H5. Overfitting: count the variants you tested; prefer few rules. Chunk test: ~10 parts, check stability. [00:17:35-00:18:52]
+H6. Sample size: luck explains 50-100 trades, not 10,000. [00:10:50]
+H7. Monitor rolling-60-trade Sharpe and expectancy vs the whole record. [01:30:02-01:30:34]
+H8. Monte Carlo: 10,000 shuffles of trade order. [01:37:43]
+H9. Include costs (slippage, commission, swap). [01:29:51] [S] His report runs with cost=0.027 (R per trade, it seems).
+
+His reported results [S: 230229, 230251] (his claims, NQ, 2 years):
+  727 trades (~1.4/day), net +147.04R, return +103.9% at risk 0.50 (% per trade, flat), max DD -13.1%.
+  Expectancy +0.20R (rolling-60 avg +0.17R). Sharpe 2.20 (rolling-60 avg 2.05).
+  Rolling-60 windows are very uneven: Sharpe from -4.68 to +14.10, expectancy from -0.33R to +0.97R;
+  22% of windows closed negative; longest spell under the warning line 97 windows.
+  At the moment of recording the latest window was NEGATIVE: Sharpe -1.86, expectancy -0.15R.
+  Monte Carlo: 41 / 10,000 shuffles lose money; worst -15R. [01:38:05]
+
+======================================================================
+PART I. STILL OPEN BEFORE THIS CAN BE CODED FOR GC
+======================================================================
+Resolved by the screenshots: timeframe (15m), session = Globex day, Kelly table for 5..2, meta-label E4 point
+(reducing volume), engulf colour (not required), MS low = pullback's lowest low, MS high = prior swing high,
+BOCPD settings + regime age in bars, autocorrelation streak rule (mostly), his backtest stats.
+
+Still open (all are decisions for us now, not missing footage):
+ 1. Threshold for GC (B4) — unit and value. Backtest a few values.
+ 2. Trend filter exact test (C1). Suggested: VAH and VAL both higher than previous session's.
+ 3. Value-area % (A2). Default 70%.
+ 4. Volume MA: SMA or EMA (A3).
+ 5. "Break of structure" definition (B6).
+ 6. Minimum R:R when the MS-high ceiling is close (D5).
+ 7. News rule scope (D7).
+ 8. "New York session" hours for meta-label E5.
+ 9. Kelly fraction for scores 1 and 0 (G1) — and how Kelly maps onto our 1-contract cap.
+10. Autocorrelation 0-10 formula (G2) and BOCPD input series (F2).
+11. Confirm the G3 streak reading (skip only the trade after the first loss).
+No more screenshots needed.

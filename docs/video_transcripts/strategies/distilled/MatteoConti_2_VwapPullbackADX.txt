@@ -1,0 +1,128 @@
+MATTEO CONTI — STRATEGY 2 of 3: VWAP PULLBACK WITH ADX GATE (LONG ONLY, 1-MINUTE) — DISTILLED RULES
+Source: strategies/raw/Matteo_Conti_2.md; timestamps from strategies/raw/"Matteo_Conti_2 timeestamps.md" [hh:mm:ss].
+        Earlier video (his "drift VWAP pullback" course strategy, which he says this one is "very similar" to):
+        strategies/raw/"Matteo_Conti_1 timeestamps" — cited as [V1 hh:mm:ss].
+Distilled 2026-11-01. v2 (2026-11-01): user's answers folded in; v3 (same day): the four conflicts with video 1
+and the stop-gap skip resolved by the user (PART H). Everything marked [U] may be tweaked after the backtest (user).
+Legend: [Q] = stated by the speaker (quote checked against the timestamped transcript).
+        [I] = inferred from his examples / wording.
+        [U] = user's decision 2026-11-01 (he never says it; this is our choice — don't blame him for it).
+        [T] = test the alternative later as a sensitivity check.
+Speaker's numbers are his own claims (unverified). Built and tested on NQ; we would trade MNQ.
+Sister files: MatteoConti_1_VaultBreak.txt, MatteoConti_3_OvernightBiasORB.txt.
+
+BASE CONFIGURATION — FIXED 2026-11-02 (user), for the analysis phase:
+  All rules below as written, EXCEPT D3: TP and SL are TRAILING (variant S2-7E) — re-computed every bar after the
+  entry bar from the 5-bar-high / 20-bar-low window ending at the previous bar. Not what he described ("fixed at
+  entry" was our reading); chosen because it is the best variant found (PF 1.19, $15/trade, DD $6.3k on 1 NQ).
+  No variant reaches his claims (payoff ~0.7, > $90/trade) — treat this strategy as unconfirmed.
+  Command: python analysis/gb_nq_backtest/vwap_adx.py --trail both --mult 20 --comm 4.60 --out <dir>
+  Evidence: docs/dynamic/matteoConti_vwapAdx_backtest_v1.md (v2 sweep).
+
+======================================================================
+PART A. SETUP
+======================================================================
+A1. Instrument: NQ in his tests; MNQ for us. [Q][U]
+A2. Timeframe: 1-minute bars. [Q]
+A3. Direction: LONG ONLY. [Q]
+A4. Timezone: US Central (America/Chicago, DST-aware). [Q]
+A5. Size: 1 contract for explanation; live ~5 MNQ. [Q]
+A6. ADX: Wilder ADX, length 14, on the 1m bars. [U] He never gives a length; he credits Wilder [00:23:27].
+    [T] Test 10 and 20 (on 1m bars the length directly changes trade frequency).
+A7. VWAP anchor: 08:30 CT (RTH open). [U] Per video 1: "anchored at the market open. So 9:30 Eastern time"
+    [V1 00:11:17–00:11:21]. [T] 00:00 CT anchor (strategy 1's).
+A8. ADX runs continuously through the overnight session (no daily reset); needs Globex bars and a warm-up before
+    the first usable day. VWAP resets at 08:30 CT each day. [U]
+Rationale: most institutional flow is executed by VWAP algos; a pullback to VWAP in an up-drift is where those algos
+push price back up. ADX not rising = the pullback's momentum is fading. [Q]
+
+======================================================================
+PART B. LEVELS
+======================================================================
+B1. OPENING RANGE (OR) = high and low of 08:30–09:00 CT. [Q] "8:30 central time and 9 we record the opening range"
+    [00:28:04–00:28:19] (garbled; "9" read as 09:00). Note: strategy 3's OR is 15 min (08:30–08:45) — different.
+    The OR is final at 09:00, so the first bar that can arm is the 1m bar 09:00–09:01. [I]
+
+======================================================================
+PART C. ENTRY — four gates, in order
+======================================================================
+C1. GATE 1 — ARM: a 1m bar CLOSES above the OR high. [Q] Whiteboard: "one bar that close above the opening range
+    ... gate number one. It like arms the strategy" [00:31:33–00:31:48]. The chart line "touches the high of the
+    range we arm the trade" [00:58:57] is loose speech. Arming lasts the rest of the day. [U]
+C2. GATE 2 — PULLBACK: after arming, a bar's low <= VWAP. [Q] "Touches the VWOP. Just can touch it. That's all"
+    [00:31:26–00:31:29]. No close below VWAP needed. Must come after arming. [I] Once touched, it stays latched. [U]
+C3. GATE 3 — RECLAIM: a 1m bar CLOSES above VWAP. [Q] Gates 2 and 3 may be the same bar (wick below, close above)
+    [00:33:20–00:33:44]. [Q]
+C4. GATE 4 — ADX: ADX > 20 AND ADX <= ADX[previous bar] (flat or falling). [Q] [00:32:28–00:32:38]
+    If gates 1–3 are met but ADX fails, wait bar by bar [00:33:03–00:33:17]; also if ADX starts below 20, rises
+    above it, then stops rising [00:34:02–00:34:10]. [Q]
+    RE-CHECK RULE [U]: the entry bar must satisfy BOTH close > VWAP AND gate 4 on the same bar. If price is below
+    VWAP while waiting, no entry until a bar again closes above VWAP with ADX passing. The gate-2 touch stays latched.
+    [T] Latch variant (enter on the first ADX-passing bar after gate 3 even if price is below VWAP) — closer to his
+        wording "we wait for the condition ... to open" [00:33:03]; biggest rule difference between the readings.
+    Exact ADX equality is rare in floating point; a tiny tolerance is optional. [I]
+C5. Fill: market order at the OPEN of the next bar after all gates are met. [Q] [00:33:36]
+C6. DAILY GUARD RAILS (video 1's) [U]: one position at a time; max 4 trades a day; stop for the day after
+    2 consecutive losing trades [V1 00:22:40–00:23:00].
+    RE-ENTRY after an exit [U, default]: arming (gate 1) stays; gates 2–4 reset — needs a new VWAP touch, reclaim
+    and ADX pass. [T] 1 trade/day.
+C7. ENTRY WINDOW: from 09:00 CT; no new entries after 14:30 CT ("no new trades after 3:30 p.m. Eastern"
+    [V1 00:23:00–00:23:06]). [U] He says entries can still happen "after 10" [01:21:08]. [T] 10:00 CT start.
+C8. SKIP RULES [U]:
+    - If the next bar opens at or above the TP level (D1), the target is already gone → skip the trade. If a position
+      is somehow entered with the target already reached, exit immediately.
+    - If the next bar opens at or below the SL level (D2) → skip the trade.
+
+======================================================================
+PART D. EXITS (levels FIXED at entry)
+======================================================================
+D1. Take profit: HIGHEST HIGH of the past 5 bars, INCLUDING the signal bar. LIMIT order. [Q]
+    Interviewer: TP can be the signal bar's own high — "100% ... less than 5% of the times" [00:35:05–00:35:40].
+D2. Stop loss: LOWEST LOW of the past 20 bars, including the signal bar (same convention, by inference). [I]
+    STOP-MARKET order [01:00:42]. [Q]
+D3. Fixed at entry, not trailing. [I] On the chart he counts the 5 bars back once [01:00:28–01:00:34] and finds the
+    20-bar low once [01:00:55–01:01:04].
+D4. Time exit: 14:55 CT (= 3:55 PM ET). [U] Video 2 says "exit at 3:55 ... Central time" [00:34:44–00:34:48];
+    video 1 says "close all position at 3:55 p.m. Eastern time. So before regular trading hours closes"
+    [V1 00:23:06–00:23:22] — "Central" taken as a slip. [T] 15:55 CT.
+Geometry: reward:risk well below 1, high win rate. [Q]
+
+======================================================================
+PART E. HIS RESULTS (claims, unverified)
+======================================================================
+E1. Developed from 2018, out-of-sample from 2023 [01:03:04–01:03:13]; equity "recently touching new highs"
+    [01:03:19]. Treat as a split to replicate, not a result. [Q]
+E2. "7 RR with around the same win rate" [01:01:36] = a garbled 0.7 reward:risk (he says R:R "under one"
+    [01:01:56–01:02:01]). Breakeven win rate at 0.7 = 1/1.7 ≈ 58.8%. [I]
+E3. He says the average trade is higher "because" of fewer trades [01:01:28–01:01:34] — that doesn't follow (a lower
+    count doesn't raise an average). No $ figure given for this strategy; nothing to verify against. [I]
+
+======================================================================
+PART F. COMMON TO ALL THREE STRATEGIES (portfolio + bench rules — repeated in each file)
+======================================================================
+F1. Run all three simultaneously; pairwise correlation < 0.25; each alone ≈ 40% pass probability; ~5 trading days
+    to pass at ~5 MNQ each. [Q]
+F2. Fully automated. TP = limit order, SL = stop-market. [Q]
+F3. Flat before the market close. [Q]
+F4. BENCH RULE: investigate after 2 failed challenges in a row; Monte Carlo the trade list for a drawdown
+    distribution; current DD beyond its 75th percentile → bench; un-bench at a new equity-curve all-time high.
+    Monte Carlo method not specified. (Full text in MatteoConti_1_VaultBreak.txt, F4.)
+
+======================================================================
+PART G. BACKTEST LOGGING (for when this is coded)
+======================================================================
+G1. Log TP distance and SL distance in points per trade (TP can be tiny, SL far away → very uneven trade sizes).
+G2. Log costs as a % of the average winner (a few-point 1m target is very cost-sensitive).
+G3. Log how often the C8 skip fires, to compare with his "< 5%" claim.
+G4. Keep [U] rules labelled in results, so a bad result isn't blamed on his rules.
+
+======================================================================
+PART H. RESOLVED CONFLICTS WITH VIDEO 1 (user, 2026-11-01)
+======================================================================
+Video 1 is his "drift VWAP pullback" strategy (15m, NQ), which he says strategy 2 is "very similar" to [00:22:55].
+H1. VWAP anchor     → 08:30 CT, per video 1 (was 00:00 CT). (A7)
+H2. Time exit       → 14:55 CT, per video 1's "3:55 p.m. Eastern" (was 15:55 CT). (D4)
+H3. Daily limits    → video 1's guard rails: max 4/day, one at a time, stop after 2 losses in a row (was 1/day). (C6)
+H4. Last entry      → 14:30 CT, per video 1 (was up to the time exit). (C7)
+H5. Stop reached at fill → skip the trade. (C8)
+All [U] settings may be tweaked after the backtest (user).

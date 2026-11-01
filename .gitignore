@@ -39,5 +39,9 @@ config/risk.local.json
 /gdrive_mirror/
 /gdrive_staging_*/
 
-# Third-party course transcripts and our distillations of them -- kept local
-/docs/video_transcripts/
+# Third-party course transcripts -- kept local. Exception (user, 2026-11-02): our distilled strategy rules are tracked,
+# because the research logs in docs/dynamic/strategies/ cite them as each strategy's rule source.
+/docs/video_transcripts/*
+!/docs/video_transcripts/strategies/
+/docs/video_transcripts/strategies/*
+!/docs/video_transcripts/strategies/distilled/

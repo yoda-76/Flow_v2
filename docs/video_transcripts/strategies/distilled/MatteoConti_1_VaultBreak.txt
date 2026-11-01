@@ -1,0 +1,134 @@
+MATTEO CONTI — STRATEGY 1 of 3: "VAULT BREAK" (NOISE-AREA BREAKOUT + VWAP, LONG ONLY) — DISTILLED RULES
+Source: strategies/raw/Matteo_Conti_2.md; timestamps from strategies/raw/"Matteo_Conti_2 timeestamps.md" [hh:mm:ss].
+Distilled 2026-11-01. v2 (2026-11-01): all doubts G1–G16 resolved by the user; resolutions folded into the rules.
+Only strategy content kept: entry/exit rules, filters, risk, validation, and the portfolio/bench rules that apply to
+all three. Dropped: bio, prop-firm pitch, ads, banter.
+Legend: [Q] = stated by the speaker (quote checked against the timestamped transcript).
+        [I] = inferred from his examples / wording.
+        [U] = user's decision 2026-11-01 (he never says it; this is our choice).
+        [T] = test the alternative later as a sensitivity check.
+Speaker's numbers are his own claims (unverified). Built and tested on NQ. Instrument for us: MNQ (user, G9) —
+NOT gold. See PART H.
+Sister files: MatteoConti_2_VwapPullbackADX.txt, MatteoConti_3_OvernightBiasORB.txt.
+
+BASE CONFIGURATION — FIXED 2026-11-02 (user), for the analysis phase:
+  All rules below as written, EXCEPT B2: SESSION OPEN PRICE = open of the first 1m bar at/after 17:00 CT of the
+  previous date (CME Globex open; variant S1-2C) instead of the 00:00 CT bar. VWAP and the ATR sessions stay
+  midnight-anchored. This departs from his spoken rule ("midnight") but is the only variant matching his reported
+  2022+ results ($123/trade, 68.8% vs his $112–121, ~67%) and is better on every measure (PF 1.34, DD $11.1k).
+  Command: python analysis/gb_nq_backtest/vault_break.py --open-ref globex1700 --mult 20 --comm 4.60 --out <dir>
+  Evidence: docs/dynamic/matteoConti_vaultBreak_backtest_v1.md (v2 sweep).
+
+======================================================================
+PART A. SETUP
+======================================================================
+A1. Instrument: NQ in his tests; we use MNQ. [Q][U]
+A2. Timeframe: 30-minute bars. [Q]
+A3. Direction: LONG ONLY. Purpose: harvest the market's positive drift. [Q]
+A4. Timezone: all times US Central (America/Chicago, DST-aware). [Q]
+A5. Size: 1 contract in his explanation/backtests ("for explanation purposes" [00:09:42]); live ~5 MNQ per strategy
+    ("around five micro for each" [00:01:54]). Two separate contexts, not a conflict. [Q]
+
+======================================================================
+PART B. LEVELS (computed once per session at 00:00 CT, then STATIC for the day)
+======================================================================
+B1. SESSION = 00:00 CT to 16:00 CT. [I] "from midnight to the end of the trading day ... 4:00 p.m. Central" [00:18:07].
+    Midnight anchor (not the 17:00 CT Globex open) is intentional — used for the open, the ATR and the VWAP. [Q]
+B2. SESSION OPEN PRICE = OPEN of the 00:00 CT bar. [Q] "what is the price of NQ at midnight central time"; bar choice [U].
+B3. DAILY TRUE RANGE (per session, B1) = max(sessHigh, prevClose) − min(sessLow, prevClose),
+    where prevClose = the previous session's 16:00 CT close (so the evening gap is included). [U]
+    [T] Alternative: plain sessHigh − sessLow. Make it a toggle and compare.
+B4. VOLATILITY = SMA, length 15, of DAILY TRUE RANGE (B3), over the 15 COMPLETED sessions before today. [U]
+    Basis: "past 15 days ... average true range of all these sessions" [00:12:31]; "the average ATR itself" [00:12:45];
+    "a 15 period moving average of ATR ... Not an ATR with a look back of 15" [00:44:30–00:44:37].
+    SMA, not EMA — he never mentions exponential smoothing. [U]
+    [T] Alternative: SMA15 of ATR(14) (smoother, slower). This is the most sensitive parameter — it sizes the barrier.
+B5. NOISE-UP BARRIER = SESSION OPEN PRICE + 0.30 × VOLATILITY. [Q] Fixed for the whole day ("we mark it at midnight").
+    No lower barrier (long only). 0.30 was optimized in-sample over 3+ years and held out-of-sample. [Q]
+    Note: the published noise-area method varies by time of day; his version is one static level. Code as stated.
+B6. VWAP = session VWAP anchored at 00:00 CT ("calculated from midnight as well" [00:54:19]). [Q]
+
+======================================================================
+PART C. ENTRY
+======================================================================
+C1. SIGNAL: a 30m bar CLOSES above NOISE-UP (B5) AND that same bar's close is above VWAP (B6). [Q] Both checked at the
+    signal bar's close. [I]
+C2. SIGNAL WINDOW: signal bar closes in [10:00, 14:00] CT. [Q][I]
+    Window 10:00–14:30 CT for opening positions ("4 and a half hour window — Exactly" [00:16:40]; the "half past 10"
+    slip at [00:55:05] corrected to "10 to 14:30, right? — Yes sir"). A signal closing at 10:00 enters at the 10:00
+    open. A signal closing at 14:30 would enter at the exit time, so 14:00 is the last useful signal close. [I]
+C3. FILL: market order at the OPEN of the next bar. [Q] Always take the fill — no price cap on gap opens. [U]
+    Log slippage vs the signal close (gap days are where this rule is expensive). [U]
+C4. RE-ENTRY: the condition is a STATE, no fresh cross needed. After an exit (TP or SL), the exit bar itself may be the
+    next signal bar if it closes above both NOISE-UP and VWAP; the new trade then fills at the next bar's open. [I]
+    ("still above the noise barrier ... still above the VWOP, we trigger another trade" [00:19:30–00:19:57]).
+    [T] Alternative: require at least one full bar after the exit.
+C5. CAP: max 3 ENTRIES per session ("up to three trades ... no more than that" [00:18:40], [00:19:57]). [Q]
+    ONE position at a time — every example is exit-then-new-trade. [I]
+C6. No news / event filter ("All the rules have been laid out here"). [Q]
+C7. HOLIDAYS / EARLY CLOSES: skip the day entirely (no trade). [U]
+    Those days also break the 00:00–16:00 session definition; decide whether they count as one of the 15 sessions in
+    B4 when coding (see H3).
+
+======================================================================
+PART D. EXITS (from the fill price)
+======================================================================
+D1. Take profit: +40 points, resting LIMIT order. [Q] ($800 per NQ; $80 per MNQ; $400 at 5 MNQ.)
+D2. Stop loss: −75 points, STOP-MARKET order. [Q] ($1,500 per NQ; $150 per MNQ; $750 at 5 MNQ.)
+    Reward:risk ≈ 0.53 — deliberately below 1 for a high win rate on prop challenges. [Q]
+D3. Time exit: flat at 14:30 CT if neither hit. [Q]
+D4. COSTS: his figures do not say whether costs are included — treat them as gross. Our backtest models commission
+    and slippage explicitly. [U]
+
+======================================================================
+PART E. HIS RESULTS (claims, unverified)
+======================================================================
+E1. Developed on data from 2018, out-of-sample from 2023 to today. Equity curve "reaching new watermarks". [Q]
+E2. Average trade ≈ $112 per NQ (interviewer later recalls "about 121"). Treat as gross. [Q][U]
+E3. Win rate ~67% (transcript garbled: "a of 60 >> 67 with a 6 to1"). [Q, garbled]
+
+======================================================================
+PART F. COMMON TO ALL THREE STRATEGIES (portfolio + bench rules — repeated in each file)
+======================================================================
+F1. Run all three simultaneously on the same account; claimed pairwise correlation < 0.25. Each alone ≈ 40% challenge
+    pass probability; together higher. Average time to pass ≈ 5 trading days at ~5 MNQ each. [Q]
+F2. Fully automated (he uses MultiCharts). TPs are limit orders, SLs are stop-market orders. [Q]
+F3. Every strategy is flat before the market close (no overnight holds). [Q]
+F4. BENCH RULE (strategy in drawdown → stop trading it): [Q]
+    - Trigger to investigate: the strategy fails 2 challenges in a row.
+    - Test: Monte Carlo over the historical trade list → distribution of drawdowns. If the CURRENT drawdown is beyond
+      the 75th percentile of that distribution → bench it.
+    - Un-bench: when its equity curve (kept running on paper) makes a new all-time high.
+    Open: Monte Carlo method (reshuffle vs bootstrap, run count, horizon) not specified; "how severe you want to be
+    ... up to you" — 75th is his threshold.
+F5. Prop context he designs around: 21 trading days to pass; prop daily loss limit (e.g. $1,000) may cap the loss
+    before the strategy's own stop. [Q]
+
+======================================================================
+PART G. RESOLUTION LOG (user, 2026-11-01)
+======================================================================
+G1  Inner ATR length            → SMA15 of daily true range [U]; test SMA15(ATR14) [T]. (B3, B4)
+G2  SMA vs EMA                  → SMA [U]. (B4)
+G3  Session for the ATR         → 00:00–16:00 CT [I]; TR uses prior 16:00 close [U]; test plain H−L [T]. (B1, B3)
+G4  Midnight vs Globex open     → midnight, as stated [Q]. (B1)
+G5  First signal bar            → bar closing at 10:00 CT [I]. (C2)
+G6  Re-entry bar                → exit bar may be the signal bar [I]; test one-bar gap [T]. (C4)
+G7  1 NQ vs 5 MNQ               → separate contexts; stops in points [Q]. (A5, D1, D2)
+G8  Name                        → Vault Break.
+G9  Gold applicability          → dropped; MNQ only [U]. (A1, H1)
+G10 Price at midnight           → open of the 00:00 CT bar [U]. (B2)
+G11 When "above VWAP" checked   → at the signal bar's close [I]. (C1)
+G12 Last signal bar             → bar closing at 14:00 CT [I]. (C2)
+G13 Costs                       → treat his numbers as gross; model costs ourselves [U]. (D4)
+G14 Cap / sequencing            → 3 entries per session, one position at a time [Q][I]. (C5)
+G15 Gap at fill                 → always take the fill; log slippage [U]. (C3)
+G16 Holidays / early closes     → skip the day [U]. (C7)
+
+======================================================================
+PART H. CODING DECISIONS (user, 2026-11-01)
+======================================================================
+H1. MNQ vs FLOW's gold-only rule → rule LIFTED in CLAUDE.md (2026-11-01). The runtime's InstrumentPolicy still
+    enforces gold-only in code until changed separately.
+H2. TP and SL both inside one bar → assume the STOP was hit first (worst case). [U]
+H3. Holiday / early-close sessions COUNT among the 15 sessions in the ATR average (B4) if any trading happened that
+    day. Trading on them is still skipped (C7). [U]
