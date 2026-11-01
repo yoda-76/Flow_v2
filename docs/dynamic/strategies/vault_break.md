@@ -247,6 +247,30 @@ Output: `reports/prop3/funded_q1_lucid`, `reports/prop3/funded_q1_doubling`.
   payout needs **+$2,100** in the funded account, not +$1,000: the balance must stay ≥ $26,100 after withdrawing $1,000, i.e. reach $27,100.
   At ~$505 a month that is ~4 months on average. The 35-day eval figure is a median over all start dates; this start was an unlucky one.
 
+### B-14 `[BACKTEST]` 2026-11-02, downtrend regimes (fixed base 2C, 1 NQ, $4.60 RT)
+`analysis/gb_nq_backtest/regime_split.py` — each trade is classed by the regime known before its day opened (no look-ahead).
+
+| Regime | Trades | Win % | Avg $ | PF | t | Net $ |
+|---|---|---|---|---|---|---|
+| All | 1,517 | 67.6 | 122 | 1.34 | 5.2 | 185,527 |
+| NQ above its 100-day average | 1,030 | 67.6 | 134 | 1.39 | 4.7 | 137,552 |
+| **NQ below its 100-day average** | 441 | 68.7 | 102 | 1.25 | 2.2 | 44,916 |
+| NQ up over the prior 20 days | 912 | 68.9 | 156 | 1.50 | 5.4 | 141,805 |
+| **NQ down over the prior 20 days** | 605 | 65.6 | 72 | 1.17 | 1.8 | 43,722 |
+| **NQ > 10% below its 1-year high** | 335 | 69.9 | 105 | 1.25 | 1.9 | 35,019 |
+
+| Named sell-off (NQ move) | Trades | Net $ | PF |
+|---|---|---|---|
+| 2020 Covid crash (−27.6%) | 25 | −3,730 | 0.75 |
+| 2022 bear market (−32.4%) | 199 | +19,660 | 1.24 |
+| 2023 Aug–Oct pullback (−10.5%) | 54 | −4,668 | 0.83 |
+| 2024 Jul–Aug pullback (−14.6%) | 20 | +2,078 | 1.23 |
+| 2025 tariff sell-off (−19.4%) | 34 | +2,809 | 1.18 |
+
+- **Still profitable in downtrends, but roughly half as strong**: ~$72–105/trade vs ~$134–156 in uptrends, and not statistically
+  clear on its own (t 1.8–2.2). It is long-only, so a downtrend removes much of its tail wind.
+- **Fast crashes hurt** (2020 crash, 2023 pullback lost); a slow grinding bear (2022) was still positive.
+
 ## 5. Consolidated findings
 
 1. **Real edge, modest per trade:** ~$90–120 per NQ against a 75-point ($1,500) stop. Positive in every full year including the 2022 bear

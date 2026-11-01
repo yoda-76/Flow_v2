@@ -158,6 +158,10 @@ echo "== bar history / resampler / CT helpers / indicators, incl. golden compari
 "$JAVA" -cp build/classes/core com.flow.bars.BarsAndIndicatorsTest flow-core/fixtures/indicators_nq_2026
 echo "(bars + indicators test passed -- see output above)"
 
+echo "== bar-replay parity harness: every execution rule (forwardTest_plan_v1.md Phase 3) =="
+"$JAVA" -cp build/classes/core com.flow.bars.replay.BarReplayTest
+echo "(bar replay test passed -- see output above)"
+
 echo "== flow-runtime (SDK + flow-core) =="
 rm -rf build/classes/runtime
 mkdir -p build/classes/runtime

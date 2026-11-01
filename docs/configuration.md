@@ -216,6 +216,7 @@ re-add the study (a fresh instance) to arm again.
 | Liquidity Map → Draw Window ticks (`FLOW_LM_DRAW_WINDOW_TICKS`) | 50 | live | Rows drawn each side of price. Cosmetic; no storage effect. |
 | Liquidity Map → Draw (`FLOW_DRAW_LM`) | on | live | |
 | Market Structure → Warm-Start Bars (`FLOW_MS_WARMSTART_BARS`) | 100 | activation | Historical bars replayed into market structure when the study starts (0 = none). |
+| Bar History → Record Market Data (`FLOW_RECORD_DATA`) | on | activation | Writes the `data/` construct files for this chart's symbol. Several studies on the same symbol (S1, S2, S3 on MNQ) would write the same day files repeatedly — leave it on for **one** of them and uncheck it on the others. Trading and the session journal are unaffected. |
 | Bar History → Warm-Start Bars (`FLOW_BAR_HISTORY_BARS`) | 30000 | activation | Closed chart bars seeded into the bar history used by bar/indicator strategies (max 40000). Those strategies expect a **1-minute, 24-hour chart**; the journal's `bar_history_warm_start` shows `medianBarMs` (60000 on a 1-minute chart) and the log warns `BAR_HISTORY_WARNING` otherwise. Load ~3–4 weeks of 1-minute history on the chart. |
 | Market Structure → Draw (`FLOW_DRAW_MS`) | on | live | |
 | Entry Signals → Draw Arrows (`FLOW_DRAW_ENTRY_SIGNALS`) | on | live | Arrows at entries the risk chain allowed (empty until armed). |

@@ -20,6 +20,10 @@ public final class StrategyRegistrations {
     r.register("market_structure_lvn_reversal", MarketStructureLvnReversalStrategy::new);
     r.register("lvn_fade_test", LvnFadeTestStrategy::new);
     r.register(OrderFlowExecutionStrategy.ID, OrderFlowExecutionStrategy::new);
+    r.register(VaultBreakStrategy.ID, VaultBreakStrategy::new);
+    r.register(OvernightBiasOrbStrategy.ID, OvernightBiasOrbStrategy::new);
+    r.register(VwapPullbackAdxStrategy.ID, VwapPullbackAdxStrategy::new);
+    r.register(DailyAnchoredVwapStrategy.ID, DailyAnchoredVwapStrategy::new);
     return r;
   }
 }

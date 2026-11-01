@@ -125,6 +125,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   private static final String MS_WARMSTART_BARS_KEY = "FLOW_MS_WARMSTART_BARS";
   /** Phase 1 of forwardTest_plan_v1.md: how many closed chart bars seed the bar-history feature (strategies resample 1m bars). */
   private static final String BAR_HISTORY_BARS_KEY = "FLOW_BAR_HISTORY_BARS";
+  /** Phase 5: record data/ constructs for this symbol (uncheck on all but one study per symbol). Default on. */
+  private static final String RECORD_DATA_KEY = "FLOW_RECORD_DATA";
   private static final int BAR_HISTORY_CAPACITY = 40_000;
   private static final long BAR_HISTORY_BAR_MS = 60_000L;
   private static final String DRAW_MS_KEY = "FLOW_DRAW_MS";
@@ -354,6 +356,7 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     msGrp.addRow(new BooleanDescriptor(DRAW_MS_KEY, "Draw on Chart", true));
     var bhGrp = tab.addGroup("Bar History");
     bhGrp.addRow(new IntegerDescriptor(BAR_HISTORY_BARS_KEY, "Warm-Start Bars (1-minute chart)", 30000, 0, BAR_HISTORY_CAPACITY, 1));
+    bhGrp.addRow(new BooleanDescriptor(RECORD_DATA_KEY, "Record Market Data (one study per symbol)", true));
     var entryGrp = tab.addGroup("Entry Signals");
     entryGrp.addRow(new BooleanDescriptor(DRAW_ENTRY_KEY, "Draw Arrows on Chart", true));
     createRD();
@@ -657,22 +660,29 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
       });
     });
     liveOrders.setGapRangeLookup(this::lookupGapRange); // F-22
-    // F-1: one folder per instrument, so a session on another chart never shares a day file with gold's.
-    com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT,
-        com.flow.core.InstrumentPolicy.symbolDir(instrument.getSymbol()));
-    ds.start();
-    dataStore = ds;
-    com.flow.core.DataRecorder dataRecorder = new com.flow.core.DataRecorder(ds, features, priceCodec::fromTicks,
-        riskConfig.dataIntervalSeconds(), riskConfig.liquidityIntervalSeconds(), riskConfig.dataKeepTradingDays());
-    // D-90: the warm-start bars bypass the journal, so record them here or replay can't reproduce the
-    // state the first live bar is judged against. The recorder's market-structure baseline was taken
-    // just now (after warm-start), so warm-up itself is not written as state changes.
-    dataRecorder.recordMarketStructureWarmStart(warmBars, System.currentTimeMillis());
-    pipeline.attachDataRecorder(dataRecorder);
-    logLine("DATA_RECORDER_ON root=" + DATA_ROOT + " symbolDir=" + ds.symbolDir()
-        + " dataIntervalSec=" + riskConfig.dataIntervalSeconds()
-        + " liquidityIntervalSec=" + riskConfig.liquidityIntervalSeconds()
-        + " keepTradingDays=" + riskConfig.dataKeepTradingDays());
+    // forwardTest_plan_v1.md Phase 5 (2026-11-02): S1, S2 and S3 all run on MNQ charts, and data/<construct>/<symbol>/
+    // is shared by symbol -- three recorders would write the same day files three times over. FLOW_RECORD_DATA lets
+    // all but one of them skip recording; trading, the session journal and every feature are unaffected.
+    if (getSettings().getBoolean(RECORD_DATA_KEY)) {
+      // F-1: one folder per instrument, so a session on another chart never shares a day file with gold's.
+      com.flow.journal.ConstructDataStore ds = new com.flow.journal.ConstructDataStore(DATA_ROOT,
+          com.flow.core.InstrumentPolicy.symbolDir(instrument.getSymbol()));
+      ds.start();
+      dataStore = ds;
+      com.flow.core.DataRecorder dataRecorder = new com.flow.core.DataRecorder(ds, features, priceCodec::fromTicks,
+          riskConfig.dataIntervalSeconds(), riskConfig.liquidityIntervalSeconds(), riskConfig.dataKeepTradingDays());
+      // D-90: the warm-start bars bypass the journal, so record them here or replay can't reproduce the
+      // state the first live bar is judged against. The recorder's market-structure baseline was taken
+      // just now (after warm-start), so warm-up itself is not written as state changes.
+      dataRecorder.recordMarketStructureWarmStart(warmBars, System.currentTimeMillis());
+      pipeline.attachDataRecorder(dataRecorder);
+      logLine("DATA_RECORDER_ON root=" + DATA_ROOT + " symbolDir=" + ds.symbolDir()
+          + " dataIntervalSec=" + riskConfig.dataIntervalSeconds()
+          + " liquidityIntervalSec=" + riskConfig.liquidityIntervalSeconds()
+          + " keepTradingDays=" + riskConfig.dataKeepTradingDays());
+    } else {
+      logLine("DATA_RECORDER_OFF (study setting " + RECORD_DATA_KEY + " unchecked -- another study records this symbol)");
+    }
 
     sequencer = new Sequencer(pipeline::handle, pipeline);
     sequencer.start();

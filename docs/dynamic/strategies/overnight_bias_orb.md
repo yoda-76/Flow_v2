@@ -226,6 +226,30 @@ Output: `reports/prop3/funded_q1_lucid`, `reports/prop3/funded_q1_doubling`.
   payout needs **+$2,100** in the funded account, not +$1,000: the balance must stay ≥ $26,100 after withdrawing $1,000, i.e. reach $27,100.
   At ~$505 a month that is ~4 months on average. The 35-day eval figure is a median over all start dates; this start was an unlucky one.
 
+### B-10 `[BACKTEST]` 2026-11-02, downtrend regimes (base, 1 NQ, $4.60 RT)
+`analysis/gb_nq_backtest/regime_split.py` — regime known before each trade's day opened (no look-ahead).
+
+| Regime | Trades | Win % | Avg $ | PF | Net $ | Long net $ | Short net $ |
+|---|---|---|---|---|---|---|---|
+| All | 693 | 53.7 | 377 | 1.56 | 261,117 | 119,686 | 141,431 |
+| NQ above its 100-day average | 480 | 51.9 | 321 | 1.50 | 154,182 | 60,742 | 93,440 |
+| **NQ below its 100-day average** | 182 | 59.3 | **570** | **1.70** | 103,758 | 55,880 | 47,878 |
+| NQ up over the prior 20 days | 443 | 54.2 | 325 | 1.56 | 144,152 | 92,422 | 51,730 |
+| **NQ down over the prior 20 days** | 250 | 52.8 | **468** | 1.56 | 116,965 | 27,264 | **89,701 (PF 2.14)** |
+| **NQ > 10% below its 1-year high** | 151 | 55.0 | 367 | 1.42 | 55,360 | 19,785 | 35,575 |
+
+| Named sell-off (NQ move) | Trades | Net $ | PF | Long / short $ |
+|---|---|---|---|---|
+| 2020 Covid crash (−27.6%) | 7 | +318 | 1.07 | −669 / +987 |
+| 2022 bear market (−32.4%) | 109 | +57,974 | 1.70 | +8,518 / +49,456 |
+| 2023 Aug–Oct pullback (−10.5%) | 21 | +11,668 | 2.01 | −1,617 / +13,286 |
+| 2024 Jul–Aug pullback (−14.6%) | 8 | +19,618 | 6.11 | −998 / +20,617 |
+| 2025 tariff sell-off (−19.4%) | 21 | +23,423 | 2.05 | +5,437 / +17,986 |
+
+- **As strong or stronger in downtrends** — the short side carries it (after a 20-day decline, shorts: PF 2.14, +$89.7k).
+  Every named sell-off was positive.
+- This is why S1 + S3 pair well: S1 weakens in downtrends, S3 does not.
+
 ## 5. Consolidated findings
 
 1. **Real edge on NQ:** every year positive, in and out of sample, longs and shorts both positive, cost- and roll-robust (B-01, B-08).
