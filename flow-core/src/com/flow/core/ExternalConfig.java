@@ -66,23 +66,39 @@ public final class ExternalConfig {
    * exactly the kind of silent difference that makes two machines behave differently.
    */
   public static ExternalConfig loadLayered(Path base, Path localOverride) throws IOException {
+    return loadLayeredAll(base, localOverride == null ? java.util.List.of() : java.util.List.of(localOverride));
+  }
+
+  /**
+   * forwardTest_plan_v1.md (2026-11-02): the same layering with any number of optional overrides, applied in order,
+   * later ones winning -- config/risk.json, then config/risk.local.json (per machine), then config/risk.&lt;strategyId&gt;.json
+   * (per strategy: e.g. the Daily Anchored VWAP study holds overnight, so its flatten lead is 0). Missing files are
+   * skipped. A broken override is skipped as a whole (the earlier layers apply) and its error is reported, as before.
+   * The override keys and the newest override modification time are exposed for the journal.
+   */
+  public static ExternalConfig loadLayeredAll(Path base, java.util.List<Path> overrides) throws IOException {
     Map<String, String> values = new TreeMap<>();
     readKnownKeys(base, values);
     long baseMtime = Files.getLastModifiedTime(base).toMillis();
-    if (localOverride == null || !Files.isRegularFile(localOverride)) {
-      return new ExternalConfig(values, baseMtime);
+    java.util.Set<String> overKeys = new java.util.TreeSet<>();
+    long overMtime = 0L;
+    String error = null;
+    for (Path p : overrides) {
+      if (p == null || !Files.isRegularFile(p)) continue;
+      Map<String, String> over = new TreeMap<>();
+      try {
+        readKnownKeys(p, over);
+        overMtime = Math.max(overMtime, Files.getLastModifiedTime(p).toMillis());
+        values.putAll(over);
+        overKeys.addAll(over.keySet());
+      } catch (IOException | RuntimeException e) {
+        // A typo in an override must not stop the session, but it must not be silent either: the earlier layers
+        // apply (for log retention that means "keep everything") and the error is exposed for the log and journal.
+        error = (error == null ? "" : error + "; ") + p.getFileName() + ": " + e;
+      }
     }
-    Map<String, String> over = new TreeMap<>();
-    try {
-      readKnownKeys(localOverride, over);
-      long overMtime = Files.getLastModifiedTime(localOverride).toMillis();
-      values.putAll(over);
-      return new ExternalConfig(values, baseMtime, java.util.List.copyOf(over.keySet()), overMtime, null);
-    } catch (IOException | RuntimeException e) {
-      // A typo in the override must not stop the session, but it must not be silent either: the base values apply
-      // (for log retention that means "keep everything") and the error is exposed for the log and the journal.
-      return new ExternalConfig(values, baseMtime, java.util.List.of(), 0L, String.valueOf(e));
-    }
+    if (overKeys.isEmpty() && error == null) return new ExternalConfig(values, baseMtime);
+    return new ExternalConfig(values, baseMtime, java.util.List.copyOf(overKeys), overMtime, error);
   }
 
   private static void readKnownKeys(Path file, Map<String, String> into) throws IOException {
@@ -95,6 +111,25 @@ public final class ExternalConfig {
         into.put(key, String.valueOf(obj.getLong(key)));
       }
     }
+    for (String key : STRING_KEYS) {
+      if (obj.has(key) && !obj.isNull(key)) into.put(key, obj.getString(key));
+    }
+  }
+
+  /** Keys whose value is a quoted string in the file. */
+  private static final String[] STRING_KEYS = {"simAccountIds"};
+
+  /**
+   * forwardTest_plan_v1.md: extra MotiveWave Simulated account ids this machine may trade on, comma separated
+   * (e.g. "FT-S1,FT-S2"); empty = only the built-in "simulated". Belongs in config/risk.local.json -- account names
+   * are per installation. See AccountPolicy.configure().
+   */
+  public java.util.List<String> simAccountIds() {
+    String v = raw.get("simAccountIds");
+    if (v == null || v.isBlank()) return java.util.List.of();
+    java.util.List<String> out = new java.util.ArrayList<>();
+    for (String s : v.split(",")) if (!s.isBlank()) out.add(s.trim());
+    return java.util.List.copyOf(out);
   }
 
   /** Empty config -- every accessor returns its default. Used when no file exists yet. */

@@ -51,7 +51,8 @@ final class FakeBroker {
     final String type;    // MARKET / STOP / LIMIT
     final String action;  // BUY / SELL
     final int qty;
-    final Float price;    // null for MARKET
+    Float price;          // null for MARKET; moved by a modify (setAdj*Price + submitOrders on a live order)
+    Float adjPrice;       // set by setAdjStopPrice/setAdjLimitPrice, applied at the next submitOrders of this order
     int filled;
     float fillPrice;     // 0 until filled
     long fillTimeMs;     // 0 until filled
@@ -265,6 +266,16 @@ final class FakeBroker {
           if (pt.length == 1 && pt[0] == Order[].class) {
             for (Order ord : (Order[]) args[0]) {
               FakeOrder f = owned(ord);
+              if (f.submitted) {
+                // [DOC] OrderContext.submitOrders javadoc: an existing order is modified, not re-created
+                // (forwardTest_plan_v1.md, S2 trailing). [ASSUMED] the new price applies at once and an inactive
+                // order is left alone -- not yet seen live.
+                if (!f.isActive()) { calls.add("modifyOrders IGNORED inactive " + f); continue; }
+                if (f.adjPrice != null) f.price = f.adjPrice;
+                f.adjPrice = null;
+                calls.add("modifyOrders " + f);
+                continue;
+              }
               f.submitted = true;
               calls.add("submitOrders " + f);
             }
@@ -317,6 +328,14 @@ final class FakeBroker {
         case "isSell": return "SELL".equals(o.action);
         case "getStopPrice": return "STOP".equals(o.type) ? o.price : null;
         case "getLimitPrice": return "LIMIT".equals(o.type) ? o.price : null;
+        case "setAdjStopPrice":
+          if (!"STOP".equals(o.type)) throw new IllegalStateException("setAdjStopPrice on a " + o.type + " order");
+          o.adjPrice = (Float) args[0];
+          return null;
+        case "setAdjLimitPrice":
+          if (!"LIMIT".equals(o.type)) throw new IllegalStateException("setAdjLimitPrice on a " + o.type + " order");
+          o.adjPrice = (Float) args[0];
+          return null;
         case "exists": return o.submitted;
         case "toString": return o.toString();
         case "hashCode": return System.identityHashCode(proxy);

@@ -231,9 +231,10 @@ there starts with **no memory of the first machine's chats** — everything it n
   activation. If anything indicates a non-Simulated account, **stop and tell the user** (safety stop, not a
   consent request).
 - **The gold-only rule is lifted** (user, 2026-11-01). From 2026-09-27 only gold (`@GC` / a `GC` contract) could
-  be traded; the user lifted that on 2026-11-01 so MNQ (Matteo Conti "Vault Break") can be worked on. **The code
-  still enforces gold-only** (`InstrumentPolicy`: `REFUSE_TO_ARM` on any other chart, and no order of any kind
-  there) until that is changed separately. Sim-only and every other order rule are unchanged.
+  be traded; the user lifted that on 2026-11-01 so MNQ (Matteo Conti "Vault Break") can be worked on. Since
+  2026-11-02 the code (`InstrumentPolicy.ALLOWED`) allows **GC, MNQ and MES** (micros only; NQ/ES still refused,
+  `REFUSE_TO_ARM` and no order of any kind there) for the forward test (`docs/dynamic/forwardTest_plan_v1.md`).
+  Sim-only and every other order rule are unchanged; extra Simulated accounts must be listed in `simAccountIds`.
 - **"Sim Trade Only" stays enabled at all times, on every machine, until the user explicitly says otherwise**
   (user, 2026-09-27) — enable it before Rithmic is connected (`docs/runbook.md` §4).
 - **Per-machine differences go in `config/risk.local.json`** (git-ignored, optional; D-106), never in the tracked

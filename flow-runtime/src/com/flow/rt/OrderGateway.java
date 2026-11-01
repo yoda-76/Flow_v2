@@ -162,6 +162,46 @@ final class OrderGateway {
   }
 
   /**
+   * forwardTest_plan_v1.md (2026-11-02): which account this study's orders would go to, read from an order object that
+   * is built and then DISCARDED -- never submitted (submitOrders is what sends an order; creating one only builds it,
+   * the same object requireSimulated() already inspects before every real submission). Lets activation refuse to arm
+   * on an account that is not on the Sim list before any order exists. Returns null if the platform cannot say.
+   * [UNVERIFIED LIVE] whether an unsubmitted order shows anywhere in MotiveWave's UI -- check on the first activation.
+   */
+  String probeAccountId() {
+    try {
+      Order probe = OrderAdapter.marketOrder(ctx, true, 1);
+      return probe == null ? null : probe.getAccountId();
+    } catch (RuntimeException e) {
+      return null;
+    }
+  }
+
+  /**
+   * forwardTest_plan_v1.md (S2 trailing): move a resting bracket leg in place. SDK javadoc, OrderContext.submitOrders:
+   * "If one or more of the orders are new, the orders will be created otherwise the existing order will be modified";
+   * the new level goes in via Order.setAdjStopPrice / setAdjLimitPrice. [DOC only -- not yet seen live.] Returns null
+   * (nothing sent) if the leg is no longer active; the caller decides what that means. Same account check and order
+   * lock as every other send.
+   */
+  String modifyLeg(Order leg, boolean isStop, float newPrice, String reason) {
+    if (leg == null || !leg.isActive()) return null;
+    if (orderLock.get()) return refusedLine("modify " + (isStop ? "stop" : "target"));
+    requireSimulated(leg);
+    Float before = isStop ? leg.getStopPrice() : leg.getLimitPrice();
+    if (isStop) leg.setAdjStopPrice(newPrice); else leg.setAdjLimitPrice(newPrice);
+    ctx.submitOrders(leg);
+    return Json.object()
+        .field("type", "real_leg_modified")
+        .field("leg", isStop ? "stop" : "target")
+        .field("orderId", String.valueOf(leg.getOrderId()))
+        .field("from", before == null ? "null" : String.valueOf(before))
+        .field("to", newPrice)
+        .field("reason", reason)
+        .build();
+  }
+
+  /**
    * The STUDY's own position (SDK getPosition(): "the current open position for this strategy"). Not the account's:
    * F-2 (2026-09-28) found the SDK has a separate getAccountPosition(), and that this one did not show a manual close
    * for two minutes (L-2) and lagged a leg fill by milliseconds (L-1). Use accountPosition() alongside it.

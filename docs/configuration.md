@@ -126,6 +126,29 @@ pruning at 48 h, say) without editing that file and fighting git on every pull, 
 - A misspelt key is ignored without a warning, exactly like in `risk.json` (only the keys in this document are
   read); the `overrides=[…]` line shows what was actually picked up.
 
+### Per-strategy overrides: `config/risk.<strategyId>.json` (2026-11-02, forwardTest_plan_v1.md)
+
+A third optional layer, read after `risk.local.json`, for **one strategy**: same format, only the keys that differ,
+later layers win. Example — the Daily Anchored VWAP study holds overnight, so its file sets
+`{ "flattenLeadMinutes": 0 }` (this also removes the no-new-entries window, for that study only). A broken file is
+skipped as a whole (the earlier layers apply); the log line is `RISK_OVERRIDE_CONFIG files=… overrides=[…]` or
+`RISK_OVERRIDE_CONFIG_IGNORED … error=…`.
+
+### Extra Simulated accounts: `simAccountIds` (2026-11-02)
+
+MotiveWave allows several Simulated accounts in one workspace. The code acts only on accounts whose id is
+`simulated` **or** listed here — a quoted, comma-separated string, normally in `config/risk.local.json` because
+account names are per installation:
+
+```json
+{ "simAccountIds": "FT-S1,FT-S2,FT-S3,FT-AV" }
+```
+
+At activation the study builds (never submits) one order object and logs `ACCOUNT_PROBE accountId=… kind=…`; an
+account that is not on the list **refuses to arm** before any order exists. Every real order and fill is still
+checked as well (D-115). List an id only after confirming in MotiveWave that it **is** a Simulated account;
+"Sim Trade Only" stays the platform-wide guard.
+
 ### How to change it
 
 1. Edit `config/risk.json` (any editor; keep it valid JSON).
@@ -151,11 +174,16 @@ re-add it.
 
 ### Strategy and trading
 
-**Instrument:** only gold (`@GC` or a `GC` contract, tick 0.1) may be traded, for now (user, 2026-09-27). On any
-other chart the study logs `REFUSE_TO_ARM instrument … is not allowed` and never arms or sends an order, whatever
-*Armed* and *Mode* say; it still records into that instrument's own data folder. Journaled as
-`instrumentAllowed` in `session_header` and in the heartbeat/arming `runtime` detail. Not a setting — widening
-it is a code change (`InstrumentPolicy.ALLOWED_ROOTS`), with the strategies and limits re-checked.
+**Instrument:** gold (`@GC` / a `GC` contract, tick 0.1), and since 2026-11-02 the micro index futures **MNQ** and
+**MES** (continuous `@MNQ` / `@MES` or a contract, tick 0.25) for the forward test (user lifted the gold-only rule;
+full-size NQ/ES stay refused). On any other chart the study logs `REFUSE_TO_ARM instrument … is not allowed` and
+never arms or sends an order, whatever *Armed* and *Mode* say; it still records into that instrument's own data
+folder. Journaled as `instrumentAllowed` in `session_header` and in the heartbeat/arming `runtime` detail. Not a
+setting — widening it is a code change (`InstrumentPolicy.ALLOWED`), with the strategies and limits re-checked.
+
+**Strategy exits (2026-11-02):** a strategy may now close its own position (time exit, signal exit) — the runtime
+runs the same sweep as the session flatten (cancel the legs and close at market, then verify flat). It may also move
+its resting stop/target (trailing) in place. See `docs/dynamic/forwardTest_plan_v1.md`.
 
 | Setting (key) | Default | Read | Meaning |
 |---|---|---|---|
@@ -188,6 +216,7 @@ re-add the study (a fresh instance) to arm again.
 | Liquidity Map → Draw Window ticks (`FLOW_LM_DRAW_WINDOW_TICKS`) | 50 | live | Rows drawn each side of price. Cosmetic; no storage effect. |
 | Liquidity Map → Draw (`FLOW_DRAW_LM`) | on | live | |
 | Market Structure → Warm-Start Bars (`FLOW_MS_WARMSTART_BARS`) | 100 | activation | Historical bars replayed into market structure when the study starts (0 = none). |
+| Bar History → Warm-Start Bars (`FLOW_BAR_HISTORY_BARS`) | 30000 | activation | Closed chart bars seeded into the bar history used by bar/indicator strategies (max 40000). Those strategies expect a **1-minute, 24-hour chart**; the journal's `bar_history_warm_start` shows `medianBarMs` (60000 on a 1-minute chart) and the log warns `BAR_HISTORY_WARNING` otherwise. Load ~3–4 weeks of 1-minute history on the chart. |
 | Market Structure → Draw (`FLOW_DRAW_MS`) | on | live | |
 | Entry Signals → Draw Arrows (`FLOW_DRAW_ENTRY_SIGNALS`) | on | live | Arrows at entries the risk chain allowed (empty until armed). |
 

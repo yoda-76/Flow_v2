@@ -50,6 +50,15 @@ public final class InstrumentAndDataLayoutTest {
     checkEq("a null symbol is refused", InstrumentPolicy.refuseReason(null, 0.1) != null, true);
     checkEq("garbage is refused", InstrumentPolicy.refuseReason("GC-foo", 0.1) != null, true);
     checkEq("the refusal names the instrument", InstrumentPolicy.refuseReason("ESZ6", 0.25).contains("ESZ6"), true);
+    // 2026-11-02 (forwardTest_plan_v1.md): the micro index futures are allowed, full-size ones are not
+    checkEq("continuous micro Nasdaq @MNQ is allowed", InstrumentPolicy.refuseReason("@MNQ", 0.25), null);
+    checkEq("an MNQ contract MNQZ6 is allowed", InstrumentPolicy.refuseReason("MNQZ6", 0.25), null);
+    checkEq("continuous micro S&P @MES is allowed", InstrumentPolicy.refuseReason("@MES", 0.25), null);
+    checkEq("an MES contract MESH27 is allowed", InstrumentPolicy.refuseReason("MESH27", 0.25), null);
+    checkEq("full-size NQ is refused", InstrumentPolicy.refuseReason("@NQ", 0.25) != null, true);
+    checkEq("an NQ contract is refused", InstrumentPolicy.refuseReason("NQZ6", 0.25) != null, true);
+    checkEq("MNQ with gold's tick size is refused", InstrumentPolicy.refuseReason("@MNQ", 0.1) != null, true);
+    checkEq("MES with the wrong tick size is refused", InstrumentPolicy.refuseReason("MESZ6", 0.5) != null, true);
   }
 
   private static void testSymbolDir() {

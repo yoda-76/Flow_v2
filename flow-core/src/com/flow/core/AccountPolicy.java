@@ -18,10 +18,33 @@ public final class AccountPolicy {
 
   public enum Kind { SIMULATED, OTHER, UNKNOWN }
 
+  /**
+   * 2026-11-02 (forwardTest_plan_v1.md): MotiveWave allows several Simulated accounts ("You can have multiple simulated
+   * accounts in one workspace" [DOC]), one per forward-tested strategy. Their ids are not known in advance, so the
+   * extra ids are listed in config (risk config key {@code simAccountIds}, comma separated) and set here at activation.
+   * The built-in {@code simulated} id is always on the list. Exact match after trim + lower case, as before -- a name
+   * that merely contains "sim" is still OTHER. "Sim Trade Only" in MotiveWave stays the platform-wide guard: this
+   * list only decides which Sim accounts this code will act on, it cannot make a real account tradable.
+   */
+  private static volatile java.util.Set<String> allowed = java.util.Set.of(SIMULATED_ACCOUNT_ID);
+
   private AccountPolicy() {}
+
+  /** Replace the extra Sim account ids (null/blank entries ignored); {@code simulated} always stays allowed. */
+  public static void configure(java.util.Collection<String> extraSimIds) {
+    java.util.Set<String> s = new java.util.TreeSet<>();
+    s.add(SIMULATED_ACCOUNT_ID);
+    if (extraSimIds != null) {
+      for (String id : extraSimIds) if (id != null && !id.isBlank()) s.add(id.trim().toLowerCase(java.util.Locale.ROOT));
+    }
+    allowed = java.util.Set.copyOf(s);
+  }
+
+  /** The ids currently treated as Simulated (for the session journal). */
+  public static java.util.Set<String> allowedIds() { return allowed; }
 
   public static Kind classify(String accountId) {
     if (accountId == null || accountId.isBlank()) return Kind.UNKNOWN;
-    return SIMULATED_ACCOUNT_ID.equalsIgnoreCase(accountId.trim()) ? Kind.SIMULATED : Kind.OTHER;
+    return allowed.contains(accountId.trim().toLowerCase(java.util.Locale.ROOT)) ? Kind.SIMULATED : Kind.OTHER;
   }
 }

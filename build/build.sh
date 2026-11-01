@@ -154,6 +154,10 @@ echo "== replay-equivalence test (null_strategy fixture -- see flow-core/fixture
 "$JAVA" -cp build/classes/core com.flow.core.ReplayEquivalenceTest flow-core/fixtures/replay_fixture_null_strategy
 echo "(replay-equivalence test passed -- see output above)"
 
+echo "== bar history / resampler / CT helpers / indicators, incl. golden comparison against the Python reference (forwardTest_plan_v1.md Phase 1) =="
+"$JAVA" -cp build/classes/core com.flow.bars.BarsAndIndicatorsTest flow-core/fixtures/indicators_nq_2026
+echo "(bars + indicators test passed -- see output above)"
+
 echo "== flow-runtime (SDK + flow-core) =="
 rm -rf build/classes/runtime
 mkdir -p build/classes/runtime

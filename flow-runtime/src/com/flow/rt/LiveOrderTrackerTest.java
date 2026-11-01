@@ -103,7 +103,116 @@ public final class LiveOrderTrackerTest {
     }
   }
 
+  // ---- forwardTest_plan_v1.md (2026-11-02): strategy exits and trailing levels ------------------------------
+
+  private static void testStrategyExitClosesAndCancelsLegs() {
+    Rig r = new Rig();
+    r.openLong();
+    String line = r.reconcile(0, null, null);
+    check("a time/signal exit is a strategy_exit with cancel_and_close", line.contains("strategy_exit")
+        && line.contains("cancel_and_close"));
+    check("it closed at market and swept the legs in one call", r.broker.called("closeAtMarket")
+        && r.broker.called("cancelOrders(all)"));
+    checkEq("the account is flat", r.broker.position(), 0);
+    check("no leg is left resting", r.broker.activeOrders().isEmpty());
+    check("the tracker forgot the legs", r.tracker.restingStop() == null && r.tracker.restingTarget() == null);
+    check("the flat verification was scheduled", !r.scheduled.isEmpty());
+    check("a strategy exit does not disarm", !r.armDenied);
+    checkEq("nothing refused", r.tracker.lastEntryRefusal(), null);
+    r.runNextVerification();
+    check("the verification found the account flat", r.loggedContaining("FLATTEN_VERIFIED STRATEGY_EXIT"));
+  }
+
+  private static void testStrategyExitHeldWhenPositionsDisagree() {
+    Rig r = new Rig();
+    r.openLong();
+    r.broker.reportAccountPosition(0); // study says 1, account says 0 -- the L-1/L-2 class of stale read
+    int callsBefore = r.broker.calls().size();
+    String line = r.reconcile(0, null, null);
+    check("disagreeing positions: the exit is held, not sent", line.contains("held"));
+    checkEq("no order sent", r.broker.calls().size(), callsBefore);
+    check("a refusal is reported so the pipeline retries", r.tracker.lastEntryRefusal() != null);
+    check("the legs are left working", r.broker.activeOrders().size() == 2);
+  }
+
+  private static void testStrategyExitAfterALegFilledSendsNoClose() {
+    Rig r = new Rig();
+    r.openLong();
+    FakeBroker.FakeOrder stop = r.broker.allOrders().get(1);
+    r.broker.fill(stop);                  // the stop filled at the broker; its callback has not arrived yet
+    r.broker.reportStrategyPosition(1);   // and the study's own position still says long
+    String line = r.reconcile(0, null, null);
+    check("a filled tracked leg means closed: cancel only, no close", line.contains("cancel_only")
+        && !r.broker.called("closeAtMarket"));
+    checkEq("still flat -- no wrong-way short", r.broker.position(), 0);
+    check("the surviving target was cancelled", r.broker.activeOrders().isEmpty());
+  }
+
+  private static void testTrailingModifiesTheLegsInPlace() {
+    Rig r = new Rig();
+    r.openLong(); // stop 4299.0 (-10), target 4302.0 (+20)
+    FakeBroker.FakeOrder stop = r.broker.allOrders().get(1);
+    FakeBroker.FakeOrder target = r.broker.allOrders().get(2);
+    String line = r.reconcile(1, -5, 25);
+    check("new levels on an open position modify the legs", line.contains("legs_modified"));
+    check("the stop moved to 4299.5", Math.abs(stop.price - 4299.5f) < 1e-4);
+    check("the target moved to 4302.5", Math.abs(target.price - 4302.5f) < 1e-4);
+    check("same orders, modified -- nothing new created", r.broker.allOrders().size() == 3
+        && r.broker.called("modifyOrders"));
+    check("no close, no cancel", !r.broker.called("closeAtMarket") && !r.broker.called("cancelOrders"));
+    check("the tracker still holds the same legs", r.tracker.restingStop() == stop.order()
+        && r.tracker.restingTarget() == target.order());
+    String again = r.reconcile(1, -5, 25);
+    check("unchanged levels: noop, no modify sent", again.contains("reconcile_live_noop"));
+  }
+
+  private static void testTrailingOnlyMovesTheLegThatChanged() {
+    Rig r = new Rig();
+    r.openLong();
+    r.reconcile(1, -4, 20);
+    int modifies = 0;
+    for (String c : r.broker.calls()) if (c.startsWith("modifyOrders")) modifies++;
+    checkEq("only the stop was modified", modifies, 1);
+  }
+
+  private static void testTrailingLevelAlreadyCrossedExitsInstead() {
+    Rig r = new Rig();
+    r.openLong();
+    // last price at tick -6 (4299.4); the new stop -5 (4299.5) is already above it -> exit, not a marketable modify
+    String line = r.tracker.reconcileLive(new Intent("s", ++r.seq, 1, -5, 25, "trail"), r.gw,
+        new LiveOrderTracker.SignalInfo(-6, -7, -6, 1L, 1L));
+    check("a crossed trailing stop becomes a strategy exit", line.contains("strategy_exit"));
+    check("no modify was sent", !r.broker.called("modifyOrders"));
+    checkEq("flat", r.broker.position(), 0);
+  }
+
+  private static void testTrailingOnANonSimAccountIsRefused() {
+    Rig r = new Rig();
+    r.openLong();
+    r.broker.setAccountId("LFE025-REAL");
+    String line = r.reconcile(1, -5, 25);
+    check("a modify on a non-simulated account is refused before sending", line.contains("refused"));
+    check("nothing was modified", !r.broker.called("modifyOrders"));
+    check("the study disarmed", r.armDenied);
+  }
+
+  private static void testProbeAccountIdBuildsButNeverSubmits() {
+    Rig r = new Rig();
+    String id = r.gw.probeAccountId();
+    checkEq("the probe reads the account id", id, "simulated");
+    checkEq("one order object was built", r.broker.allOrders().size(), 1);
+    check("...and never submitted", !r.broker.allOrders().get(0).submitted && r.broker.calls().isEmpty());
+  }
+
   public static void main(String[] args) {
+    testStrategyExitClosesAndCancelsLegs();
+    testStrategyExitHeldWhenPositionsDisagree();
+    testStrategyExitAfterALegFilledSendsNoClose();
+    testTrailingModifiesTheLegsInPlace();
+    testTrailingOnlyMovesTheLegThatChanged();
+    testTrailingLevelAlreadyCrossedExitsInstead();
+    testTrailingOnANonSimAccountIsRefused();
+    testProbeAccountIdBuildsButNeverSubmits();
     testEntryThenBracketOnFill();
     testShortBracketClosesWithBuys();
     testSecondIntentSkippedWhileEntryInFlight();
@@ -225,12 +334,13 @@ public final class LiveOrderTrackerTest {
     check("target == position is a noop", noop.reconcile(0, null, null).contains("reconcile_live_noop"));
     check("noop placed nothing", noop.broker.calls().isEmpty());
 
+    // 2026-11-02 (forwardTest_plan_v1.md): a strategy close IS executed now -- through the session flatten's sweep.
+    // The full behaviour is covered by the testStrategyExit* tests below; here only that it is no longer skipped.
     Rig closing = new Rig();
     closing.broker.setPosition(1);
     String c = closing.reconcile(0, null, null);
-    check("a closing intent is logged, not executed (bracket-only)",
-        c.contains("reconcile_live_skipped") && c.contains("bracket-only"));
-    check("closing placed nothing", closing.broker.calls().isEmpty());
+    check("a closing intent is executed as a strategy exit (no longer bracket-only)", c.contains("strategy_exit"));
+    check("the strategy exit closed the position", closing.broker.called("closeAtMarket") && closing.broker.position() == 0);
 
     Rig flip = new Rig();
     flip.broker.setPosition(1);

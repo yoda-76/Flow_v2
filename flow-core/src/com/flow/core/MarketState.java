@@ -49,6 +49,8 @@ public interface MarketState {
   com.flow.flow.OrderRepeatView orderRepeats();
   /** Order-flow execution-model constructs (docs/dynamic/orderFlowRules_gapAnswers_v1.md); null if not registered. */
   com.flow.orderflow.OrderFlowEngine orderFlow();
+  /** Closed 1-minute bar history for bar/indicator strategies (forwardTest_plan_v1.md, Phase 1); null if not registered. */
+  com.flow.bars.BarHistoryView bars();
 
   /** Genuinely immutable snapshot copy. Used only by the journal and tests. */
   MarketState freeze();

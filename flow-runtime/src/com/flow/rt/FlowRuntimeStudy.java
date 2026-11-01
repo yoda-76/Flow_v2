@@ -123,6 +123,10 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
   // D-64: historical warm-start on activation, configurable per the
   // user's explicit request ("that 'last 100 bars' will be configurable").
   private static final String MS_WARMSTART_BARS_KEY = "FLOW_MS_WARMSTART_BARS";
+  /** Phase 1 of forwardTest_plan_v1.md: how many closed chart bars seed the bar-history feature (strategies resample 1m bars). */
+  private static final String BAR_HISTORY_BARS_KEY = "FLOW_BAR_HISTORY_BARS";
+  private static final int BAR_HISTORY_CAPACITY = 40_000;
+  private static final long BAR_HISTORY_BAR_MS = 60_000L;
   private static final String DRAW_MS_KEY = "FLOW_DRAW_MS";
   // Entry signal arrows (user request, 2026-09-19): drawn from
   // onIntentChanged, which only fires once the risk chain ALLOWS an
@@ -348,6 +352,8 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     var msGrp = tab.addGroup("Market Structure");
     msGrp.addRow(new IntegerDescriptor(MS_WARMSTART_BARS_KEY, "Historical Warm-Start Bars", 100, 0, 5000, 1));
     msGrp.addRow(new BooleanDescriptor(DRAW_MS_KEY, "Draw on Chart", true));
+    var bhGrp = tab.addGroup("Bar History");
+    bhGrp.addRow(new IntegerDescriptor(BAR_HISTORY_BARS_KEY, "Warm-Start Bars (1-minute chart)", 30000, 0, BAR_HISTORY_CAPACITY, 1));
     var entryGrp = tab.addGroup("Entry Signals");
     entryGrp.addRow(new BooleanDescriptor(DRAW_ENTRY_KEY, "Draw Arrows on Chart", true));
     createRD();
@@ -418,18 +424,28 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     // risk.local.json is laid over it; if that file is unreadable the base applies and the fact is logged loudly
     // (for retention that means "keep everything", never a silent deletion).
     com.flow.core.ExternalConfig riskConfig;
+    // forwardTest_plan_v1.md (2026-11-02): a third, per-strategy layer config/risk.<strategyId>.json (optional) after
+    // the per-machine one -- e.g. the Daily Anchored VWAP study holds overnight (flattenLeadMinutes 0) while the other
+    // studies keep the 15:55 CT flatten.
+    final Path strategyRiskPath = RISK_CONFIG_PATH.resolveSibling("risk." + strategyId + ".json");
     try {
-      riskConfig = com.flow.core.ExternalConfig.loadLayered(RISK_CONFIG_PATH, RISK_LOCAL_CONFIG_PATH);
+      riskConfig = com.flow.core.ExternalConfig.loadLayeredAll(RISK_CONFIG_PATH,
+          java.util.List.of(RISK_LOCAL_CONFIG_PATH, strategyRiskPath));
     } catch (IOException e) {
       riskConfig = com.flow.core.ExternalConfig.empty();
       logLine("RISK_CONFIG_MISSING path=" + RISK_CONFIG_PATH + " -- using built-in defaults");
     }
     if (riskConfig.localOverrideError() != null) {
-      logLine("RISK_LOCAL_CONFIG_IGNORED path=" + RISK_LOCAL_CONFIG_PATH + " error=" + riskConfig.localOverrideError()
-          + " -- using risk.json only (log retention: keep everything)");
+      logLine("RISK_OVERRIDE_CONFIG_IGNORED files=" + RISK_LOCAL_CONFIG_PATH + "," + strategyRiskPath
+          + " error=" + riskConfig.localOverrideError()
+          + " -- the broken file is skipped, earlier layers apply (log retention: keep everything)");
     } else if (!riskConfig.localOverrideKeys().isEmpty()) {
-      logLine("RISK_LOCAL_CONFIG path=" + RISK_LOCAL_CONFIG_PATH + " overrides=" + riskConfig.localOverrideKeys());
+      logLine("RISK_OVERRIDE_CONFIG files=" + RISK_LOCAL_CONFIG_PATH + "," + strategyRiskPath
+          + " overrides=" + riskConfig.localOverrideKeys());
     }
+    // forwardTest_plan_v1.md: extra Simulated account ids this machine may trade on (risk.local.json simAccountIds).
+    com.flow.core.AccountPolicy.configure(riskConfig.simAccountIds());
+    logLine("SIM_ACCOUNT_IDS " + com.flow.core.AccountPolicy.allowedIds());
     final long logRetentionMs = com.flow.journal.LogRetention.retentionMsForHours(riskConfig.logRetentionHours());
     com.flow.core.FeatureLogs.setRetentionMs(logRetentionMs);
     int prunedRawLogs = com.flow.journal.LogRetention.pruneOldRawLogs(LOG_ROOT, sessionStartMs, logRetentionMs);
@@ -513,8 +529,35 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
         .field("trendAfterWarmStart", marketStructure.trend().toString())
         .build());
 
+    // Phase 1 (forwardTest_plan_v1.md): closed-bar history for bar/indicator strategies. Same bootstrap as the market
+    // structure warm-start above (bypasses the pipeline, size()-1 excluded, oldest first); live bar closes reach it
+    // through the pipeline like any other feature. The setting is clamped to the ring capacity.
+    final int requestedBhBars = Math.max(0, Math.min(BAR_HISTORY_CAPACITY, getSettings().getInteger(BAR_HISTORY_BARS_KEY)));
+    final com.flow.bars.BarHistoryFeature barHistory =
+        new com.flow.bars.BarHistoryFeature(BAR_HISTORY_CAPACITY, BAR_HISTORY_BAR_MS);
+    java.util.List<Long> bhEndTimes = new java.util.ArrayList<>();
+    int bhSeeded = warmStartBarHistory(ctx, requestedBhBars, priceCodec, barHistory, bhEndTimes);
+    long[] bhDiffs = new long[Math.max(0, bhEndTimes.size() - 1)];
+    for (int k = 1; k < bhEndTimes.size(); k++) bhDiffs[k - 1] = bhEndTimes.get(k) - bhEndTimes.get(k - 1);
+    java.util.Arrays.sort(bhDiffs);
+    long medianBarMs = bhDiffs.length == 0 ? 0 : bhDiffs[bhDiffs.length / 2];
+    journal.writeDecision(0, Json.object()
+        .field("type", "bar_history_warm_start")
+        .field("requestedBars", requestedBhBars)
+        .field("availableBars", availableBars)
+        .field("actualBars", barHistory.size())
+        .field("seededBars", bhSeeded)
+        .field("firstBarStartMs", barHistory.size() == 0 ? 0L : barHistory.startMs(0))
+        .field("lastBarStartMs", barHistory.size() == 0 ? 0L : barHistory.startMs(barHistory.size() - 1))
+        .field("medianBarMs", medianBarMs) // 60000 on a 1-minute chart; anything else means the chart is the wrong timeframe
+        .build());
+    if (medianBarMs != 0 && medianBarMs != BAR_HISTORY_BAR_MS) {
+      logLine("BAR_HISTORY_WARNING chart bars are not 1-minute (median " + medianBarMs + " ms) -- bar/indicator strategies expect a 1-minute chart");
+    }
+
     orderFlowEngine = new com.flow.orderflow.OrderFlowEngine(com.flow.orderflow.OfConfig.load(ORDERFLOW_CONFIG_PATH));
     Map<String, com.flow.core.Feature> features = Map.of(
+        com.flow.bars.BarHistoryView.FEATURE_ID, barHistory,
         com.flow.orderflow.OrderFlowEngine.FEATURE_ID, orderFlowEngine,
         com.flow.flow.VolumeProfileView.FEATURE_ID, volumeProfile,
         com.flow.flow.FootprintView.FEATURE_ID, footprint,
@@ -531,7 +574,10 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     strategy.onInit(new StrategyConfig(java.util.Map.of(
         "fixedContracts", String.valueOf(riskConfig.fixedContracts()),
         "maxContracts", String.valueOf(riskConfig.maxContracts()),
-        "orderflowConfigPath", ORDERFLOW_CONFIG_PATH.toString())));
+        "orderflowConfigPath", ORDERFLOW_CONFIG_PATH.toString(),
+        "tickSize", String.valueOf(instrument.getTickSize()),
+        // Per-strategy parameter file (forwardTest_plan_v1.md Phase 1); the file may not exist -- the strategy decides.
+        "strategyConfigPath", RISK_CONFIG_PATH.resolveSibling("strategies").resolve(strategyId + ".json").toString())));
     journal.writeDecision(0, Json.object()
         .field("type", "risk_config_loaded")
         .field("fixedContracts", riskConfig.fixedContracts())
@@ -1373,6 +1419,31 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     return count;
   }
 
+  /**
+   * Same rule as warmStartMarketStructure (size()-1 is the forming bar and is excluded, oldest first, negative
+   * synthetic seq) but feeds BarHistoryFeature.seed(). endTimes receives each seeded bar's end time so the caller can
+   * journal the median spacing (exposes a non-1-minute chart). Returns the number of bars offered to the feature.
+   */
+  private static int warmStartBarHistory(DataContext ctx, int maxBars, PriceCodec codec,
+                                           com.flow.bars.BarHistoryFeature history, java.util.List<Long> endTimes) {
+    if (maxBars <= 0) return 0;
+    DataSeries series = ctx.getDataSeries();
+    if (series == null || series.size() < 2) return 0;
+    int lastIdx = series.size() - 2;
+    int startIdx = Math.max(0, lastIdx - maxBars + 1);
+    long syntheticSeq = -2_000_000L;
+    int count = 0;
+    for (int idx = startIdx; idx <= lastIdx; idx++) {
+      long endTime = series.getEndTime(idx);
+      history.seed(new BarEvent(syntheticSeq--, endTime, endTime, BarPhase.CLOSE,
+          codec.toTicks(series.getOpen(idx)), codec.toTicks(series.getHigh(idx)),
+          codec.toTicks(series.getLow(idx)), codec.toTicks(series.getClose(idx)), (long) series.getVolume(idx)));
+      endTimes.add(endTime);
+      count++;
+    }
+    return count;
+  }
+
   @Override
   public void destroy() {
     logLine("DESTROY instance=" + instanceId);
@@ -1476,6 +1547,19 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     refreshAccountTruth();
 
     String refuseReason = gateway.refuseToArmReason();
+    // forwardTest_plan_v1.md (2026-11-02): which account would this study trade on? Read from an order object that is
+    // built and never submitted, so an account that is not on the Sim list refuses to arm before any order exists
+    // (until now that was only caught at the first real order). UNKNOWN (the platform did not say) is logged, not
+    // refused -- the per-order check still runs on every real order.
+    String probedAccount = gateway.probeAccountId();
+    com.flow.core.AccountPolicy.Kind probedKind = com.flow.core.AccountPolicy.classify(probedAccount);
+    logLine("ACCOUNT_PROBE accountId=" + probedAccount + " kind=" + probedKind
+        + " allowed=" + com.flow.core.AccountPolicy.allowedIds() + " (order object built, never submitted)");
+    if (refuseReason == null && probedKind == com.flow.core.AccountPolicy.Kind.OTHER) {
+      refuseReason = "account " + probedAccount + " is not a listed Simulated account "
+          + com.flow.core.AccountPolicy.allowedIds() + " -- add it to simAccountIds in config/risk.local.json only "
+          + "if it IS one of MotiveWave's Simulated accounts";
+    }
     if (refuseReason != null) {
       armDenied = true;
       refusedAtActivation = true;

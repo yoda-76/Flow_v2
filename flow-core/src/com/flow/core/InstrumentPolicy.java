@@ -13,21 +13,27 @@ import java.util.Set;
  * ("GCZ6", "GCG27"); the tick size must also be gold's 0.1.
  */
 public final class InstrumentPolicy {
-  /** Roots allowed to be traded. Widen deliberately, with the strategies and limits re-checked for the new market. */
-  public static final Set<String> ALLOWED_ROOTS = Set.of("GC");
-  private static final double GOLD_TICK = 0.1;
+  /**
+   * Roots allowed to be traded, with the tick size each must have. Widen deliberately, with the strategies and limits
+   * re-checked for the new market. 2026-11-02 (user lifted the gold-only rule, forwardTest_plan_v1.md): the micro
+   * index futures MNQ (Matteo Conti S1-S3) and MES (Daily Anchored VWAP), tick 0.25. Full-size NQ/ES stay refused --
+   * the forward test is sized at 1 micro, and a full contract is 10x the risk.
+   */
+  public static final java.util.Map<String, Double> ALLOWED = java.util.Map.of("GC", 0.1, "MNQ", 0.25, "MES", 0.25);
+  public static final Set<String> ALLOWED_ROOTS = ALLOWED.keySet();
 
   private InstrumentPolicy() {}
 
   /** Null if this instrument may be traded, otherwise a reason for the REFUSE_TO_ARM log line. */
   public static String refuseReason(String symbol, double tickSize) {
     String root = rootOf(symbol);
-    if (root == null || !ALLOWED_ROOTS.contains(root)) {
-      return "instrument " + symbol + " is not allowed -- only " + ALLOWED_ROOTS + " (@GC or a GC contract) may be "
-          + "traded; add the study to an @GC chart";
+    if (root == null || !ALLOWED.containsKey(root)) {
+      return "instrument " + symbol + " is not allowed -- only " + new java.util.TreeSet<>(ALLOWED_ROOTS)
+          + " (continuous @ROOT or a ROOT contract) may be traded";
     }
-    if (Math.abs(tickSize - GOLD_TICK) > 1e-9) {
-      return "instrument " + symbol + " has tick size " + tickSize + ", expected " + GOLD_TICK + " for gold";
+    double expected = ALLOWED.get(root);
+    if (Math.abs(tickSize - expected) > 1e-9) {
+      return "instrument " + symbol + " has tick size " + tickSize + ", expected " + expected + " for " + root;
     }
     return null;
   }

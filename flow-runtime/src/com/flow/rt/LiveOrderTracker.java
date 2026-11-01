@@ -488,6 +488,10 @@ final class LiveOrderTracker {
     int currentPosition = gw.currentPosition();
     int target = intent.targetPosition();
     if (target == currentPosition) {
+      if (currentPosition != 0 && intent.stopPriceTicks() != null && intent.targetPriceTicks() != null
+          && restingStopOrder != null && restingTargetOrder != null) {
+        return modifyLegs(intent, gw, currentPosition, signal); // forwardTest_plan_v1.md: trailing levels (S2)
+      }
       return Json.object().field("type", "reconcile_live_noop")
           .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
           .field("currentPosition", currentPosition).build();
@@ -520,24 +524,15 @@ final class LiveOrderTracker {
     }
 
     if (closing) {
-      // 2026-09-21 rework, after two live near-misses in one session: SL/TP
-      // is bracket-only now, full stop -- the strategy's own software-side
-      // stop/target re-check and the real resting bracket were two
-      // independent things both trying to close the same position, and
-      // both incidents were exactly that race. The strategy's
-      // "stop_hit"/"target_hit" intent is kept for audit (already
-      // journaled by Pipeline's intent_changed record regardless of what
-      // this method does with it) but reconcileLive takes no real action
-      // on it anymore -- no cancel, no close, nothing. The bracket is the
-      // only thing that ever closes a position on a stop/target level.
-      // Universal events (the daily-loss kill switch, D-85; a future
-      // session-end auto-flatten) are a deliberately different case --
-      // those bypass the strategy's intent stream entirely and sweep
-      // everything unconditionally, which is unaffected by this change.
-      return Json.object().field("type", "reconcile_live_skipped")
-          .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
-          .field("reason", "sl/tp is bracket-only -- strategy's own close intent logged, not re-executed")
-          .build();
+      // History: on 2026-09-21, after two live near-misses, a strategy close stopped being executed at all -- the
+      // strategy's own software stop/target check and the real resting bracket were both closing the same position
+      // through different orders. Reversed deliberately on 2026-11-02 (forwardTest_plan_v1.md): time exits (S1/S3
+      // 14:30 CT, S2 14:55 CT) and signal exits (Daily Anchored VWAP) need the strategy to close. The race is now
+      // handled the way the kill switch and the session flatten already handle it live: ONE sweep that cancels the
+      // legs and closes in the same call, a position check of both readings first (decide()), and the 1.5/3/5 s flat
+      // verification that undoes a wrong-way fill afterwards. A strategy must therefore only ask to close for its own
+      // exit rules (time, signal) -- never to re-check its stop/target: the resting legs still own those.
+      return strategyExit(intent, gw);
     }
 
     int delta = target - currentPosition; // opening only, from here on
@@ -579,6 +574,100 @@ final class LiveOrderTracker {
           .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
           .field("reason", "entry refused: " + refused.getMessage()).build();
     }
+  }
+
+  // ---- forwardTest_plan_v1.md (2026-11-02): strategy exits and trailing levels ----------------------------------
+
+  /**
+   * A strategy's own close (target 0 while its position is open): the session flatten's sweep, unchanged in
+   * substance -- decide() on both position readings; flat + orders working -> cancel only (never a close to a flat
+   * account); holding -> cancel the legs and close at market in one call; disagreeing readings -> send nothing and
+   * report a refusal, so the pipeline retries every BLOCKED_RETRY_MS. Every sweep is followed by the flat
+   * verification. Does not disarm: the study keeps trading afterwards.
+   */
+  private String strategyExit(Intent intent, OrderGateway gw) {
+    String reason = "strategy exit: " + intent.reason();
+    Act act = decide(gw, trackedLegFilled(), "STRATEGY_EXIT");
+    if (act == Act.HOLD) {
+      lastEntryRefusal = "exit pending: study and account positions disagree";
+      return Json.object().field("type", "reconcile_live_skipped")
+          .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
+          .field("reason", "strategy exit held: study/account positions disagree -- retried").build();
+    }
+    if (act == Act.NONE && !gw.hasRestingOrders()) {
+      return Json.object().field("type", "reconcile_live_noop")
+          .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
+          .field("reason", "strategy exit: already flat, nothing resting").build();
+    }
+    resetForKillSwitch(); // forget the legs first, so their cancel callbacks are not mistaken for live state
+    String sweep = act == Act.NONE ? gw.cancelAllOrders(reason) : gw.cancelAllAndClose(reason);
+    log.accept("STRATEGY_EXIT " + sweep);
+    scheduleFlatVerification("STRATEGY_EXIT", 0);
+    return Json.object().field("type", "strategy_exit")
+        .field("strategyId", intent.strategyId()).field("intentSeq", intent.seq())
+        .field("action", act == Act.NONE ? "cancel_only" : "cancel_and_close")
+        .field("reason", reason).build();
+  }
+
+  /**
+   * Same position, new stop/target levels (trailing). Each tracked leg whose level changed by at least one tick is
+   * moved in place (OrderGateway.modifyLeg). A level that is already on the wrong side of the last known price (a
+   * long's stop at/above it, a long's target at/below it; mirrored for shorts) is not sent as a marketable modify --
+   * the broker may reject that -- it becomes a strategy exit instead, which is what the backtest does (exit at the
+   * next price). Without a known price the strategy is trusted to have checked (the S2 port does).
+   */
+  private String modifyLegs(Intent intent, OrderGateway gw, int currentPosition, SignalInfo signal) {
+    PriceCodec c = codec.get();
+    if (c == null) {
+      return Json.object().field("type", "reconcile_live_noop").field("strategyId", intent.strategyId())
+          .field("intentSeq", intent.seq()).field("reason", "levels changed but no price codec").build();
+    }
+    boolean isLong = currentPosition > 0;
+    int stopTicks = intent.stopPriceTicks();
+    int targetTicks = intent.targetPriceTicks();
+    Integer last = signal == null ? null : signal.priceTicks();
+    if (last != null) {
+      boolean stopWrong = isLong ? stopTicks >= last : stopTicks <= last;
+      boolean targetWrong = isLong ? targetTicks <= last : targetTicks >= last;
+      if (stopWrong || targetWrong) {
+        log.accept("TRAIL_LEVEL_CROSSED stop=" + stopTicks + " target=" + targetTicks + " last=" + last
+            + " -- exiting instead of a marketable modify");
+        return strategyExit(intent, gw);
+      }
+    }
+    Order stop = restingStopOrder;
+    Order target = restingTargetOrder;
+    float newStop = gw.roundToTick((float) c.fromTicks(stopTicks));
+    float newTarget = gw.roundToTick((float) c.fromTicks(targetTicks));
+    float halfTick = (float) (c.fromTicks(1) - c.fromTicks(0)) / 2f;
+    StringBuilder done = new StringBuilder();
+    try {
+      Float curStop = stop.getStopPrice();
+      if (curStop == null || Math.abs(curStop - newStop) >= halfTick) {
+        String line = gw.modifyLeg(stop, true, newStop, intent.reason());
+        if (line != null) done.append(line);
+      }
+      Float curTarget = target.getLimitPrice();
+      if (curTarget == null || Math.abs(curTarget - newTarget) >= halfTick) {
+        String line = gw.modifyLeg(target, false, newTarget, intent.reason());
+        if (line != null) done.append(done.length() == 0 ? "" : " ").append(line);
+      }
+    } catch (IllegalStateException refused) {
+      denyArm.run();
+      Runnable la = lockAction;
+      if (la != null) la.run();
+      log.accept("NON_SIM_ACCOUNT_EVENT leg modify refused before sending -- " + refused.getMessage()
+          + " -- disarmed, order sending locked");
+      return Json.object().field("type", "reconcile_live_skipped").field("strategyId", intent.strategyId())
+          .field("intentSeq", intent.seq()).field("reason", "leg modify refused: " + refused.getMessage()).build();
+    }
+    if (done.length() == 0) {
+      return Json.object().field("type", "reconcile_live_noop").field("strategyId", intent.strategyId())
+          .field("intentSeq", intent.seq()).field("reason", "levels unchanged (within a tick) or legs resolved").build();
+    }
+    log.accept("TRAIL_LEGS_MODIFIED " + done);
+    return Json.object().field("type", "legs_modified").field("strategyId", intent.strategyId())
+        .field("intentSeq", intent.seq()).field("stopTicks", stopTicks).field("targetTicks", targetTicks).build();
   }
 
   // ---- F-23 (2026-09-29, D-122): give up on a capped limit entry that never filled -------------------------------
