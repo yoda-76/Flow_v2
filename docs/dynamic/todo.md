@@ -5,6 +5,14 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
+## TASK (added 2026-11-02) — per-strategy instrument guard (forward test)
+On the first live setup the Daily Anchored VWAP study (`mc_daily_avwap`, built and tested on **MES**) was added to an
+**@MNQ** chart and armed (journal `session_header` `"symbol":"@MNQ"`); `InstrumentPolicy` only checks that the
+instrument is allowed at all, not that it is the right one for the strategy. Add a guard so a strategy refuses to arm
+on the wrong instrument: `mc_daily_avwap` → MES only; `mc_vault_break`, `mc_vwap_adx`, `mc_overnight_orb` → MNQ only
+(e.g. an "instruments" key in `config/strategies/<id>.json` or a strategy-declared root, checked at activation next to
+the account probe, journaled, `REFUSE_TO_ARM` on mismatch). Order-path adjacent → Opus reviews; FakeBroker test.
+
 ## SESSION HANDOFF (2026-11-02) — Matteo Conti's 3 NQ strategies: backtested, base configs fixed, analysis next
 - **Rules (distilled, all doubts resolved by the user):** `docs/video_transcripts/strategies/distilled/MatteoConti_{1_VaultBreak,2_VwapPullbackADX,3_OvernightBiasORB}.txt`.
   Each file opens with a **BASE CONFIGURATION — FIXED 2026-11-02** block holding the exact command line.

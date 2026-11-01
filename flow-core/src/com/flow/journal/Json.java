@@ -88,6 +88,14 @@ public final class Json {
     return this;
   }
 
+  /** Appends all fields of another, not-yet-built Json object (strategy log records: header + event fields). */
+  public Json merge(Json other) {
+    if (other == null || other.first) return this;
+    comma();
+    sb.append(other.sb, 1, other.sb.length());
+    return this;
+  }
+
   public String build() {
     return sb.append('}').toString();
   }

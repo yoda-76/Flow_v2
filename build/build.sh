@@ -162,6 +162,10 @@ echo "== bar-replay parity harness: every execution rule (forwardTest_plan_v1.md
 "$JAVA" -cp build/classes/core com.flow.bars.replay.BarReplayTest
 echo "(bar replay test passed -- see output above)"
 
+echo "== strategy decision log: no effect on decisions, throwing sink harmless, records emitted (2026-11-02) =="
+"$JAVA" -cp build/classes/core com.flow.strategies.StrategyLogTest
+echo "(strategy log test passed -- see output above)"
+
 echo "== flow-runtime (SDK + flow-core) =="
 rm -rf build/classes/runtime
 mkdir -p build/classes/runtime

@@ -9,10 +9,13 @@ import com.flow.core.FlowStrategy;
 import com.flow.core.Intent;
 import com.flow.core.MarketState;
 import com.flow.core.StrategyConfig;
+import com.flow.core.StrategyLog;
 import com.flow.core.Trigger;
+import com.flow.journal.Json;
 
 import java.time.LocalDate;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -81,6 +84,13 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
   private enum Pos { FLAT, PENDING, OPEN }
 
   private final AtomicLong intentSeq = new AtomicLong(0);
+  private final SLog lg = new SLog();
+
+  // log-only state (never read by a decision)
+  private boolean warmLogged = false, orLogged = false;
+  private long lastT = 0;
+  private LocalDate loggedDay = null;
+  private int dWins = 0, dLosses = 0, dTp = 0, dSl = 0, dTime = 0, dCross = 0, dGap = 0, dRejected = 0, dEval = 0;
 
   // parameters
   private int orStart = 510, orEnd = 540, vwapAnchor = 510, adxLen = 14, tpLen = 5, slLen = 20;
@@ -115,6 +125,8 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
 
   @Override public String id() { return ID; }
 
+  @Override public void setLog(StrategyLog log) { lg.set(log); }
+
   @Override public Set<String> requires() { return Set.of(BarHistoryView.FEATURE_ID); }
 
   @Override public Set<Trigger> triggers() { return Set.of(new Trigger.BarClose()); }
@@ -142,12 +154,24 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
     skipDates = p.getDates("skipDates");
     adx = new WilderAdx(adxLen);
     vwap = new AnchoredVwap(vwapAnchor);
+    if (lg.on()) {
+      lg.emit(0, "init", Json.object().field("tickSize", tick).field("orStartMin", orStart).field("orEndMin", orEnd)
+          .field("vwapAnchorMin", vwapAnchor).field("adxLen", adxLen).field("adxThreshold", adxTh)
+          .field("tpLen", tpLen).field("slLen", slLen).field("lastEntryMin", lastEntry).field("exitMin", exitMin)
+          .field("maxEntries", maxEntries).field("maxConsecLosses", maxConsec).field("trail", trail)
+          .field("contracts", contracts).field("pointValue", pointValue).field("commissionUsd", commission)
+          .field("entrySlipEstTicks", slipEst)
+          .field("skipDates", String.join(",", new TreeSet<String>(skipDates.stream().map(LocalDate::toString).toList())))
+          .field("skipDatesCount", skipDates.size())
+          .field("tickUnits", "bar prices are in ticks (live: price/tickSize; BarReplay: relative to the first bar's open)"));
+    }
   }
 
   @Override
   public Intent onEvent(MarketState state) {
     BarHistoryView h = state.bars();
     if (h == null || h.size() == 0) return none();
+    lg.historyOnce(h);
     long app = h.appended();
     long fresh = app - seen;
     if (fresh <= 0) return restate();
@@ -168,6 +192,8 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
     int m = CtTime.ctMinuteOfDay(s);
     LocalDate d = CtTime.ctDate(s);
     int hi = h.high(i), lo = h.low(i), cl = h.close(i);
+    final long t = s + 60_000L;
+    lastT = t;
 
     if (pendingResolve) {          // the strategy's own exit: this bar's open is the best estimate of its fill
       pendingResolve = false;
@@ -179,15 +205,28 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
     Double curAdx = adx.value();
     vwap.update(s, hi, lo, cl, h.volume(i));
     Double vw = vwap.value();
-    if (!d.equals(curDate)) startDay(d);
+    if (lg.on() && !warmLogged && curAdx != null) {
+      warmLogged = true;
+      lg.emit(t, "warmup_done", lg.j(t).field("what", "ADX ready").field("adx", curAdx).field("barsSeen", h.appended()));
+    }
+    if (!d.equals(curDate)) startDay(d, t);
     if (m >= orStart && m < orEnd) orh = orh == null ? hi : Math.max(orh, hi);
     boolean skip = skipNext;
     skipNext = false;
+    if (act && lg.on()) {
+      if (!d.equals(loggedDay)) logDayStart(t);
+      if (!orLogged && m >= orEnd) {
+        orLogged = true;
+        lg.emit(t, "or_ready", lg.j(t).fieldOrNull("orHighTicks", orh).field("tradable", dayOk));
+      }
+    }
 
     if (pos != Pos.FLAT && posDate != null && !posDate.equals(d)) {   // stale position carried past its date
       pos = Pos.FLAT;
       gapSkip = false;
-      return act ? flat("stale position from " + posDate) : null;
+      Intent st = act ? flat("stale position from " + posDate) : null;
+      if (st != null && lg.on()) logExit(t, st, cl);
+      return st;
     }
     if (pos != Pos.FLAT) {
       if (!act) return null;
@@ -195,14 +234,18 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
         if (pos == Pos.OPEN) { pendingResolve = true; resolveWithSlip = true; }
         pos = Pos.FLAT;
         gapSkip = false;
-        return flat("time exit " + (exitMin / 60) + ":" + String.format("%02d", exitMin % 60) + " CT");
+        Intent te = flat("time exit " + (exitMin / 60) + ":" + String.format("%02d", exitMin % 60) + " CT");
+        if (lg.on()) { dTime++; logExit(t, te, cl); }
+        return te;
       }
       if (pos == Pos.PENDING) return null;
       if (gapSkip) {               // the fill was beyond TP / SL and the runtime has not closed it: undo and flatten
         gapSkip = false;
         pos = Pos.FLAT;
         entries = Math.max(0, entries - 1);
-        return flat("gap skip");
+        Intent gs = flat("gap skip");
+        if (lg.on()) { dGap++; logExit(t, gs, cl); }
+        return gs;
       }
       if (!trail) return null;
       int tp = maxHigh(h, i, tpLen), sl = minLow(h, i, slLen);
@@ -211,18 +254,41 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
         resolveWithSlip = cl < sl;
         pos = Pos.FLAT;
         skipNext = true;
-        return flat("trailed level crossed tp=" + tp + " sl=" + sl + " close=" + cl);
+        Intent tc = flat("trailed level crossed tp=" + tp + " sl=" + sl + " close=" + cl);
+        if (lg.on()) { dCross++; logExit(t, tc, cl); }
+        return tc;
+      }
+      if (lg.on() && (tp != tpTicks || sl != slTicks)) {
+        lg.emit(t, "levels_update", lg.j(t).field("oldTpTicks", tpTicks).field("newTpTicks", tp)
+            .field("oldSlTicks", slTicks).field("newSlTicks", sl).field("closeTicks", cl));
       }
       tpTicks = tp;
       slTicks = sl;
       return new Intent(ID, intentSeq.incrementAndGet(), contracts, slTicks, tpTicks, ID + " trail", false);
     }
 
+    if (lg.on() && act && touched && !skip && dayOk && orh != null && m >= orEnd && m < exitMin
+        && (stopped || entries >= maxEntries)) {
+      dEval++;
+      lg.emit(t, "eval", lg.j(t).field("closeTicks", cl).fieldOrNull("vwapTicks", vw).fieldOrNull("adx", curAdx)
+          .fieldOrNull("adxPrev", prevAdx).field("entriesToday", entries).field("consecLosses", consec)
+          .field("decision", stopped ? "stopped_for_day" : "max_entries"));
+    }
     if (skip || !dayOk || orh == null || m < orEnd || m >= exitMin || stopped || entries >= maxEntries) return null;
+    boolean armedB = armed, touchedB = touched;
     if (!armed && cl > orh) armed = true;
     if (armed && vw != null && !touched && lo <= vw) touched = true;
+    if (lg.on() && act) {
+      if (!armedB && armed) {
+        lg.emit(t, "armed", lg.j(t).field("closeTicks", cl).field("orHighTicks", orh));
+      }
+      if (!touchedB && touched) {
+        lg.emit(t, "touch", lg.j(t).field("lowTicks", lo).fieldOrNull("vwapTicks", vw).field("closeTicks", cl));
+      }
+    }
     if (!touched) return null;
     boolean adxOk = curAdx != null && prevAdx != null && curAdx > adxTh && curAdx <= prevAdx;
+    if (lg.on() && act) logEval(t, cl, vw, curAdx, prevAdx, m);
     if (!(vw != null && cl > vw && adxOk) || !act) return null;
     if (m + 1 > lastEntry || m + 1 >= exitMin) return null;
 
@@ -232,9 +298,43 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
     posDate = d;
     gapSkip = false;
     entries++;
-    return new Intent(ID, intentSeq.incrementAndGet(), contracts, slTicks, tpTicks,
+    Intent in = new Intent(ID, intentSeq.incrementAndGet(), contracts, slTicks, tpTicks,
         ID + " entry close=" + cl + " vwap=" + String.format("%.1f", vw) + " adx=" + String.format("%.1f", curAdx)
             + " tp=" + tpTicks + " sl=" + slTicks + " n=" + entries, false);
+    if (lg.on()) {
+      lg.emit(t, "entry_intent", lg.j(t).field("side", "LONG").field("signalCloseTicks", cl).field("stopTicks", slTicks)
+          .field("targetTicks", tpTicks).field("vwapTicks", vw).field("adx", curAdx).field("entriesToday", entries)
+          .field("maxEntries", maxEntries).field("consecLosses", consec).field("reason", in.reason()));
+    }
+    return in;
+  }
+
+  private void logExit(long t, Intent it, int closeTicks) {
+    lg.emit(t, "exit_intent", lg.j(t).field("reason", it.reason()).field("lastCloseTicks", closeTicks));
+  }
+
+  /** Evaluation record: one per closed bar while touched (log only; mirrors the gates of processBar). */
+  private void logEval(long t, int cl, Double vw, Double curAdx, Double prevAdx, int m) {
+    String dec;
+    if (vw == null) dec = "no_vwap";
+    else if (cl <= vw) dec = "below_vwap";
+    else if (curAdx == null || prevAdx == null) dec = "adx_not_ready";
+    else if (!(curAdx > adxTh)) dec = "adx_low";
+    else if (!(curAdx <= prevAdx)) dec = "adx_rising";
+    else if (m + 1 > lastEntry || m + 1 >= exitMin) dec = "after_last_entry";
+    else dec = "ENTRY";
+    dEval++;
+    lg.emit(t, "eval", lg.j(t).field("closeTicks", cl).fieldOrNull("vwapTicks", vw).fieldOrNull("adx", curAdx)
+        .fieldOrNull("adxPrev", prevAdx).field("adxThreshold", adxTh).field("entriesToday", entries)
+        .field("consecLosses", consec).field("decision", dec));
+  }
+
+  private void logDayStart(long t) {
+    loggedDay = curDate;
+    lg.emit(t, "day_start", lg.j(t).field("ctDate", curDate.toString()).field("etDate", SLog.etDate(t))
+        .field("tradable", dayOk).field("why", dayOk ? "ok" : "skipDate").fieldOrNull("orHighTicks", orh)
+        .field("armed", armed).field("touched", touched).field("entriesToday", entries)
+        .field("consecLosses", consec).field("stopped", stopped).field("position", pos.name()));
   }
 
   private static int maxHigh(BarHistoryView h, int i, int len) {
@@ -249,7 +349,16 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
     return best;
   }
 
-  private void startDay(LocalDate d) {
+  private void startDay(LocalDate d, long t) {
+    if (lg.on() && curDate != null && curDate.equals(loggedDay)) {
+      lg.emit(t, "day_summary", lg.j(t).field("ctDate", curDate.toString()).field("entries", entries)
+          .field("wins", dWins).field("losses", dLosses).field("targetFills", dTp).field("stopFills", dSl)
+          .field("timeExits", dTime).field("trailCrossExits", dCross).field("gapSkips", dGap)
+          .field("rejected", dRejected).field("evals", dEval).field("stoppedForDay", stopped)
+          .field("consecLosses", consec).field("armed", armed).field("touched", touched));
+    }
+    dWins = dLosses = dTp = dSl = dTime = dCross = dGap = dRejected = dEval = 0;
+    orLogged = false;
     curDate = d;
     dayOk = !skipDates.contains(d);
     orh = null;
@@ -263,8 +372,16 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
   /** Win/loss bookkeeping of a finished trade; exit price in ticks. */
   private void closeTrade(int exitTicks) {
     double pnl = (exitTicks - entryFill) * tick * pointValue * contracts - commission * contracts;
+    int consecBefore = consec;
+    boolean stoppedBefore = stopped;
     if (pnl < 0) consec++; else consec = 0;
     if (consec >= maxConsec) stopped = true;
+    if (lg.on()) {
+      if (pnl < 0) dLosses++; else dWins++;
+      lg.emit(lastT, "trade_closed", lg.j(lastT).field("entryFillTicks", entryFill).field("exitTicks", exitTicks)
+          .field("pnlUsd", pnl).field("consecLossesBefore", consecBefore).field("consecLosses", consec)
+          .field("stoppedForDay", stopped).field("stoppedNow", stopped && !stoppedBefore));
+    }
   }
 
   private Intent restate() {
@@ -280,6 +397,13 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
 
   @Override
   public void onFill(FillEvent fill) {
+    if (lg.on()) {
+      lastT = Math.max(lastT, fill.eventTimeMs());   // log-only: trade_closed below is stamped with the fill time
+      lg.emit(fill.eventTimeMs(), "fill", lg.j(fill.eventTimeMs()).field("role", fill.role().name())
+          .field("priceTicks", fill.fillPriceTicks()).field("isBuy", fill.isBuy())
+          .field("positionAfter", fill.positionAfter()).field("strategyPositionBefore", pos.name())
+          .field("ignored", pos == Pos.FLAT).field("stopTicks", slTicks).field("targetTicks", tpTicks));
+    }
     if (pos == Pos.FLAT) return;
     switch (fill.role()) {
       case ENTRY -> {
@@ -287,12 +411,22 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
         pos = Pos.OPEN;
         int est = entryFill - slipEst;
         gapSkip = est >= tpTicks || est <= slTicks;
+        if (lg.on()) {
+          lg.emit(fill.eventTimeMs(), "fill_levels", lg.j(fill.eventTimeMs()).field("entryFillTicks", entryFill)
+              .field("estNextOpenTicks", est).field("stopTicks", slTicks).field("targetTicks", tpTicks)
+              .field("gapSkip", gapSkip).field("note", "S2 levels are absolute (not re-based on the fill)"));
+        }
       }
       case STOP, TARGET -> {
         pos = Pos.FLAT;
+        if (lg.on()) { if (fill.role() == FillEvent.Role.STOP) dSl++; else dTp++; }
         if (gapSkip) {
           gapSkip = false;
           entries = Math.max(0, entries - 1);
+          if (lg.on()) {
+            lg.emit(fill.eventTimeMs(), "gap_undo", lg.j(fill.eventTimeMs()).field("role", fill.role().name())
+                .field("entriesToday", entries).field("note", "same-bar gap round trip: not counted as entry or loss"));
+          }
           return;
         }
         closeTrade(fill.fillPriceTicks());
@@ -305,7 +439,15 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
 
   @Override
   public void onIntentRejected(Intent intent, String reason) {
-    if (intent.targetPosition() != 0 && intent.reason().startsWith(ID + " entry") && pos == Pos.PENDING) {
+    boolean undo = intent.targetPosition() != 0 && intent.reason().startsWith(ID + " entry") && pos == Pos.PENDING;
+    if (lg.on()) {
+      dRejected++;
+      lg.emit(lastT, "rejected", lg.j(lastT).field("why", reason).field("intentTarget", intent.targetPosition())
+          .field("intentReason", intent.reason())
+          .field("action", undo ? "reverted_to_flat_entries_decremented" : "none")
+          .field("entriesToday", undo ? Math.max(0, entries - 1) : entries));
+    }
+    if (undo) {
       pos = Pos.FLAT;
       entries = Math.max(0, entries - 1);
     }
@@ -313,6 +455,7 @@ public final class VwapPullbackAdxStrategy implements FlowStrategy {
 
   @Override
   public void onFlattened(String reason) {
+    if (lg.on()) lg.emit(lastT, "flattened", lg.j(lastT).field("why", reason).field("positionBefore", pos.name()));
     pos = Pos.FLAT;
     gapSkip = false;
   }

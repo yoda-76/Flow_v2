@@ -574,6 +574,18 @@ public class FlowRuntimeStudy extends Study implements DOMListener {
     // minimum) instead of an empty map -- StrategyConfig itself stays a
     // plain string map (README's own stated "typed accessors get added
     // once a real strategy needs them" plan), this is that first real need.
+    // Structured strategy decision log (2026-11-02): each record is one {"type":"strategy_log",...} line in this
+    // session's decisions.jsonl. Set BEFORE onInit so the strategy's effective parameters are logged too. Purely
+    // observational; a failure here is swallowed and can never reach the strategy.
+    final JournalWriter stratLogJournal = journal;
+    final String stratLogId = strategyId;
+    strategy.setLog((t, ev, f) -> {
+      try {
+        stratLogJournal.writeDecision(0, com.flow.core.StrategyLog.line(stratLogId, t, ev, f));
+      } catch (Throwable ignored) {
+        // never throw into the strategy
+      }
+    });
     strategy.onInit(new StrategyConfig(java.util.Map.of(
         "fixedContracts", String.valueOf(riskConfig.fixedContracts()),
         "maxContracts", String.valueOf(riskConfig.maxContracts()),

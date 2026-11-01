@@ -149,6 +149,26 @@ account that is not on the list **refuses to arm** before any order exists. Ever
 checked as well (D-115). List an id only after confirming in MotiveWave that it **is** a Simulated account;
 "Sim Trade Only" stays the platform-wide guard.
 
+### Strategy log: `"type":"strategy_log"` records (2026-11-02)
+
+The four forward-test strategies (`mc_vault_break`, `mc_vwap_adx`, `mc_overnight_orb`, `mc_daily_avwap`) write a
+structured decision log, **no setting needed** and never pruned: each record is one line in the session's
+`logs/<strategyId>_<ms>_inst<N>/decisions.jsonl`, shaped
+`{"type":"strategy_log","strategyId":…,"t":<epoch ms>,"event":…,"ct":"YYYY-MM-DD HH:MM",…fields}` (`ct` is the Chicago
+time of `t`; `t` is 0 and `ct` absent for `init`). Events: `init` (effective parameters), `history`/`warmup_done`
+(warm-up is one summary, not per bar), `day_start`/`day_summary`, `eval` (one per evaluated signal, with its inputs and
+a `decision`: `ENTRY`, `no_signal`, `blocked_*`, …), `entry_intent`, `exit_intent`, `fill`, `rejected`, `flattened`,
+plus per strategy `bias`/`or_ready` (S3), `armed`/`touch`/`levels_update`/`trade_closed`/`gap_undo` (S2),
+`trade_closed` (AV). Prices are in **ticks** (field names end in `Ticks`; live = price / tick size, BarReplay =
+relative to the first bar's open). It only observes: a failing sink is swallowed and never changes a decision. Volume
+(one month of replay, records per CT day): S1 about 12 (max 20), S3 about 23 (max 29), S2 about 70 (max 320, one `eval`
+per 1-minute bar while touched), AV about 115 (131 `eval`, one per 3-minute bar of the 09:30-16:00 ET window).
+
+Extract it with `python analysis/strategy_log.py <session folder | decisions.jsonl | replay log> --out DIR [--counts]`
+(one CSV per strategy/event; `--counts` prints records per event per CT day). Offline, the same records come from
+`BarReplay … --log PATH` (records before `--from` are dropped, except init/history/warmup_done), so a replay of a day
+is directly comparable with the live session's records for that day.
+
 ### How to change it
 
 1. Edit `config/risk.json` (any editor; keep it valid JSON).

@@ -10,6 +10,7 @@ import com.flow.core.FlowStrategy;
 import com.flow.core.Intent;
 import com.flow.core.MutableMarketState;
 import com.flow.core.StrategyConfig;
+import com.flow.core.StrategyLog;
 import com.flow.strategies.StrategyRegistrations;
 
 import java.io.BufferedReader;
@@ -64,7 +65,13 @@ public final class BarReplay {
   // ------------------------------------------------------------------ simulation
 
   public static Result run(Bars b, FlowStrategy strat, StrategyConfig cfg, Settings st) {
+    return run(b, strat, cfg, st, null);
+  }
+
+  /** As above, with an optional structured strategy log sink (set BEFORE onInit, like the runtime does). */
+  public static Result run(Bars b, FlowStrategy strat, StrategyConfig cfg, Settings st, StrategyLog log) {
     final int n = b.size();
+    if (log != null) strat.setLog(log);
     final double tick = st.tickSize();
     final double anchor = b.o()[0];
     final BarHistoryFeature hist = new BarHistoryFeature(Math.max(n, 10), 60_000L);
@@ -314,7 +321,25 @@ public final class BarReplay {
     FlowStrategy strat = StrategyRegistrations.buildDefault().create(a.get("strategy"));
     Bars bars = readCsv(Path.of(a.get("csv")));
     System.out.println("bars=" + bars.size());
-    Result r = run(bars, strat, new StrategyConfig(cfgMap), st);
+    Result r;
+    if (a.containsKey("log")) {
+      // Same record shape as the runtime's decisions.jsonl strategy_log lines. Records about bars before --from (pure
+      // warm-up) are dropped, except init / history / warmup_done.
+      final LocalDate from = st.from();
+      final String sid = a.get("strategy");
+      Path logPath = Path.of(a.get("log"));
+      if (logPath.getParent() != null) Files.createDirectories(logPath.getParent());
+      try (PrintWriter lw = new PrintWriter(Files.newBufferedWriter(logPath, StandardCharsets.UTF_8))) {
+        StrategyLog sink = (t, ev, f) -> {
+          boolean always = ev.equals("init") || ev.equals("history") || ev.equals("warmup_done");
+          if (!always && t > 0 && CtTime.ctDate(t).isBefore(from)) return;
+          lw.println(StrategyLog.line(sid, t, ev, f));
+        };
+        r = run(bars, strat, new StrategyConfig(cfgMap), st, sink);
+      }
+    } else {
+      r = run(bars, strat, new StrategyConfig(cfgMap), st);
+    }
     Path out = Path.of(a.get("out"));
     Files.createDirectories(out);
     writeTrades(out.resolve("trades.csv"), r.trades());

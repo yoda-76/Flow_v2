@@ -9,7 +9,9 @@ import com.flow.core.FlowStrategy;
 import com.flow.core.Intent;
 import com.flow.core.MarketState;
 import com.flow.core.StrategyConfig;
+import com.flow.core.StrategyLog;
 import com.flow.core.Trigger;
+import com.flow.journal.Json;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -72,6 +74,13 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
   private enum Pos { FLAT, PENDING, OPEN }
 
   private final AtomicLong intentSeq = new AtomicLong(0);
+  private final SLog lg = new SLog();
+
+  // log-only state (never read by a decision)
+  private boolean warmLogged = false;
+  private long lastT = 0;
+  private LocalDate loggedDay = null;
+  private int dEntries = 0, dExits = 0, dWins = 0, dLosses = 0, dRejected = 0, dEval = 0, dBlocked = 0, dRegimeChanges = 0;
 
   // parameters
   private int tfMin = 3, emaLen = 11, atrLen = 14, baseAtrLen = 50, additional = 2;
@@ -105,6 +114,8 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
 
   @Override public String id() { return ID; }
 
+  @Override public void setLog(StrategyLog log) { lg.set(log); }
+
   @Override public Set<String> requires() { return Set.of(BarHistoryView.FEATURE_ID); }
 
   @Override public Set<Trigger> triggers() { return Set.of(new Trigger.BarClose()); }
@@ -131,12 +142,22 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
     ema = new Ema(Math.max(emaLen, 1), Ema.SeedMode.SMA_N);
     atr = new WilderAtr(Math.max(atrLen, 1));
     batr = new WilderAtr(Math.max(baseAtrLen, 2));
+    if (lg.on()) {
+      lg.emit(0, "init", Json.object().field("tickSize", tick).field("tfMin", tfMin).field("emaLen", emaLen)
+          .field("atrLen", atrLen).field("baseAtrLen", baseAtrLen).field("useRelVolFilter", useRel)
+          .field("maxRelAtr", maxRelAtr).field("additionalAttempts", additional).field("sessionStartHhmm", sessStart)
+          .field("sessionEndHhmm", sessEnd).field("useTypicalPrice", typical).field("contracts", contracts)
+          .field("pointValue", pointValue).field("commissionUsd", commission).field("entrySlipEstTicks", slipEst)
+          .field("skipDates", "").field("skipDatesCount", 0)
+          .field("tickUnits", "bar prices are in ticks (live: price/tickSize; BarReplay: relative to the first bar's open)"));
+    }
   }
 
   @Override
   public Intent onEvent(MarketState state) {
     BarHistoryView h = state.bars();
     if (h == null || h.size() == 0) return none();
+    lg.historyOnce(h);
     long app = h.appended();
     long fresh = app - seen;
     if (fresh <= 0) return restate();
@@ -152,18 +173,20 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
   }
 
   private Intent processBar(BarHistoryView h, int i, boolean act) {
+    final long t = h.startMs(i) + 60_000L;
+    lastT = t;
     if (pendingResolve) {
       pendingResolve = false;
       closeTrade(h.open(i) - posSideForResolve * slipEst);
     }
     Resampler.Bar b = rs.onMinuteBar(h.startMs(i), h.open(i), h.high(i), h.low(i), h.close(i), h.volume(i));
-    return b == null ? null : onSignalBar(b, act);
+    return b == null ? null : onSignalBar(b, act, t, h.appended());
   }
 
   private int posSideForResolve = 0;
 
   /** The Python's per-bar body, line for line. */
-  private Intent onSignalBar(Resampler.Bar b, boolean act) {
+  private Intent onSignalBar(Resampler.Bar b, boolean act, long t, long barsSeen) {
     ZonedDateTime z = Instant.ofEpochMilli(b.startMs()).atZone(ET);
     LocalDate dnum = z.toLocalDate();
     int hhmm = z.getHour() * 100 + z.getMinute();
@@ -175,6 +198,14 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
     batr.update(b.high(), b.low(), b.close());
 
     if (!dnum.equals(day)) {
+      if (lg.on() && day != null && day.equals(loggedDay)) {
+        lg.emit(t, "day_summary", lg.j(t).field("etDate", day.toString()).field("entries", dEntries)
+            .field("exits", dExits).field("wins", dWins).field("losses", dLosses).field("rejected", dRejected)
+            .field("evals", dEval).field("blockedSignals", dBlocked).field("regimeChanges", dRegimeChanges)
+            .field("firstClosed", firstClosed).field("firstWon", firstWon).field("attempts", attempts)
+            .field("position", pos.name()));
+      }
+      dEntries = dExits = dWins = dLosses = dRejected = dEval = dBlocked = dRegimeChanges = 0;
       day = dnum;
       pv = 0;
       vol = 0;
@@ -190,6 +221,13 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
     double v = Math.max((double) b.volume(), 0.0);
     pv += px * v;
     vol += v;
+    if (act && lg.on() && !dnum.equals(loggedDay)) {
+      loggedDay = dnum;
+      lg.emit(t, "day_start", lg.j(t).field("etDate", dnum.toString()).field("ctDate", SLog.ct(t).substring(0, 10))
+          .field("position", pos.name()).field("firstClosed", firstClosed).field("attempts", attempts)
+          .field("note", "daily VWAP, regime and attempts reset at the ET date change; positions are held overnight")
+          .fieldOrNull("emaTicks", ema.value()).fieldOrNull("atr", atr.value()).fieldOrNull("baseAtr", batr.value()));
+    }
     Double e = ema.value();
     if (e == null) return null;
     emaV = e;
@@ -197,9 +235,15 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
     double vwap = pv / vol;
     Double a = atr.value(), ba = batr.value();
     if (a == null || ba == null || a <= 0.0 || ba <= 0.0) return null;
+    if (lg.on() && !warmLogged) {
+      warmLogged = true;
+      lg.emit(t, "warmup_done", lg.j(t).field("what", "EMA, ATR and baseline ATR ready").field("emaTicks", emaV)
+          .field("atr", a).field("baseAtr", ba).field("barsSeen", barsSeen));
+    }
     double rel = a / ba;
     boolean volOk = !useRel || rel <= Math.max(maxRelAtr, 0.1);
 
+    final int regimeBefore = regime;
     boolean redDot = false, greenDot = false, redTri = false, greenTri = false;
     if (inSession(hhmm)) {
       if (waitingRed && c > emaV) {
@@ -223,6 +267,11 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
       }
     }
 
+    // log-only snapshot of the gates as they stand BEFORE the entry / exit are applied
+    final boolean lgOn = act && lg.on() && inSession(hhmm);
+    final Pos posBefore = pos;
+    final boolean allowedBefore = lgOn && allowed();
+
     Intent out = null;
     if (allowed() && volOk && pos == Pos.FLAT && (greenDot || redDot) && act) {
       int side = greenDot ? 1 : -1;
@@ -237,6 +286,39 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
       posSideForResolve = posSide;
       pos = Pos.FLAT;
       out = flat("triangle exit");
+    }
+    if (lgOn) {
+      boolean signal = greenDot || redDot;
+      boolean entry = out != null && out.targetPosition() != 0;
+      boolean exit = out != null && out.targetPosition() == 0;
+      String dec;
+      if (entry) dec = "ENTRY";
+      else if (exit) dec = "EXIT";
+      else if (signal && !allowedBefore) dec = firstWon ? "blocked_first_trade_won" : "blocked_attempts_used";
+      else if (signal && !volOk) dec = "blocked_rel_atr";
+      else if (signal) dec = "blocked_in_position";
+      else if (greenTri || redTri) dec = "triangle_no_matching_position";
+      else dec = "no_signal";
+      dEval++;
+      if (regime != regimeBefore) dRegimeChanges++;
+      if (dec.startsWith("blocked")) dBlocked++;
+      if (entry) dEntries++;
+      if (exit) dExits++;
+      lg.emit(t, "eval", lg.j(t).field("barStartCt", SLog.ct(b.startMs())).field("closeTicks", b.close())
+          .field("emaTicks", emaV).field("vwapTicks", vwap).field("atr", a).field("baseAtr", ba).field("relAtr", rel)
+          .field("maxRelAtr", maxRelAtr).field("relAtrOk", volOk).field("regimeBefore", regimeBefore)
+          .field("regimeAfter", regime).field("redDot", redDot).field("greenDot", greenDot).field("redTriangle", redTri)
+          .field("greenTriangle", greenTri).field("position", posBefore.name()).field("firstClosed", firstClosed)
+          .field("firstWon", firstWon).field("attempts", attempts).field("additionalAttempts", additional)
+          .field("decision", dec));
+      if (entry) {
+        lg.emit(t, "entry_intent", lg.j(t).field("side", posSide > 0 ? "LONG" : "SHORT").field("signalCloseTicks", b.close())
+            .field("stopTicks", (String) null).field("targetTicks", (String) null).field("emaTicks", emaV)
+            .field("vwapTicks", vwap).field("relAtr", rel).field("attempts", attempts).field("reason", out.reason()));
+      } else if (exit) {
+        lg.emit(t, "exit_intent", lg.j(t).field("reason", out.reason()).field("lastCloseTicks", b.close())
+            .field("side", posSideForResolve > 0 ? "LONG" : "SHORT"));
+      }
     }
     prevClose = c;
     prevVwap = vwap;
@@ -257,11 +339,19 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
   /** on_trade(PositionClosed): exit price in ticks. */
   private void closeTrade(int exitTicks) {
     double pnl = posSideForResolve * (exitTicks - entryFill) * tick * pointValue * contracts - commission * contracts;
+    boolean firstBefore = firstClosed;
     if (!firstClosed) {
       firstClosed = true;
       firstWon = pnl > 0.0;
     } else {
       attempts++;
+    }
+    if (lg.on()) {
+      if (pnl > 0.0) dWins++; else dLosses++;
+      lg.emit(lastT, "trade_closed", lg.j(lastT).field("side", posSideForResolve > 0 ? "LONG" : "SHORT")
+          .field("entryFillTicks", entryFill).field("exitTicks", exitTicks).field("pnlUsd", pnl)
+          .field("wasFirstTradeOfDay", !firstBefore).field("firstWon", firstWon).field("attempts", attempts)
+          .field("additionalAttempts", additional));
     }
   }
 
@@ -278,6 +368,13 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
 
   @Override
   public void onFill(FillEvent fill) {
+    if (lg.on()) {
+      lastT = Math.max(lastT, fill.eventTimeMs());   // log-only: trade_closed below is stamped with the fill time
+      lg.emit(fill.eventTimeMs(), "fill", lg.j(fill.eventTimeMs()).field("role", fill.role().name())
+          .field("priceTicks", fill.fillPriceTicks()).field("isBuy", fill.isBuy())
+          .field("positionAfter", fill.positionAfter()).field("strategyPositionBefore", pos.name())
+          .field("ignored", pos == Pos.FLAT).field("note", "AV has no stop/target; levels are not re-based"));
+    }
     if (pos == Pos.FLAT) return;
     switch (fill.role()) {
       case ENTRY -> {
@@ -296,13 +393,20 @@ public final class DailyAnchoredVwapStrategy implements FlowStrategy {
 
   @Override
   public void onIntentRejected(Intent intent, String reason) {
-    if (intent.targetPosition() != 0 && intent.reason().startsWith(ID + " entry") && pos == Pos.PENDING) {
+    boolean undo = intent.targetPosition() != 0 && intent.reason().startsWith(ID + " entry") && pos == Pos.PENDING;
+    if (lg.on()) {
+      dRejected++;
+      lg.emit(lastT, "rejected", lg.j(lastT).field("why", reason).field("intentTarget", intent.targetPosition())
+          .field("intentReason", intent.reason()).field("action", undo ? "reverted_to_flat" : "none"));
+    }
+    if (undo) {
       pos = Pos.FLAT;
     }
   }
 
   @Override
   public void onFlattened(String reason) {
+    if (lg.on()) lg.emit(lastT, "flattened", lg.j(lastT).field("why", reason).field("positionBefore", pos.name()));
     pos = Pos.FLAT;
   }
 }

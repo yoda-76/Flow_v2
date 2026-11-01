@@ -10,12 +10,15 @@ import com.flow.core.FlowStrategy;
 import com.flow.core.Intent;
 import com.flow.core.MarketState;
 import com.flow.core.StrategyConfig;
+import com.flow.core.StrategyLog;
 import com.flow.core.Trigger;
+import com.flow.journal.Json;
 
 import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -66,6 +69,16 @@ public final class VaultBreakStrategy implements FlowStrategy {
   private enum Pos { FLAT, PENDING, OPEN }
 
   private final AtomicLong intentSeq = new AtomicLong(0);
+  private final SLog lg = new SLog();
+
+  // log-only state (never read by a decision)
+  private boolean warmLogged = false;
+  private long lastT = 0;
+  private LocalDate loggedDay = null;
+  private Integer dayOpenRef = null;
+  private Double dayVol = null;
+  private String dayWhy = null;
+  private int dTp = 0, dSl = 0, dTime = 0, dRejected = 0, dEval = 0, dNoSignal = 0;
 
   // parameters
   private double k = 0.30;
@@ -98,6 +111,8 @@ public final class VaultBreakStrategy implements FlowStrategy {
 
   @Override public String id() { return ID; }
 
+  @Override public void setLog(StrategyLog log) { lg.set(log); }
+
   @Override public Set<String> requires() { return Set.of(BarHistoryView.FEATURE_ID); }
 
   @Override public Set<Trigger> triggers() { return Set.of(new Trigger.BarClose()); }
@@ -124,12 +139,24 @@ public final class VaultBreakStrategy implements FlowStrategy {
     dr = new DailyRange(sessStart, sessEnd, atrLen, trHl ? DailyRange.TrMode.HL : DailyRange.TrMode.TR);
     vwap = new AnchoredVwap(vwapAnchor);
     rs = new Resampler(bucketMin);
+    if (lg.on()) {
+      lg.emit(0, "init", Json.object().field("tickSize", tick).field("k", k).field("atrLen", atrLen)
+          .field("trModeHl", trHl).field("sessionStartMin", sessStart).field("sessionEndMin", sessEnd)
+          .field("openRefMin", openRefMin).field("vwapAnchorMin", vwapAnchor).field("bucketMin", bucketMin)
+          .field("firstSignalClose", firstClose).field("lastSignalClose", lastClose).field("maxEntries", maxEntries)
+          .field("timeExitMin", timeExitMin).field("tpTicks", tpTicks).field("slTicks", slTicks)
+          .field("tpPts", p.getDouble("tpPts", 40.0)).field("slPts", p.getDouble("slPts", 75.0))
+          .field("skipDates", String.join(",", new TreeSet<String>(skipDates.stream().map(LocalDate::toString).toList())))
+          .field("skipDatesCount", skipDates.size())
+          .field("tickUnits", "bar prices are in ticks (live: price/tickSize; BarReplay: relative to the first bar's open)"));
+    }
   }
 
   @Override
   public Intent onEvent(MarketState state) {
     BarHistoryView h = state.bars();
     if (h == null || h.size() == 0) return none();
+    lg.historyOnce(h);
     long app = h.appended();
     long fresh = app - seen;
     if (fresh <= 0) return restate();
@@ -150,14 +177,22 @@ public final class VaultBreakStrategy implements FlowStrategy {
     int m = CtTime.ctMinuteOfDay(s);
     LocalDate d = CtTime.ctDate(s);
     double hi = h.high(i), lo = h.low(i), cl = h.close(i), v = h.volume(i);
+    final long t = s + 60_000L;
+    lastT = t;
 
     Double vwapBefore = vwap.value();
     dr.update(s, hi, lo, cl);
     vwap.update(s, hi, lo, cl, v);
-    if (!d.equals(curDate)) startDay(d);
+    if (lg.on() && !warmLogged && dr.smaVol() != null) {
+      warmLogged = true;
+      lg.emit(t, "warmup_done", lg.j(t).field("what", "daily range sma ready").field("volTicks", dr.smaVol())
+          .field("barsSeen", h.appended()));
+    }
+    if (!d.equals(curDate)) startDay(d, t);
     if (m >= openRefMin && !refOpen.containsKey(d)) refOpen.put(d, h.open(i));
     Resampler.Bar bucket = rs.onMinuteBar(s, h.open(i), h.high(i), h.low(i), h.close(i), h.volume(i));
 
+    if (act && lg.on() && !d.equals(loggedDay)) logDayStart(t);
     Intent out = null;
     // stale position carried past its date (should have been flattened) -> close it
     if (pos != Pos.FLAT && posDate != null && !posDate.equals(d)) {
@@ -169,7 +204,14 @@ public final class VaultBreakStrategy implements FlowStrategy {
       pos = Pos.FLAT;
       if (act) out = flat("time exit " + (timeExitMin / 60) + ":" + String.format("%02d", timeExitMin % 60) + " CT");
     }
-    if (out != null) return out;
+    if (out != null) {
+      if (lg.on()) {
+        dTime++;
+        lg.emit(t, "exit_intent", lg.j(t).field("reason", out.reason()).field("lastCloseTicks", cl));
+      }
+      return out;
+    }
+    if (lg.on() && act && bucket != null && bucket.ctDate().equals(curDate)) logEval(bucket, m, vwapBefore, t);
     if (!act || bucket == null || pos != Pos.FLAT || !dayOk || entries >= maxEntries) return null;
     if (!bucket.ctDate().equals(curDate)) return null;
     int closeMin = bucket.bucketStartMinute() + bucketMin;
@@ -184,12 +226,55 @@ public final class VaultBreakStrategy implements FlowStrategy {
     entries++;
     stopTicks = bucket.close() - slTicks;
     targetTicks = bucket.close() + tpTicks;
-    return new Intent(ID, intentSeq.incrementAndGet(), 1, stopTicks, targetTicks,
+    Intent in = new Intent(ID, intentSeq.incrementAndGet(), 1, stopTicks, targetTicks,
         ID + " entry close=" + bucket.close() + " noise=" + String.format("%.1f", noise)
             + " vwap=" + String.format("%.1f", vw) + " n=" + entries, true);
+    if (lg.on()) {
+      lg.emit(t, "entry_intent", lg.j(t).field("side", "LONG").field("signalCloseTicks", bucket.close())
+          .field("stopTicks", stopTicks).field("targetTicks", targetTicks).field("noiseUpTicks", noise)
+          .field("vwapTicks", vw).field("entriesToday", entries).field("maxEntries", maxEntries)
+          .field("reason", in.reason()));
+    }
+    return in;
   }
 
-  private void startDay(LocalDate d) {
+  /** Evaluation record: one per completed signal-window bucket (log only; mirrors the gates of processBar). */
+  private void logEval(Resampler.Bar bucket, int m, Double vwapBefore, long t) {
+    int closeMin = bucket.bucketStartMinute() + bucketMin;
+    if (closeMin < firstClose || closeMin > lastClose) return;
+    Double vw = (m % bucketMin == bucketMin - 1) ? vwap.value() : vwapBefore;
+    boolean aboveNoise = bucket.close() > noise;
+    boolean aboveVwap = vw != null && bucket.close() > vw;
+    String dec;
+    if (pos != Pos.FLAT) dec = "blocked_position_open";
+    else if (!dayOk) dec = "blocked_day_not_tradable";
+    else if (entries >= maxEntries) dec = "blocked_max_entries";
+    else if (vw == null) dec = "no_vwap";
+    else dec = aboveNoise && aboveVwap ? "ENTRY" : "no_signal";
+    dEval++;
+    if (dec.equals("no_signal")) dNoSignal++;
+    lg.emit(t, "eval", lg.j(t).field("bucketCloseMin", closeMin).field("bucketCloseTicks", bucket.close())
+        .field("noiseUpTicks", noise).fieldOrNull("vwapTicks", vw)
+        .fieldOrNull("openRefTicks", dayOpenRef).fieldOrNull("volTicks", dayVol)
+        .field("closeAboveNoise", aboveNoise).field("closeAboveVwap", aboveVwap)
+        .field("entriesToday", entries).field("position", pos.name()).field("decision", dec));
+  }
+
+  private void logDayStart(long t) {
+    loggedDay = curDate;
+    lg.emit(t, "day_start", lg.j(t).field("ctDate", curDate.toString()).field("etDate", SLog.etDate(t))
+        .field("tradable", dayOk).field("why", dayWhy == null ? "ok" : dayWhy)
+        .fieldOrNull("openRefTicks", dayOpenRef).fieldOrNull("volTicks", dayVol)
+        .field("noiseUpTicks", noise).field("maxEntries", maxEntries).field("position", pos.name()));
+  }
+
+  private void startDay(LocalDate d, long t) {
+    if (lg.on() && curDate != null && curDate.equals(loggedDay)) {
+      lg.emit(t, "day_summary", lg.j(t).field("ctDate", curDate.toString()).field("entries", entries)
+          .field("targetFills", dTp).field("stopFills", dSl).field("timeExits", dTime).field("rejected", dRejected)
+          .field("evals", dEval).field("noSignalEvals", dNoSignal));
+    }
+    dTp = dSl = dTime = dRejected = dEval = dNoSignal = 0;
     curDate = d;
     entries = 0;
     refOpen.keySet().removeIf(x -> x.isBefore(d.minusDays(7)));
@@ -197,6 +282,9 @@ public final class VaultBreakStrategy implements FlowStrategy {
     Double vol = dr.smaVol();
     dayOk = open != null && vol != null && !skipDates.contains(d);
     noise = dayOk ? open + k * vol : 0;
+    dayOpenRef = open;
+    dayVol = vol;
+    dayWhy = dayOk ? null : skipDates.contains(d) ? "skipDate" : open == null ? "no_open_ref" : "no_vol";
   }
 
   private Intent restate() {
@@ -212,6 +300,15 @@ public final class VaultBreakStrategy implements FlowStrategy {
 
   @Override
   public void onFill(FillEvent fill) {
+    if (lg.on()) {
+      boolean entry = fill.role() == FillEvent.Role.ENTRY;
+      lg.emit(fill.eventTimeMs(), "fill", lg.j(fill.eventTimeMs()).field("role", fill.role().name())
+          .field("priceTicks", fill.fillPriceTicks()).field("isBuy", fill.isBuy())
+          .field("positionAfter", fill.positionAfter()).field("strategyPositionBefore", pos.name())
+          .field("ignored", pos == Pos.FLAT)
+          .fieldOrNull("newStopTicks", entry ? (Integer) (fill.fillPriceTicks() - slTicks) : null)
+          .fieldOrNull("newTargetTicks", entry ? (Integer) (fill.fillPriceTicks() + tpTicks) : null));
+    }
     if (pos == Pos.FLAT) return;
     switch (fill.role()) {
       case ENTRY -> {
@@ -220,14 +317,23 @@ public final class VaultBreakStrategy implements FlowStrategy {
         targetTicks = f + tpTicks;
         pos = Pos.OPEN;
       }
-      case STOP, TARGET -> pos = Pos.FLAT;
+      case STOP -> { dSl++; pos = Pos.FLAT; }
+      case TARGET -> { dTp++; pos = Pos.FLAT; }
       case OTHER -> { }
     }
   }
 
   @Override
   public void onIntentRejected(Intent intent, String reason) {
-    if (intent.targetPosition() != 0 && intent.reason().startsWith(ID + " entry") && pos == Pos.PENDING) {
+    boolean undo = intent.targetPosition() != 0 && intent.reason().startsWith(ID + " entry") && pos == Pos.PENDING;
+    if (lg.on()) {
+      dRejected++;
+      lg.emit(lastT, "rejected", lg.j(lastT).field("why", reason).field("intentTarget", intent.targetPosition())
+          .field("intentReason", intent.reason())
+          .field("action", undo ? "reverted_to_flat_entries_decremented" : "none")
+          .field("entriesToday", undo ? Math.max(0, entries - 1) : entries));
+    }
+    if (undo) {
       pos = Pos.FLAT;
       entries = Math.max(0, entries - 1);
     }
@@ -235,6 +341,7 @@ public final class VaultBreakStrategy implements FlowStrategy {
 
   @Override
   public void onFlattened(String reason) {
+    if (lg.on()) lg.emit(lastT, "flattened", lg.j(lastT).field("why", reason).field("positionBefore", pos.name()));
     pos = Pos.FLAT;
   }
 }

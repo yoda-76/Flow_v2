@@ -48,4 +48,10 @@ public interface FlowStrategy {
    * healthy. Default no-op for strategies with no position state.
    */
   default void onFlattened(String reason) {}
+
+  /**
+   * Optional structured decision log sink (see {@link StrategyLog}). Called by the owner BEFORE onInit so the strategy
+   * can log its effective parameters. Observational only; default no-op for strategies that log nothing.
+   */
+  default void setLog(StrategyLog log) {}
 }
