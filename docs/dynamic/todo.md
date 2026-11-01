@@ -5,6 +5,37 @@ Every task still to be done for FLOW_V2, in rough order. Companion to
 the queue, those two are the record. When a task closes, tick it, add the
 date, and link the decision/finding it produced; don't delete it.
 
+## SESSION HANDOFF (2026-11-02) — FORWARD TEST moves to the EC2 VM: read this first on the VM
+State: four strategies built, parity-checked (100% vs the Python backtests from 2020) and run once on the dev machine's
+Sim accounts (weekend only, no trades). Branch `orderflow-rules-review` @ `89789cf` + this note (pushed). Plan and
+design: `docs/dynamic/forwardTest_plan_v1.md`; strategies: `docs/dynamic/strategies/`; settings: `docs/configuration.md`.
+The dev machine's MotiveWave is closed; **only the VM runs the forward test from now on.**
+
+VM checklist (the user does the MotiveWave GUI parts; Claude builds, reads logs, edits `config/risk.local.json`):
+1. `git fetch && git checkout orderflow-rules-review && git pull`; build + deploy with `bash build/build.sh` only while
+   no FLOW study is running (FLOW_JDK_BIN must point at JDK 26). All gates must pass.
+2. MotiveWave → Settings → General → Simulated Account: **Sim Trade Only ON** (assume OFF on any fresh install —
+   check it before adding any study). Add **four Simulated accounts**.
+3. Four **1-minute, full 24-hour** charts with **≥ 30 days of 1-minute history**: three `@MNQ`, one `@MES`.
+4. Add FLOW Runtime to each: `mc_vault_break`, `mc_vwap_adx`, `mc_overnight_orb` on MNQ; **`mc_daily_avwap` on MES
+   only** (there is no code guard yet — see the next task); *Record Market Data* **off** on all four; each on its own
+   Sim account. Mode/Armed as the user decides.
+5. First activation **refuses to arm** (`ACCOUNT_PROBE … kind=OTHER`): read the four ids from MotiveWave's log
+   (`%APPDATA%\MotiveWave\output\`), add them to the VM's `config/risk.local.json` as
+   `"simAccountIds": "id1,id2,id3,id4"` (keep the VM's existing keys), then the user **reloads** each study (the list is
+   read at study start, not at re-activation). Check: `kind=SIMULATED`, `bar_history_warm_start` `medianBarMs` 60000 and
+   ≥ ~20,000 bars, each strategy's `risk_config_loaded` (daily loss 1200 / 700 / 1500 / 1700 ticks, AV
+   `flattenLeadMinutes` 0), and `strategy_log` `init` records in each session's `decisions.jsonl`.
+6. Disk: `raw.jsonl` grows ~1–1.5 GB per study per day (every tick + book update). Set `logRetentionHours` (e.g. 48) in
+   the VM's `risk.local.json`; `decisions.jsonl` (strategy log, orders, fills) is never pruned.
+7. Watch on the first days: the first entries (bracket re-based on the fill), S2's first trailing modify (order modify
+   is unproven live), the 14:30 / 14:55 CT time exits, and AV's overnight hold.
+Known gaps: `config/strategies/*.json` holiday `skipDates` are unverified against CME's calendar; AV holding through the
+December contract roll on a continuous `@MES` chart is untested — check AV's position before the roll (MES/MNQ Dec
+expiry 2026-12-18); a study restarted while AV holds does not manage that position (close it by hand).
+Analysis: `python analysis/strategy_log.py <session dir> --out <dir> --counts`; offline comparison with
+`BarReplay --log` on the same days (see `docs/configuration.md` "Strategy log").
+
 ## TASK (added 2026-11-02) — per-strategy instrument guard (forward test)
 On the first live setup the Daily Anchored VWAP study (`mc_daily_avwap`, built and tested on **MES**) was added to an
 **@MNQ** chart and armed (journal `session_header` `"symbol":"@MNQ"`); `InstrumentPolicy` only checks that the
