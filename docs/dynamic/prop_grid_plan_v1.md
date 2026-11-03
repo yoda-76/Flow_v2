@@ -521,9 +521,34 @@ python analysis/gb_nq_backtest/lucid_grid.py driver --version full --out reports
 - 2026-11-04: plan written and pushed (dev machine, branch `orderflow-rules-review`). Handoff folder built at
   `C:\yadvendra\trading\prop_grid_handoff\` (439 files, ~190 MB). The standalone check passed (`first_payout.py` from the folder
   reproduces `reference/first_payout_e2_r500/base` byte for byte).
-- **`lucid_grid.py` is NOT written yet.** The user asked to stop here and not start the run until told.
-  - Next on the dev machine: write it, pass §9, copy it into the folder, update `SHA256SUMS.txt` and this log.
-  - If the folder reaches the other machine without `lucid_grid.py`, implement it there from §5 and §6.
+- 2026-11-04 ~03:30: **`lucid_grid.py` written and verified on the dev machine; it is in the handoff folder. Use it as is.**
+  - **§9.1 passed:** `lucid_grid.py verify --ref-dir reports --seed 1` → all 10 reference sets identical (B-16 1/1 $1,000,
+    B-18 1/1 $500, B-17 1/2, B-20 2/1 $1,000 and $500; base and noise seed 1): 15,640 of 15,640 journeys, matching result,
+    fees, evals, resets, funded losses, trading days and calendar days. About 16 s.
+  - **Mutation check:** with Pro 25K consistency changed to 35%, verify FAILS (649–1,399 of 1,564 identical), so it catches
+    rule errors.
+  - **§9.2 passed:** `lucid_grid_handcheck.py`, against day P&L recomputed from the trade list, checks:
+    - a Flex eval pass delayed by the 40% rule (target on 2020-08-20 with best day 50% → pass on 2020-08-26 at 33%);
+    - a Flex payout (18 qualifying days, R ≤ 50% of profit, the gate not met the day before);
+    - the Flex MLL locked at 25,100 after a request;
+    - a Direct payout (cycle $1,639 ≥ $1,500, best day 19.2%);
+    - a Pro 150K 5/5 journey breaking even only at payout 2 after a funded loss.
+  - **§9.3 asserts** run inside every case: break-even at payout 1 ⇔ 0.9 × R1 ≥ fees; max open micros ≤ the plan cap; Flex ≤ its
+    scaling start cap.
+  - **End-to-end smoke test** (`driver --version smoke`: step 40, 2 + 1 noise runs) passed: manifest → 2 batches → validation
+    (6/6 cases, 782 rows each) → selection (52 combos) → stage 2 → reproducibility (3 cases byte-identical) → report.
+- **Measured speed** on the dev machine with the real code: one stage-1 case (all 782 combo × policy rows) takes **181 s at
+  step 2**, with 1 worker. 8-hour version: stage 1 ≈ 34 × 3 min ≈ 1.7 h, plus stage 2 → about 5–6 h. Full version on the dev
+  machine: about 2× per case at step 1 → stage 1 ≈ 54 × 6 min ≈ 5.5 h, plus stage 2 → about 12 h. Divide by the workers on a
+  bigger machine.
+- **In the handoff folder, verify with:** `python analysis/gb_nq_backtest/lucid_grid.py verify --ref-dir reference --seed 1`
+  (must print `VERIFY PASSED`), then `python analysis/gb_nq_backtest/lucid_grid_handcheck.py` (must print
+  `HAND CHECKS PASSED`). Then start the full run:
+  `python analysis/gb_nq_backtest/lucid_grid.py driver --version full --out reports/lucid_grid_full --workers W --batch-cases 2`.
+  - W = 1 per ~2.5 GB of free memory, up to (CPU cores − 1).
+  - The driver is resumable: if it stops, run the same command again; finished, valid cases are skipped.
+  - Do **not** delete `reports/lucid_grid_full/config.json` or the frozen `step2_selection.csv`.
+  - At the end, `G1_summary.md` is written automatically.
 
 ---------------------------------------------------------------------------------------------------------------------------
 
