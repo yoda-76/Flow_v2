@@ -76,11 +76,13 @@ def run_account(arec, si, funded):
     return "OPEN", cur, cur_di
 
 
-def journey(S, start_di, ctx):
+def journey(SE, SF, start_di, ctx):
+    """SE = records at the eval size, SF = at the funded size."""
     daylist = ctx["daylist"]
     cost, evals, resets, fbr, mode, di = EVAL_FEE, 1, 0, 0, "eval", start_di
     eval_days = 0
     while di < len(daylist):
+        S = SF if mode == "funded" else SE
         arec, si = attempt_recs(S, di, daylist, ctx["bars"], ctx["day_idx"], DLL)
         if si >= len(arec):
             break
@@ -124,8 +126,14 @@ def run_case(out, s1, s3, ctx, a):
     tr = load_trades("s1", s1, "", "") + load_trades("s3", s3, "", "")
     for r in tr:
         r["bk"], r["m"], r["q"] = a.csv, a.mult, 1
-    recs, maxc, _m = build_records(tr, ctx["bars"], ctx["day_idx"], ctx["daylist"])
-    S = dict(trades=tr, recs=recs, win={}, RT=[r[0] for r in recs], SDs=[r[1] for r in recs])
+    def mk(trs):
+        rc, _mx, _m = build_records(trs, ctx["bars"], ctx["day_idx"], ctx["daylist"])
+        return dict(trades=trs, recs=rc, win={}, RT=[r[0] for r in rc], SDs=[r[1] for r in rc])
+    S = mk(tr)
+    recs = S["recs"]
+    # pnl_usd per file is for 1 contract incl. its commission -> scales linearly with size
+    sized = lambda n: S if n == 1 else mk([dict(r, q=n, pnl=r["pnl"] * n) for r in tr])
+    SE, SF = sized(a.eval_qty), sized(a.funded_qty)
     daylist = ctx["daylist"]
     first = recs[0][2]
     last_ok = daylist[-1] - a.horizon_days
@@ -133,12 +141,12 @@ def run_case(out, s1, s3, ctx, a):
     for di in range(first, len(daylist), a.step):
         if daylist[di] > last_ok:
             break
-        j = journey(S, di, ctx)
+        j = journey(SE, SF, di, ctx)
         j["start"] = daylist[di]
         rows.append(j)
     chain, di = [], first
     while di < len(daylist):
-        j = journey(S, di, ctx)
+        j = journey(SE, SF, di, ctx)
         if j["result"] != "PAYOUT":
             break
         chain.append(j)
@@ -154,11 +162,11 @@ def run_case(out, s1, s3, ctx, a):
     cost = [j["cost"] for j in done]
     cd = [j["cdays"] for j in done]
     td = [j["tdays"] for j in done]
-    L = [f"first_payout: s1={s1} s3={s3} step={a.step} horizon={a.horizon_days}d",
+    L = [f"first_payout: s1={s1} s3={s3} step={a.step} horizon={a.horizon_days}d eval_qty={a.eval_qty} funded_qty={a.funded_qty} request={REQUEST:.0f}",
          f"journeys {len(rows)}  reached payout {len(done)}  open at data end {len(rows) - len(done)}"]
     if done:
         L += [f"cost   mean {statistics.mean(cost):.2f} median {statistics.median(cost):.2f} p90 {pct(cost, .9):.2f} max {max(cost):.2f}",
-              f"net    mean {900 - statistics.mean(cost):.2f}",
+              f"net    mean {REQUEST * SPLIT - statistics.mean(cost):.2f}",
               f"cdays  mean {statistics.mean(cd):.1f} median {statistics.median(cd):.1f} p90 {pct(cd, .9):.1f} max {max(cd)}",
               f"tdays  mean {statistics.mean(td):.1f} median {statistics.median(td):.1f} p90 {pct(td, .9):.1f} max {max(td)}",
               f"resets mean {statistics.mean(j['resets'] for j in done):.2f}  funded_breaches mean {statistics.mean(j['fbreach'] for j in done):.2f}",
@@ -184,8 +192,13 @@ def main():
     ap.add_argument("--csv", default="analysis/data/NQ_1m_latest.csv")
     ap.add_argument("--mult", type=float, default=2.0)
     ap.add_argument("--step", type=int, default=1)
+    ap.add_argument("--request", type=float, default=1000.0, help="first payout request ($500 minimum, $1,000 max for payout 1)")
+    ap.add_argument("--eval-qty", type=int, default=1, help="contracts per strategy in the eval phase")
+    ap.add_argument("--funded-qty", type=int, default=1, help="contracts per strategy in the funded phase (eval stays at 1)")
     ap.add_argument("--horizon-days", type=int, default=365)
     a = ap.parse_args()
+    global REQUEST
+    REQUEST = a.request
     cases = list(a.case)
     if a.cases_file:
         cases += [l.split() for l in open(a.cases_file) if l.strip()]

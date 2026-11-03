@@ -4,7 +4,7 @@ Research log and findings for one strategy. **Append to this file as research co
 section 4, then fold the conclusion into section 5 and update the status line). Nothing here is a trading decision; entries are
 evidence, tagged `[BACKTEST]`, `[PROP-SIM]`, `[DATA]` or `[CODE]` (see [README](README.md)).
 
-- **Status:** base fixed 2026-11-02; edge tested (B-12); in the chosen pair S1 + S3 for prop trading (B-11); funded phase simulated (B-13); robustness round R-1 passed (B-15); first-payout cost and time (B-16). Last updated 2026-11-03.
+- **Status:** base fixed 2026-11-02; edge tested (B-12); in the chosen pair S1 + S3 for prop trading (B-11); funded phase simulated (B-13); robustness round R-1 passed (B-15); first-payout cost and time (B-16); 2 MNQ funded and $500 first payout (B-17, B-18); pass vs payout timeline (B-19); 2 MNQ eval / 1 MNQ funded (B-20). Last updated 2026-11-04.
 - **Instrument tested:** NQ 1-minute bars (`analysis/data/NQ_1m_latest.csv`), 2019-09-01 to 2026-10-14. Sized as 1 NQ
   ($20/pt) and as MNQ ($2/pt).
 - **One-line verdict so far:** a real, modest, broad-based edge (t 5.2, every year positive, every nearby setting positive, beats
@@ -21,7 +21,7 @@ evidence, tagged `[BACKTEST]`, `[PROP-SIM]`, `[DATA]` or `[CODE]` (see [README](
 | Does it match his claims (2022 → 2026: $112–121/trade, ~67% win)? | Only with 2C: $123, 68.8%. | Medium: 1 of 34 variants. |
 | Real edge or overfit? | Real: t 5.2; all 45 nearby settings positive; walk-forward +$130k vs fixed +$151k; random long entries make $18/trade vs $122; cost- and roll-robust. MES weaker (PF 1.14, t 1.8). R-1: beats 10,000/10,000 random-direction and random-day fakes; all 1,000 noise runs profitable. | High (B-12, B-15). |
 | Where is the edge? | Mostly in which days it trades (noise-break days); entering later the same day still makes $84/trade. | Medium. |
-| Prop trading? | With S3 at 1 MNQ each on LucidPro 25K: 73.1% pass in the backtest, **~67% (median 35 days) under execution noise**, 59% with a 25% profit cut. First $1,000 payout: median fees $151, median ~7.4 months (B-15, B-16). | Medium (third-party rules). |
+| Prop trading? | With S3 at 1 MNQ each on LucidPro 25K: 73.1% pass in the backtest, **~67% (median 35 days) under execution noise**, 59% with a 25% profit cut. Pass in ~35 trading days, but the first payout takes ~6½ months ($500) to ~7½ months ($1,000) on the calendar, median fees $151 (B-15, B-16, B-18, B-19). With 2 MNQ in the eval and 1 MNQ funded: ~5¾ months ($1,000) / ~5 months ($500), mean fees ~$190 (B-20). | Medium (third-party rules). |
 ## 2. The strategy as ported
 
 Source: interview transcript, distilled to `docs/video_transcripts/strategies/distilled/MatteoConti_1_VaultBreak.txt` (all doubts G1–G16
@@ -334,6 +334,103 @@ Pass line fixed before the run (proposed by Claude, user said go): under noise t
   (~35 trading days); the time goes into making +$2,100 in the funded account at ~$500/month, and about one journey in two loses a
   funded account on the way.
 
+### B-17 `[PROP-SIM]` 2026-11-03, first payout with 2 MNQ each in the funded phase (eval stays at 1 MNQ)
+`first_payout.py --funded-qty 2` (records rebuilt at 2 contracts: open P&L and per-trade P&L × 2, commission included); same
+cases as B-16; outputs `reports/first_payout_f2/`. At `--funded-qty 1` the journeys file is byte-identical to B-16 (checked).
+Shares below count every start, including journeys with no payout by the end of the data ("never"), so they are fair
+between the two sizes; the fee / day medians in `R2_summary.md` exclude those journeys and flatter 2 MNQ.
+
+| Case | Size in funded | Paid ≤ 6 months | ≤ 12 months | ≤ 24 months | Fees ≤ $300 | Fees > $900 or never paid | Funded breaches / journey |
+|---|---|---|---|---|---|---|---|
+| Base | 1 MNQ | 33% | 97% | 100% | 100% | 0% | 0.4 |
+| Base | 2 MNQ | 38% | 73% | 90% | 60% | 8% | 2.1 |
+| Noise, median of 200 | 1 MNQ | 31% | 89% | 100% | 97% | 0% | 0.5 |
+| Noise, median of 200 | **2 MNQ** | **41%** | **70%** | 85% | 61% | **15%** | 2.0 |
+| Profit cut 25% | 1 / 2 MNQ | 15% / 32% | 65% / 52% | 100% / 68% | 84% / 43% | 0% / 35% | 0.9 / 3.4 |
+| Top 10 trades removed | 1 / 2 MNQ | 25% / 40% | 88% / 66% | 100% / 79% | 89% / 62% | 0% / 19% | 0.5 / 2.3 |
+
+- 2 MNQ raises the share of quick payouts (≤ 6 months: 31% → 41% under noise) but loses ~4× more funded accounts, so the
+  slow tail grows: paid within a year falls from 89% to 70%, and 15% of journeys either spend > $900 or never get paid.
+  2022 starts at 2 MNQ: median fees $754, median 713 days.
+- **Verdict:** 2 MNQ from the first funded day is worse than 1 MNQ. Untested idea: 1 MNQ until the loss limit locks at $25,100
+  (balance closed ≥ $26,100), then 2 MNQ.
+
+### B-18 `[PROP-SIM]` 2026-11-03, a $500 first payout instead of $1,000 (1 MNQ each)
+`first_payout.py --request 500` (needs balance ≥ $26,600, i.e. +$1,600 funded; $450 received); same cases as B-16; outputs
+`reports/first_payout_r500/`. Default (`--request 1000`) still byte-identical to B-16 (checked). Shares count every start.
+
+| Case | First payout | Median days | Paid ≤ 4 months | ≤ 6 months | ≤ 12 months | Fees mean / median | Received − fees (mean) |
+|---|---|---|---|---|---|---|---|
+| Base | $1,000 | 221 | 16% | 33% | 97% | $129 / $151 | $771 |
+| Base | $500 | 189 | 24% | 47% | 99% | $129 / $151 | $321 |
+| Noise, median of 200 | $1,000 | 226 | 13% | 31% | 89% | $141 / $151 | ~$760 |
+| Noise, median of 200 | **$500** | **196** | 20% | **44%** | 93% | $141 / $151 | ~$310 |
+| Profit cut 25% | $1,000 / $500 | 306 / 252 | 6% / 14% | 15% / 30% | 65% / 81% | $188 / $181 | |
+| Top 10 trades removed | $1,000 / $500 | 249 / 196 | 10% / 20% | 25% / 44% | 88% / 95% | $150 / $150 | |
+
+- $500 arrives ~1 month sooner (median ~6.5 vs ~7.4 months under noise) at the **same fees**: the funded accounts that are lost
+  are lost before +$1,600, and no account that reached $26,600 was lost before $27,100.
+- Still fails the 6-month pass line of B-16 (44% within 6 months under noise, median 196 days).
+- Taking $500 first gives up nothing on fees but resets the cycle (a second payout then needs another ≥ $250 cycle and the 40% rule).
+
+### B-19 `[PROP-SIM]` 2026-11-04, reading the numbers: "pass in ~35 days" vs "paid in ~200 days"
+No new run; this puts B-15, B-16 and B-18 side by side, because the two headline numbers are easy to read as the same kind of
+figure and they are not.
+
+| Milestone | Typical time (median, under noise) | Unit | What it counts |
+|---|---|---|---|
+| Pass the eval | ~35 trading days (~7 weeks) | trading days | Only attempts that pass (~67–73% of first attempts); a failed attempt costs a $75 reset and starts again |
+| First payout, $500 | ~196 days (~6½ months) | calendar days | Everything from buying the first eval to the payout day: failed evals, resets, funded accounts lost, new evals |
+| First payout, $1,000 | ~226 days (~7½ months) | calendar days | Same |
+
+Where the time after the pass goes:
+1. **The funded account starts again at $25,000** and must reach $26,600 ($500 payout) or $27,100 ($1,000) before anything can
+   be withdrawn: +$1,600 to +$2,100 of new profit, more than the eval's +$1,250. At ~$500/month (S1 + S3, 1 MNQ each) that
+   alone is 3–4 months.
+2. **About one journey in two loses a funded account** before reaching that balance (0.45–0.5 funded breaches per journey); each
+   loss means a new $75.60 eval, passing it again, and starting the funded climb from $25,000.
+
+Roughly: eval ~1½–2 months, funded climb ~3–4 months, plus 1–2 months on the journeys that lose a funded account. Medians: half
+of journeys are faster, half slower; ~9 in 10 are paid within a year (89% for $1,000, 93% for $500). Speeding it up by trading 2
+MNQ in the funded phase loses more accounts than it saves time (B-17); the limit is the earning rate at 1 MNQ, not the payout size.
+
+### B-20 `[PROP-SIM]` 2026-11-04, 2 MNQ each in the EVAL, 1 MNQ each once funded (first payout $1,000 and $500)
+`first_payout.py --eval-qty 2` (new option, built like `--funded-qty`; default 1 gives a journeys file byte-identical to B-16,
+checked); same 204 cases as B-16; outputs `reports/first_payout_e2_r1000/`, `reports/first_payout_e2_r500/`. Idea: put the extra
+size where failing is cheap (a failed eval costs a $75 reset), keep 1 MNQ where failing is expensive (a lost funded account costs a
+new eval and the climb from $25,000 again). Shares count every start (no journey was left unpaid in any eval-2 case).
+
+| Case | Eval size / first payout | Median days | Paid ≤ 4 months | ≤ 6 months | ≤ 12 months | Fees mean / median | Fees > $300 | Resets / funded losses per journey | Received − fees (mean) |
+|---|---|---|---|---|---|---|---|---|---|
+| Noise, median of 200 | 1 MNQ / $1,000 (B-16) | 227 | 13% | 31% | 89% | $141 / $151 | 3% | 0.34 / 0.51 | ~$760 |
+| Noise, median of 200 | 1 MNQ / $500 (B-18) | 196 | 20% | 44% | 92% | $141 / $151 | 3% | 0.34 / 0.51 | ~$310 |
+| Noise, median of 200 | **2 MNQ / $1,000** | **175** | 26% | **54%** | 99% | $190 / $151 | 19% | 0.97 / 0.55 | ~$710 |
+| Noise, median of 200 | **2 MNQ / $500** | **148** | 36% | **66%** | 99% | $190 / $151 | 19% | 0.97 / 0.55 | ~$260 |
+| Base | 1 / 2 MNQ, $1,000 | 221 / 166 | 16% / 29% | 33% / 59% | 97% / 100% | $129 / $171 | 0% / 14% | | |
+| Base | 1 / 2 MNQ, $500 | 189 / 141 | 24% / 39% | 47% / 74% | 99% / 100% | $129 / $171 | 0% / 14% | | |
+| Profit cut 25% | 1 / 2 MNQ, $1,000 | 306 / 224 | | 15% / 36% | 65% / 89% | $188 / $219 | | | |
+| Profit cut 25% | 1 / 2 MNQ, $500 | 252 / 188 | | 30% / 48% | 81% / 98% | $181 / $219 | | | |
+| Profit cut 50% | 1 / 2 MNQ, $1,000 | 850 / 321 | | 9% / 20% | 22% / 59% | $658 / $370 | | 135 / 0 journeys never paid | |
+| Top 10 trades removed | 1 / 2 MNQ, $1,000 | 248 / 184 | | 25% / 49% | 88% / 98% | $150 / $190 | | | |
+| Top 10 trades removed | 1 / 2 MNQ, $500 | 196 / 147 | | 44% / 69% | 95% / 100% | $150 / $190 | | | |
+
+- **Faster by ~7 weeks for ~$50 more fees.** The eval passes sooner but fails more often (~1 reset per journey instead of ~⅓);
+  funded losses barely change (0.55 vs 0.51) because the funded phase stays at 1 MNQ.
+- **Fee spread (eval 2, $1,000, all 200 noise runs pooled; each purchase ≈ $75):** 1 purchase 28%, 2 purchases 35% (cum. 63%),
+  3: 16%, 4: 8%, 5: 7% (cum. 94%), 6: 4%, 7–10: 2%; worst $754. Budget ~$400 to be covered 9 times in 10 (eval 1: ~$300 covered
+  everything).
+- **B-16 pass line (under noise: median fees ≤ $300, median ≤ 6 months, < 10% of journeys > $900 in fees):** eval 2 / $1,000
+  passes narrowly (175 days; worst 5% of runs 187); eval 2 / $500 passes clearly (148; worst 5% of runs 158). Fees > $900: 0%.
+- By start year, median days under noise (eval 2, $1,000 / $500): 2019 216 / 195, 2020 145 / 124, 2021 223 / 209,
+  2022 162 / 116, 2023 202 / 169, 2024 103 / 94, 2025 236 / 235. 2021 and 2025 starts stay slow.
+- Independent back-to-back journeys (base): $1,000: 14, mean fees $199 [95% CI $154–244], mean 176 days [138–214]; $500: 15,
+  mean fees $186 [$129–243], mean 160 days [124–197].
+- The bigger eval helps most when the edge is weaker (profit cut 50%: 850 → 321 days, and every journey gets paid), because a
+  1 MNQ eval then becomes very slow.
+- Payout size again changes only the time, not the fees (every eval-2 journey that reached $26,600 also reached $27,100).
+- **Verdict:** 2 MNQ in the eval with 1 MNQ funded is the best plan tested so far for the first payout. Not tested: 3 MNQ in the
+  eval (B-08: 45% pass, 5 days), or stepping the funded size up once the loss limit locks.
+
 ## 5. Consolidated findings
 
 1. **Real edge, modest per trade:** ~$90–120 per NQ against a 75-point ($1,500) stop. Positive in every full year including the 2022 bear
@@ -349,11 +446,17 @@ Pass line fixed before the run (proposed by Claude, user said go): under noise t
    worse (B-10, B-11).
 7. **Robust, but 73% is optimistic:** under realistic execution noise the pass rate is ~67% (60–84% range from 50 independent
    evals); the first $1,000 payout costs ~$150 in fees and takes ~7 months, mostly in the funded phase (B-15, B-16).
+8. **Pass ≠ paid:** the eval passes in ~35 *trading* days, but the first payout comes ~196 ($500) to ~226 ($1,000) *calendar* days
+   after buying the first eval, because the funded account must first climb +$1,600 to +$2,100 from $25,000 and about one journey
+   in two loses a funded account on the way. 2 MNQ in the funded phase makes it worse; $500 first is ~1 month sooner at the same
+   fees (B-17, B-18, B-19).
+9. **Size up the eval, not the funded account:** 2 MNQ each in the eval and 1 MNQ once funded cuts the median time to the first
+   payout from ~227 to ~175 days ($1,000) or ~148 days ($500) under noise, for ~$50 more average fees (B-20).
 
 ## 6. Open questions and planned work
 
-- Fees are now modelled for the first payout (B-16). Open: does 2 MNQ each in the funded phase shorten the ~7 months without many more
-  funded breaches? Unfinished R-1 pieces: DLL-ON noise runs, MES prop check. Truly unseen data: NQ before 2019 (needs Databento).
+- Fees are modelled for the first payout (B-16); 2 MNQ from the first funded day is worse (B-17). 2 MNQ in the eval / 1 MNQ funded is
+  the best so far (B-20). Open: 3 MNQ in the eval; 1 MNQ funded until the loss limit locks at $25,100, then 2 MNQ. Unfinished R-1 pieces: DLL-ON noise runs, MES prop check. Truly unseen data: NQ before 2019 (needs Databento).
 - Funded-phase sizing: e.g. 2 MNQ each once a buffer exists; larger payout requests if Lucid allows them.
 - Fixed-point TP/SL while NQ rose ~3.4× (2019 → 2026): test a price- or volatility-scaled version.
 - Roll-adjusted data; confirm Lucid's real rules.

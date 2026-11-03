@@ -4,7 +4,7 @@ Research log and findings for one strategy. **Append to this file as research co
 section 4, then fold the conclusion into section 5 and update the status line). Nothing here is a trading decision; entries are
 evidence, tagged `[BACKTEST]`, `[PROP-SIM]`, `[DATA]` or `[CODE]` (see [README](README.md)).
 
-- **Status:** base fixed 2026-11-02 (all defaults); edge tested (B-08); in the chosen pair S1 + S3 for prop trading (B-07); funded phase simulated (B-09); robustness round R-1 passed (B-11); first-payout cost and time (B-12). Last updated 2026-11-03.
+- **Status:** base fixed 2026-11-02 (all defaults); edge tested (B-08); in the chosen pair S1 + S3 for prop trading (B-07); funded phase simulated (B-09); robustness round R-1 passed (B-11); first-payout cost and time (B-12); 2 MNQ funded and $500 first payout (B-13, B-14); pass vs payout timeline (B-15); 2 MNQ eval / 1 MNQ funded (B-16). Last updated 2026-11-04.
 - **Instrument tested:** NQ 1-minute bars (15m bars built from them), 2019-09-01 to 2026-10-14. Sized as 1 NQ.
 - **One-line verdict so far:** the strongest of the three. A real edge (t 4.5, every year positive, longs and shorts both work) whose
   source is the overnight-bias direction (random sides make $41/trade vs $377). It reproduces his quoted figures out of sample. Fragile by
@@ -258,6 +258,22 @@ pass-line criteria met.
 
 ### B-12 `[PROP-SIM]` 2026-11-03, cost and time to the first $1,000 payout (with S1) — full entry: [vault_break.md B-16](vault_break.md)
 Median fees $151 (mean ~$140), median ~226 calendar days under noise; fee target met, 6-month target failed.
+
+### B-13 `[PROP-SIM]` 2026-11-03, first payout with 2 MNQ each in the funded phase (with S1) — full entry: [vault_break.md B-17](vault_break.md)
+Worse than 1 MNQ: under noise 41% vs 31% paid within 6 months, but 70% vs 89% within 12 months; funded breaches ×4; 15% of
+journeys spend > $900 or never get paid (1 MNQ: 0%).
+
+### B-14 `[PROP-SIM]` 2026-11-03, a $500 first payout instead of $1,000 (with S1) — full entry: [vault_break.md B-18](vault_break.md)
+~1 month sooner (median 196 vs 226 days under noise), same fees (~$140 mean, $151 median); 44% paid within 6 months.
+
+### B-15 `[PROP-SIM]` 2026-11-04, "pass in ~35 days" vs "paid in ~200 days" (with S1) — full entry: [vault_break.md B-19](vault_break.md)
+The eval passes in ~35 *trading* days (~7 weeks); the first payout comes ~196–226 *calendar* days after buying the first eval.
+The gap is the funded climb from $25,000 to $26,600–$27,100 at ~$500/month, plus a new eval on the ~1 in 2 journeys that lose a
+funded account.
+
+### B-16 `[PROP-SIM]` 2026-11-04, 2 MNQ each in the eval, 1 MNQ once funded (with S1) — full entry: [vault_break.md B-20](vault_break.md)
+Median time to the first payout under noise: 175 days ($1,000) / 148 days ($500), vs 227 / 196 with a 1 MNQ eval; mean fees
+~$190 vs ~$141 (about one reset per journey). Best plan tested so far for the first payout.
 
 ## 5. Consolidated findings
 
