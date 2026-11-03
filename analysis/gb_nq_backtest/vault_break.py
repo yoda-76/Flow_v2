@@ -49,11 +49,18 @@ import bisect
 import csv
 import datetime
 import os
+import random
 from datetime import date, timedelta, timezone
 
 H_MS = 3600 * 1000
 DAY_MS = 86400 * 1000
 TICK = 0.25
+# Robustness noise (analysis/gb_nq_backtest/robustness.py). All off by default -> output unchanged.
+#   --entry-shift K : enter K 1m bars after (K<0: before) the normal entry bar.
+#   --entry-delay F : fill at o + u*(c-o) of the entry 1m bar, u ~ U(0, F) (F=1 = up to one full minute late).
+#   --noise-slip N  : extra adverse slippage, integer ticks ~ U{0..N}, drawn separately for the entry and the exit fill
+#                     (every exit, TP limits included -- deliberately harsh).
+NOISE = dict(on=False, shift=0, delay=0.0, slip=0, rng=None)
 CSV_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "NQ_1m_latest.csv")
 OOS_START = date(2023, 1, 1)
 
@@ -182,14 +189,14 @@ def build_30m(bars):
     return sorted(bk), bk
 
 
-def exit_walk(args, bars, bk, entry_bucket, fill, slip):
+def exit_walk(args, bars, bk, entry_bucket, fill, slip, start_idx=None):
     """Return (exit_px, exit_minute, exit_bucket, reason). Walks from the entry bar."""
     tp = fill + args.tp_pts
     sl = fill - args.sl_pts
     tem = args.time_exit_min
     if args.exit_res == "1m":
         seq = []
-        for i in range(bk[entry_bucket][4], len(bars)):
+        for i in range(bk[entry_bucket][4] if start_idx is None else start_idx, len(bars)):
             m, o, h, l, c, v = bars[i]
             if m >= tem:
                 break
@@ -345,16 +352,29 @@ def trade_day(args, dn, bars, buckets, bk, open_px, vol, slip, trades, cnt, ext)
                 cnt["gap_skips"] += 1
             elif nb in bk:
                 raw_entry = bk[nb][0] if args.fill_at == "nextopen" else x[3]
+                start_idx, ent_min, xs = None, nb * 30, 0.0
+                if NOISE["on"]:
+                    start_idx = bk[nb][4] + NOISE["shift"]
+                    if not (0 <= start_idx < len(bars)) or bars[start_idx][0] >= args.time_exit_min:
+                        b += 1
+                        continue
+                    _m, _o, _h, _l, _c, _v = bars[start_idx]
+                    raw_entry = round((_o + NOISE["rng"].uniform(0.0, NOISE["delay"]) * (_c - _o)) / TICK) * TICK if NOISE["delay"] > 0 else _o
+                    if NOISE["shift"] != 0:
+                        ent_min = _m
+                    raw_entry += NOISE["rng"].randint(0, NOISE["slip"]) * TICK
+                    xs = NOISE["rng"].randint(0, NOISE["slip"]) * TICK
                 fill = raw_entry + slip
-                res = exit_walk(args, bars, bk, nb, fill, slip)
+                res = exit_walk(args, bars, bk, nb, fill, slip, start_idx)
                 if res is not None:
                     xpx, xm, xb, reason = res
+                    xpx -= xs
                     n_ent += 1
                     raw_exit = xpx + slip if reason in ("SL", "GAP_SL", "TIME") else xpx
                     gross = xpx - fill
                     pnl = gross * args.mult * args.qty - args.comm * args.qty
                     trades.append(dict(
-                        date=day_to_date(dn), entry_time_ct=fmt_t(dn, nb * 30),
+                        date=day_to_date(dn), entry_time_ct=fmt_t(dn, ent_min),
                         exit_time_ct=fmt_t(dn, xm), entry_px=fill, exit_px=xpx,
                         tp=fill + args.tp_pts, sl=fill - args.sl_pts, noise_up=noise,
                         vwap_at_signal=vw, exit_reason=reason, raw_pts=raw_exit - raw_entry,
@@ -449,30 +469,59 @@ def main():
     p.add_argument("--last-signal-close", type=int, default=840)
     p.add_argument("--reentry", choices=["exitbar", "cooldown", "fresh_all", "fresh_reentry"], default="exitbar")
     p.add_argument("--max-gap-pts", type=float, default=0.0)
+    p.add_argument("--entry-shift", type=int, default=0)
+    p.add_argument("--entry-delay", type=float, default=0.0)
+    p.add_argument("--noise-slip", type=int, default=0)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--seeds", default="", help="A-B: run seeds A..B in one process (data loaded once); output in OUT/seed_NNNN")
     p.add_argument("--fill-at", choices=["nextopen", "signalclose"], default="nextopen")
     p.add_argument("--time-exit-min", type=int, default=870)
     p.add_argument("--time-exit-at", choices=["lastclose", "open"], default="lastclose")
     p.add_argument("--intrabar", choices=["stop", "target", "direction"], default="stop")
     args = p.parse_args()
+    if args.entry_shift or args.entry_delay > 0 or args.noise_slip > 0:
+        NOISE.update(on=True, shift=args.entry_shift, delay=args.entry_delay, slip=args.noise_slip,
+                     rng=random.Random(args.seed))
     if args.vwap_anchor < -480:
         p.error("--vwap-anchor must be >= -480 (only evening bars from 16:00 CT of the previous date are loaded)")
 
-    trades, cnt = run(args)
-    os.makedirs(args.out, exist_ok=True)
-    cols = ["date", "entry_time_ct", "exit_time_ct", "entry_px", "exit_px", "tp", "sl", "noise_up",
-            "vwap_at_signal", "exit_reason", "raw_pts", "gross_pts", "pnl_usd", "trade_no_in_session"]
-    with open(os.path.join(args.out, "trades.csv"), "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(cols)
-        for t in trades:
-            w.writerow([t[c] if c != "date" else t[c].isoformat() for c in cols])
-    text = summary_text(args, trades, cnt)
-    with open(os.path.join(args.out, "summary.txt"), "w") as f:
-        f.write(text + "\n")
-    with open(os.path.join(args.out, "extra.txt"), "w") as f:
-        f.write("skip/diagnostic counters: " + " ".join("%s=%s" % kv for kv in cnt.items()) + "\n")
-    print(text)
+    def one(args):
+        trades, cnt = run(args)
+        os.makedirs(args.out, exist_ok=True)
+        cols = ["date", "entry_time_ct", "exit_time_ct", "entry_px", "exit_px", "tp", "sl", "noise_up",
+                "vwap_at_signal", "exit_reason", "raw_pts", "gross_pts", "pnl_usd", "trade_no_in_session"]
+        with open(os.path.join(args.out, "trades.csv"), "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(cols)
+            for t in trades:
+                w.writerow([t[c] if c != "date" else t[c].isoformat() for c in cols])
+        text = summary_text(args, trades, cnt)
+        with open(os.path.join(args.out, "summary.txt"), "w") as f:
+            f.write(text + "\n")
+        with open(os.path.join(args.out, "extra.txt"), "w") as f:
+            f.write("skip/diagnostic counters: " + " ".join("%s=%s" % kv for kv in cnt.items()) + "\n")
+        print(text)
 
+
+    if args.seeds:
+        lo, hi = (int(x) for x in args.seeds.split("-"))
+        cache = {}
+        orig = globals()["load_sessions"]
+        def cached(*k):
+            if k not in cache:
+                cache[k] = orig(*k)
+            return cache[k]
+        globals()["load_sessions"] = cached
+        root = args.out
+        for sd in range(lo, hi + 1):
+            NOISE.update(on=True, shift=args.entry_shift, delay=args.entry_delay, slip=args.noise_slip,
+                         rng=random.Random(sd))
+            args.seed, args.out = sd, os.path.join(root, "seed_%04d" % sd)
+            if os.path.exists(os.path.join(args.out, "trades.csv")):
+                continue
+            one(args)
+    else:
+        one(args)
 
 if __name__ == "__main__":
     main()

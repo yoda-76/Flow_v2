@@ -4,7 +4,7 @@ Research log and findings for one strategy. **Append to this file as research co
 section 4, then fold the conclusion into section 5 and update the status line). Nothing here is a trading decision; entries are
 evidence, tagged `[BACKTEST]`, `[PROP-SIM]`, `[DATA]` or `[CODE]` (see [README](README.md)).
 
-- **Status:** base fixed 2026-11-02; edge tested (B-12); in the chosen pair S1 + S3 for prop trading (B-11); funded phase simulated (B-13). Last updated 2026-11-02.
+- **Status:** base fixed 2026-11-02; edge tested (B-12); in the chosen pair S1 + S3 for prop trading (B-11); funded phase simulated (B-13); robustness round R-1 passed (B-15); first-payout cost and time (B-16). Last updated 2026-11-03.
 - **Instrument tested:** NQ 1-minute bars (`analysis/data/NQ_1m_latest.csv`), 2019-09-01 to 2026-10-14. Sized as 1 NQ
   ($20/pt) and as MNQ ($2/pt).
 - **One-line verdict so far:** a real, modest, broad-based edge (t 5.2, every year positive, every nearby setting positive, beats
@@ -19,9 +19,9 @@ evidence, tagged `[BACKTEST]`, `[PROP-SIM]`, `[DATA]` or `[CODE]` (see [README](
 | Does it make money as he described it (midnight open)? | Yes. 1 NQ: 1,488 trades, 66.3% win, PF 1.24, +$135,835, DD $17,632; $91/trade, t 3.7. | High. |
 | Fixed base (2C, 17:00 open)? | 1,517 trades, 67.6% win, PF 1.34, +$185,527, DD $11,084, $122/trade, every year positive. | High (arithmetic). |
 | Does it match his claims (2022 → 2026: $112–121/trade, ~67% win)? | Only with 2C: $123, 68.8%. | Medium: 1 of 34 variants. |
-| Real edge or overfit? | Real: t 5.2; all 45 nearby settings positive; walk-forward +$130k vs fixed +$151k; random long entries make $18/trade vs $122; cost- and roll-robust. MES weaker (PF 1.14, t 1.8). | Medium-high (B-12). |
+| Real edge or overfit? | Real: t 5.2; all 45 nearby settings positive; walk-forward +$130k vs fixed +$151k; random long entries make $18/trade vs $122; cost- and roll-robust. MES weaker (PF 1.14, t 1.8). R-1: beats 10,000/10,000 random-direction and random-day fakes; all 1,000 noise runs profitable. | High (B-12, B-15). |
 | Where is the edge? | Mostly in which days it trades (noise-break days); entering later the same day still makes $84/trade. | Medium. |
-| Prop trading? | With S3 at 1 MNQ each on LucidPro 25K: 73.1% of evals pass (median 35 trading days); funded ≈ $1,800/yr paid out (Lucid rules). | Medium (third-party rules). |
+| Prop trading? | With S3 at 1 MNQ each on LucidPro 25K: 73.1% pass in the backtest, **~67% (median 35 days) under execution noise**, 59% with a 25% profit cut. First $1,000 payout: median fees $151, median ~7.4 months (B-15, B-16). | Medium (third-party rules). |
 ## 2. The strategy as ported
 
 Source: interview transcript, distilled to `docs/video_transcripts/strategies/distilled/MatteoConti_1_VaultBreak.txt` (all doubts G1–G16
@@ -271,6 +271,69 @@ Output: `reports/prop3/funded_q1_lucid`, `reports/prop3/funded_q1_doubling`.
   clear on its own (t 1.8–2.2). It is long-only, so a downtrend removes much of its tail wind.
 - **Fast crashes hurt** (2020 crash, 2023 pullback lost); a slow grinding bear (2022) was still positive.
 
+### B-15 `[BACKTEST]` `[PROP-SIM]` 2026-11-03, robustness round R-1: S1 + S3 against the "73% / 35 days" claim
+Tests from `docs/video_transcripts/strategies/raw/how_to_backtest.txt`, plus prop-level stress of B-11. Driver
+`analysis/gb_nq_backtest/robustness.py`; noise / shift options added to `vault_break.py` and `overnight_orb.py` (off by default:
+output byte-identical to before, checked); `prop_multi.py --rolling-csv` added. Full tables: `reports/robust_r1/R1_summary.md`.
+Pass line fixed **before** the run (user, 2026-11-03): median pass rate under noise ≥ 50%; ≥ 50% with a 25% profit haircut;
+random-direction and random-timing p < 0.01 after counting tries; no start year below 40%.
+Lucid rules checked against `docs/Lucid Pro 25K - Complete Rules Report.md` (from Lucid's site, 2026-11-02): target, $1,000 EOD
+trailing MLL and the $25,100 lock match the simulator; the optional $600 DLL was missing and is now run as a second variant.
+
+| Test (S1 / S3) | Result |
+|---|---|
+| Random direction, same entry minute (10,000; 1 NQ) | 0 / 10,000 beat the real $122 (null mean −$44, z 7.3) / 0 beat $377 (null $40, z 4.4) |
+| Random minute on random days (10,000) | 0 beat (null $19, z 4.5) / 0 beat (null −$7, z 6.6) |
+| Random later minute, same day (10,000) | 83 beat (p 0.008) / 0 beat — S1's entry moment adds little, as in B-12 |
+| Count the tries (S1 79, S3 52 variants) | Bonferroni on the permutation p: 0.008 / 0.005 (< 0.01, narrowly; with every variant of the 3 video strategies, 193, it would be 0.02 / 0.02) |
+| Power | p < 0.05 for good only from trade 207 / 130; S1's first 100 trades look like luck (p 0.40) |
+| Noise: entry 0–1 min late + 0–2 extra ticks on every fill (1,000 runs, 1 MNQ) | all runs profitable; median keeps 86% / 94% of the base net; worst run $12,984 of $17,734 / $22,318 of $25,733 |
+| Entry shifted +1…+5 min | net $13.6k–16.0k of $17.7k / $19.8k–24.4k of $25.7k — gradual, no cliff (earlier entries score higher but use unknown information) |
+| Drop best trades (1 NQ): top 10 / top 1% / top 5% | 96% / 93% / 67% of net kept; S3: 68% / 76% / **18%** (excess kurtosis 2.0) |
+
+Prop sim, S1 + S3, 1 MNQ each, LucidPro 25K, a start on every session day (no DLL; the $600 DLL changed nothing in any finished case):
+
+| Case | Pass % | Median days | Chained pass/fail (95% CI) |
+|---|---|---|---|
+| Base | 73.1 | 35 | 37/13 (60–84%) |
+| **Noise, 200 runs: median (5th pct / worst)** | **67.0** (63.3 / 60.1) | 35 | |
+| Profit haircut 25% / 50% | 58.7 / 45.8 | 36 / 38 | 30/17 / 23/24 |
+| Top 10 trades of each removed | 60.1 | 35 | 33/16 |
+| Entry +1 … +5 min | 61.1–69.2 | 32–40 | |
+
+Pass % by start year, base: 2020 75, 2021 87, 2022 67, 2023 64, 2024 77, 2025 57, 2026 79. Under noise the median by year is 42–80 (2019: 100);
+**2021 falls from 87 to 42** (worst run 33) — that year depended on exact fills.
+
+**Verdict against the pass line: all four criteria met.** The edge is real; the realistic eval figure is ~60–67% pass in ~35–40
+trading days, not 73%. With half the backtest edge the pass rate falls below 50%.
+Not finished (run stopped twice for low memory, not resumed): DLL-ON noise runs (11 of 200) and the MES prop check.
+
+### B-16 `[PROP-SIM]` 2026-11-03, cost and time to the FIRST $1,000 payout (S1 + S3, 1 MNQ each, LucidPro 25K)
+`analysis/gb_nq_backtest/first_payout.py` (+ `first_payout_report.py`); tables in `reports/first_payout/R2_summary.md`.
+Journey (user, 2026-11-03; one account at a time, no copy trading): eval $75.60 (coupon, DLL ON) → eval fail: reset $75 → pass: funded
+→ funded breach before the payout: new eval $75.60 → **first payout** ($1,000 requested, $900 received after the 90/10 split; needs
+balance ≥ $27,100, i.e. +$2,100 funded, ≥ $250 cycle profit, no day > 40% of it). DLL $600 throughout (LucidScale not modelled).
+A journey from every session day with ≥ 365 days of data after it (1,564 starts). Check: the journey from the first data day takes
+264 calendar days, as in B-13.
+Pass line fixed before the run (proposed by Claude, user said go): under noise the median journey costs ≤ $300 in fees and takes
+≤ 6 months; fewer than 10% of journeys spend more than $900 in fees.
+
+| Case | Fees median / mean / p90 / max | Days to payout median / p90 / max | ≤ 6 months | ≤ 12 months | Fees > $900 |
+|---|---|---|---|---|---|
+| Base | $151 / $129 / $226 / $227 | 221 / 328 / 469 | 33% | 97% | 0% |
+| **Noise, 200 runs: median (worst 5%)** | $151 / $141 ($151) / $227 / $302 | **226 (244)** / 371 / 466 | 31% (26%) | 89% (83%) | 0% |
+| Profit haircut 25% | $151 / $188 / $376 / $453 | 306 / 483 / 610 | 15% | 65% | 0% |
+| Profit haircut 50% | $678 / $688 / $1,206 / $1,282 | 754 / 1,560 / 1,764 | 9% | 22% | 39% (135 journeys never paid) |
+| Top 10 trades of each removed | $151 / $150 / $301 / $378 | 249 / 377 / 653 | 25% | 88% | 0% |
+
+- Per journey (base): 0.26 resets and 0.45 funded breaches on average. Independent back-to-back journeys: 11, mean fees $137
+  [95% CI $104–171], mean 231 days [187–275].
+- By start year, median days: 2019 273, 2020 200, 2021 293, 2022 196, 2023 252, 2024 117, 2025 242.
+- **Verdict:** fees met (median $151, never above $900 unless the edge halves); **time failed** (median ~7.4 months, only ~31%
+  within 6 months). Expectancy of the first payout ≈ **$900 − ~$140 = ~$760**, but it takes ~7 months. The eval is the short part
+  (~35 trading days); the time goes into making +$2,100 in the funded account at ~$500/month, and about one journey in two loses a
+  funded account on the way.
+
 ## 5. Consolidated findings
 
 1. **Real edge, modest per trade:** ~$90–120 per NQ against a 75-point ($1,500) stop. Positive in every full year including the 2022 bear
@@ -284,10 +347,13 @@ Output: `reports/prop3/funded_q1_lucid`, `reports/prop3/funded_q1_doubling`.
 6. **Prop fit:** paired with S3 at 1 MNQ each, 73.1% of LucidPro 25K evals pass (median 35 trading days) and the funded account pays
    ~$1,800/yr under Lucid's payout rules, with one funded breach in 7 years (B-07 – B-13). Adding S2 or the anchored VWAP strategy makes it
    worse (B-10, B-11).
+7. **Robust, but 73% is optimistic:** under realistic execution noise the pass rate is ~67% (60–84% range from 50 independent
+   evals); the first $1,000 payout costs ~$150 in fees and takes ~7 months, mostly in the funded phase (B-15, B-16).
 
 ## 6. Open questions and planned work
 
-- Fees: evaluation / activation price not modelled — needed to judge cost per pass and net payouts.
+- Fees are now modelled for the first payout (B-16). Open: does 2 MNQ each in the funded phase shorten the ~7 months without many more
+  funded breaches? Unfinished R-1 pieces: DLL-ON noise runs, MES prop check. Truly unseen data: NQ before 2019 (needs Databento).
 - Funded-phase sizing: e.g. 2 MNQ each once a buffer exists; larger payout requests if Lucid allows them.
 - Fixed-point TP/SL while NQ rose ~3.4× (2019 → 2026): test a price- or volatility-scaled version.
 - Roll-adjusted data; confirm Lucid's real rules.

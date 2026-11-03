@@ -11,9 +11,9 @@ Entry tags: `[BACKTEST]` a run of our Python port on recorded data, `[PROP-SIM]`
 | Strategy | File | Status |
 |---|---|---|
 | Daily Anchored VWAP Signal Strategy (MES) | [daily_anchored_vwap.md](daily_anchored_vwap.md) | research in progress, 2026-10-31 |
-| Matteo Conti 1: Vault Break (NQ, 30m, long) | [vault_break.md](vault_break.md) | real edge; in portfolio S1 + S3; funded phase simulated, 2026-11-02 |
+| Matteo Conti 1: Vault Break (NQ, 30m, long) | [vault_break.md](vault_break.md) | real edge; in portfolio S1 + S3; robustness R-1 passed (~67% eval pass under noise); first payout ~7 months, 2026-11-03 |
 | Matteo Conti 2: VWAP Pullback + ADX Gate (NQ, 1m, long) | [vwap_pullback_adx.md](vwap_pullback_adx.md) | edge unconfirmed; left out of the portfolio, 2026-11-02 |
-| Matteo Conti 3: Overnight-Bias ORB (NQ, 15m, long/short) | [overnight_bias_orb.md](overnight_bias_orb.md) | real edge; in portfolio S1 + S3; funded phase simulated, 2026-11-02 |
+| Matteo Conti 3: Overnight-Bias ORB (NQ, 15m, long/short) | [overnight_bias_orb.md](overnight_bias_orb.md) | real edge; in portfolio S1 + S3; robustness R-1 passed (~67% eval pass under noise); first payout ~7 months, 2026-11-03 |
 
 Other strategies tested in the same session but not yet written up here: VWAP/EMA9 cross 3m (NQ/gold), value-area break momentum (NQ),
 gap + late-day strength 5m (MNQ), Friday-low Monday revisit (gold/NQ), trend following and contrarian (gold). Their numbers are in the

@@ -430,6 +430,7 @@ def main():
     ap.add_argument("--to", dest="d_to", default="")
     ap.add_argument("--expiry-days", type=int, default=0)
     ap.add_argument("--dll", type=float, default=0.0)
+    ap.add_argument("--rolling-csv", action="store_true", help="also write rolling_<plan>_<set>.csv (one row per rolling start)")
     ap.add_argument("--csv-for", action="append", default=[], metavar="NAME=PATH")
     ap.add_argument("--mult-for", action="append", default=[], metavar="NAME=X")
     ap.add_argument("--qty-for", action="append", default=[], metavar="NAME=N")
@@ -525,15 +526,22 @@ def main():
             ce = sum(c[2] == "EXPIRED" for c in chain); co = sum(c[2] == "OPEN" for c in chain)
             # ROLLING
             rp, rf, re_, ro, dp, df = 0, 0, 0, 0, [], []
+            roll_rows = []
             if recs:
                 for di in range(recs[0][2], recs[-1][2] + 1):
                     arec, si = attempt_recs(S, di, daylist, bars, day_idx, a.dll)
                     if si >= len(arec) or arec[si][1] > daylist[di] + 60: continue
                     res, esd, edi, days, ntr, pnl, _ni = sim(arec, si, di, plan, a.expiry_days, a.dll, last_di)
+                    if a.rolling_csv: roll_rows.append((daylist[di], res, days, f"{pnl:.2f}"))
                     if res == "PASS": rp += 1; dp.append(days)
                     elif res == "FAIL": rf += 1; df.append(days)
                     elif res == "EXPIRED": re_ += 1
                     else: ro += 1
+            if a.rolling_csv:
+                with open(os.path.join(a.out, f"rolling_{pk}_{sname}.csv"), "w", newline="") as fh:
+                    w = csv.writer(fh); w.writerow(["start_date", "result", "trading_days", "end_pnl"])
+                    for sdt, res, days, pnl in roll_rows:
+                        w.writerow([d.date.fromordinal(sdt).isoformat(), res, days, pnl])
             nc = rp + rf + re_
             pct = lambda x: f"{100.0 * x / nc:.1f}" if nc else "-"
             emit(f"{sname:<10}{n:>7}{net:>10,.0f}{dd:>9,.0f}{wd:>10,.0f}{S['maxc']:>6}{flag} | "

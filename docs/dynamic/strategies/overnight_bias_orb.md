@@ -4,7 +4,7 @@ Research log and findings for one strategy. **Append to this file as research co
 section 4, then fold the conclusion into section 5 and update the status line). Nothing here is a trading decision; entries are
 evidence, tagged `[BACKTEST]`, `[PROP-SIM]`, `[DATA]` or `[CODE]` (see [README](README.md)).
 
-- **Status:** base fixed 2026-11-02 (all defaults); edge tested (B-08); in the chosen pair S1 + S3 for prop trading (B-07); funded phase simulated (B-09). Last updated 2026-11-02.
+- **Status:** base fixed 2026-11-02 (all defaults); edge tested (B-08); in the chosen pair S1 + S3 for prop trading (B-07); funded phase simulated (B-09); robustness round R-1 passed (B-11); first-payout cost and time (B-12). Last updated 2026-11-03.
 - **Instrument tested:** NQ 1-minute bars (15m bars built from them), 2019-09-01 to 2026-10-14. Sized as 1 NQ.
 - **One-line verdict so far:** the strongest of the three. A real edge (t 4.5, every year positive, longs and shorts both work) whose
   source is the overnight-bias direction (random sides make $41/trade vs $377). It reproduces his quoted figures out of sample. Fragile by
@@ -17,10 +17,10 @@ evidence, tagged `[BACKTEST]`, `[PROP-SIM]`, `[DATA]` or `[CODE]` (see [README](
 |---|---|---|
 | Does it make money? | Yes. 1 NQ: 693 trades, 53.7% win, PF 1.56, payoff 1.35, +$261,117, DD $16,802; every year positive. | High (arithmetic). |
 | Does it match his claims? | Yes, since 2023: 52.5% / payoff 1.39 (his "1.4 with a 53%"); short 50.0% / 1.60 (his "50% … 1.6"). His figures are payoff ratios. | Medium-high. |
-| Real edge or overfit? | Real: t 4.5; all 25 nearby settings positive; walk-forward +$181k vs fixed +$231k; random side → $41/trade, random days → ≈ $0. MES weaker (PF 1.22, t 1.8). | Medium-high (B-08). |
+| Real edge or overfit? | Real: t 4.5; all 25 nearby settings positive; walk-forward +$181k vs fixed +$231k; random side → $41/trade, random days → ≈ $0. MES weaker (PF 1.22, t 1.8). R-1: beats 10,000/10,000 random fakes; all 1,000 noise runs profitable; top 5% of trades carry 82% of the net. | High (B-08, B-11). |
 | Where is the edge? | The overnight-bias direction; entering at the breakout also matters (random later entries make $158 vs $377). | High. |
 | Weak point | Positive skew: dropping the top 10% of trades turns it negative; ~100 trades/year. | High. |
-| Prop trading? | With S1 at 1 MNQ each on LucidPro 25K: 73.1% of evals pass (median 35 trading days); funded ≈ $1,800/yr paid out (Lucid rules). | Medium (third-party rules). |
+| Prop trading? | With S1 at 1 MNQ each on LucidPro 25K: 73.1% pass in the backtest, **~67% (median 35 days) under execution noise**, 59% with a 25% profit cut. First $1,000 payout: median fees $151, median ~7.4 months (B-11, B-12). | Medium (third-party rules). |
 ## 2. The strategy as ported
 
 Source: interview transcript, distilled to `docs/video_transcripts/strategies/distilled/MatteoConti_3_OvernightBiasORB.txt` (v2: each doubt
@@ -250,6 +250,15 @@ Output: `reports/prop3/funded_q1_lucid`, `reports/prop3/funded_q1_doubling`.
   Every named sell-off was positive.
 - This is why S1 + S3 pair well: S1 weakens in downtrends, S3 does not.
 
+### B-11 `[BACKTEST]` `[PROP-SIM]` 2026-11-03, robustness round R-1 (with S1) — full entry: [vault_break.md B-15](vault_break.md)
+S3-specific: random side 0 / 10,000 beat it (z 4.4); random days and side 0 / 10,000 (z 6.6); random later minute 0 / 10,000;
+Bonferroni-adjusted p 0.005 (52 tries). Noise: 1,000 / 1,000 runs profitable, median keeps 94% of net. **Most outlier-dependent part
+of the pair:** dropping the top 5% of trades keeps 18% of the net (S1: 67%). Pair under noise: 67% eval pass (median), all four
+pass-line criteria met.
+
+### B-12 `[PROP-SIM]` 2026-11-03, cost and time to the first $1,000 payout (with S1) — full entry: [vault_break.md B-16](vault_break.md)
+Median fees $151 (mean ~$140), median ~226 calendar days under noise; fee target met, 6-month target failed.
+
 ## 5. Consolidated findings
 
 1. **Real edge on NQ:** every year positive, in and out of sample, longs and shorts both positive, cost- and roll-robust (B-01, B-08).
@@ -260,10 +269,12 @@ Output: `reports/prop3/funded_q1_lucid`, `reports/prop3/funded_q1_doubling`.
 5. **Fragile by design:** the profit lives in a minority of large winners, so long flat spells are normal and short windows are noisy.
 6. **Weaker outside NQ:** MES PF 1.22, t 1.8 (B-08).
 7. **Prop fit:** paired with S1 at 1 MNQ each — 73.1% eval pass rate on LucidPro 25K, ~$1,800/yr paid out in the funded phase (B-03 – B-09).
+8. **Robust, but 73% is optimistic:** ~67% eval pass under execution noise; first $1,000 payout ~$150 fees, ~7 months (B-11, B-12).
 
 ## 6. Open questions and planned work
 
-- Fees (evaluation / activation price) to judge cost per pass and net payouts.
+- Fees are now modelled for the first payout (B-16). Open: does 2 MNQ each in the funded phase shorten the ~7 months without many more
+  funded breaches? Unfinished R-1 pieces: DLL-ON noise runs, MES prop check. Truly unseen data: NQ before 2019 (needs Databento).
 - Funded-phase sizing (e.g. 2 MNQ each once a buffer exists); larger payout requests if Lucid allows them.
 - Roll-adjusted data; confirm Lucid's real rules.
 

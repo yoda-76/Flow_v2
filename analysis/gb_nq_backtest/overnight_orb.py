@@ -44,11 +44,17 @@ import csv
 import datetime
 import math
 import os
+import random
 from datetime import date, timedelta, timezone
 
 H_MS = 3600 * 1000
 DAY_MS = 86400 * 1000
 TICK = 0.25
+# Robustness noise (analysis/gb_nq_backtest/robustness.py). All off by default -> output unchanged.
+#   --entry-shift K : enter K 1m bars after (K<0: before) the normal entry 1m bar.
+#   --entry-delay F : fill at o + u*(c-o) of the entry 1m bar, u ~ U(0, F).
+#   --noise-slip N  : extra adverse slippage, integer ticks ~ U{0..N}, drawn separately for entry and exit (every exit).
+NOISE = dict(on=False, shift=0, delay=0.0, slip=0, rng=None)
 CSV_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "NQ_1m_latest.csv")
 OOS_START = date(2023, 1, 1)
 OR_MIN = 510          # 08:30 CT
@@ -430,6 +436,18 @@ def run(args):
             cnt["no_signal"] += 1
             continue
         si, ei, raw_entry, e1 = sig
+        xs, ent_a = 0.0, None
+        if NOISE["on"]:
+            e1 = e1 + NOISE["shift"]
+            if not (0 <= e1 < len(B["A"])) or not (base <= B["A"][e1] < base + args.time_exit):
+                cnt["noise_skips"] = cnt.get("noise_skips", 0) + 1
+                continue
+            _o, _c = B["o"][e1], B["c"][e1]
+            raw_entry = round((_o + NOISE["rng"].uniform(0.0, NOISE["delay"]) * (_c - _o)) / TICK) * TICK if NOISE["delay"] > 0 else _o
+            if NOISE["shift"] != 0:
+                ent_a = B["A"][e1]
+            raw_entry += side * NOISE["rng"].randint(0, NOISE["slip"]) * TICK
+            xs = NOISE["rng"].randint(0, NOISE["slip"]) * TICK
         fill = raw_entry + side * slip
         d = args.sl_k * vol
         if args.sl_ref == "fill":
@@ -460,6 +478,7 @@ def run(args):
             cnt["no_walk"] += 1
             continue
         xpx, xa, reason = res
+        xpx -= side * xs
         slipped = reason in ("SL", "GAP_SL", "TIME")
         raw_exit = xpx + side * slip if slipped else xpx
         pnl = side * (xpx - fill) * args.mult * args.qty - args.comm * args.qty
@@ -468,7 +487,7 @@ def run(args):
         trades.append(dict(
             date=day_to_date(D), side="L" if side == 1 else "S", bias_pos=pos, onr_high=onr_hi, onr_low=onr_lo,
             orh=orh, orl=orl, vol=vol, signal_time_ct=fmt_a(S[si]),
-            entry_time_ct=fmt_a(S[ei] if args.exit_res == "15m" or args.entry_mode != "stop" else B["A"][e1]),
+            entry_time_ct=fmt_a(ent_a) if ent_a is not None else fmt_a(S[ei] if args.exit_res == "15m" or args.entry_mode != "stop" else B["A"][e1]),
             exit_time_ct=fmt_a(xa), fill=fill, sl=sl, tp=tp, exit_px=xpx, exit_reason=reason,
             adx_at_signal=adx[si] if args.entry_mode != "stop" else adx[si - 1],
             raw_pts=side * (raw_exit - raw_entry), pnl_usd=pnl, risk_usd=risk, r=pnl / risk if risk > 0 else 0.0))
@@ -589,23 +608,52 @@ def main():
     p.add_argument("--comm", type=float, default=4.60)
     p.add_argument("--qty", type=int, default=1)
     p.add_argument("--slip-ticks", type=float, default=1)
+    p.add_argument("--entry-shift", type=int, default=0)
+    p.add_argument("--entry-delay", type=float, default=0.0)
+    p.add_argument("--noise-slip", type=int, default=0)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--seeds", default="", help="A-B: run seeds A..B in one process (data loaded once); output in OUT/seed_NNNN")
     args = p.parse_args()
+    if args.entry_shift or args.entry_delay > 0 or args.noise_slip > 0:
+        NOISE.update(on=True, shift=args.entry_shift, delay=args.entry_delay, slip=args.noise_slip,
+                     rng=random.Random(args.seed))
 
-    trades, cnt = run(args)
-    os.makedirs(args.out, exist_ok=True)
-    cols = ["date", "side", "bias_pos", "onr_high", "onr_low", "orh", "orl", "vol", "signal_time_ct",
-            "entry_time_ct", "exit_time_ct", "fill", "sl", "tp", "exit_px", "exit_reason", "adx_at_signal",
-            "raw_pts", "pnl_usd", "risk_usd", "r"]
-    with open(os.path.join(args.out, "trades.csv"), "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(cols)
-        for t in trades:
-            w.writerow([t[c].isoformat() if c == "date" else t[c] for c in cols])
-    text = summary_text(args, trades, cnt)
-    with open(os.path.join(args.out, "summary.txt"), "w") as f:
-        f.write(text + "\n")
-    print(text)
+    def one(args):
+        trades, cnt = run(args)
+        os.makedirs(args.out, exist_ok=True)
+        cols = ["date", "side", "bias_pos", "onr_high", "onr_low", "orh", "orl", "vol", "signal_time_ct",
+                "entry_time_ct", "exit_time_ct", "fill", "sl", "tp", "exit_px", "exit_reason", "adx_at_signal",
+                "raw_pts", "pnl_usd", "risk_usd", "r"]
+        with open(os.path.join(args.out, "trades.csv"), "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(cols)
+            for t in trades:
+                w.writerow([t[c].isoformat() if c == "date" else t[c] for c in cols])
+        text = summary_text(args, trades, cnt)
+        with open(os.path.join(args.out, "summary.txt"), "w") as f:
+            f.write(text + "\n")
+        print(text)
 
+
+    if args.seeds:
+        lo, hi = (int(x) for x in args.seeds.split("-"))
+        cache = {}
+        orig = globals()["load_bars"]
+        def cached(*k):
+            if k not in cache:
+                cache[k] = orig(*k)
+            return cache[k]
+        globals()["load_bars"] = cached
+        root = args.out
+        for sd in range(lo, hi + 1):
+            NOISE.update(on=True, shift=args.entry_shift, delay=args.entry_delay, slip=args.noise_slip,
+                         rng=random.Random(sd))
+            args.seed, args.out = sd, os.path.join(root, "seed_%04d" % sd)
+            if os.path.exists(os.path.join(args.out, "trades.csv")):
+                continue
+            one(args)
+    else:
+        one(args)
 
 if __name__ == "__main__":
     main()
