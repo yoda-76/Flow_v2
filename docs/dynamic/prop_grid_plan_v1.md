@@ -549,6 +549,26 @@ python analysis/gb_nq_backtest/lucid_grid.py driver --version full --out reports
   - The driver is resumable: if it stops, run the same command again; finished, valid cases are skipped.
   - Do **not** delete `reports/lucid_grid_full/config.json` or the frozen `step2_selection.csv`.
   - At the end, `G1_summary.md` is written automatically.
+- **2026-11-04, second machine (MacBook Air M1, 16 GB, macOS, Python 3.14.4): full version done.**
+  - **Checks before the run:**
+    - checksums 442 of 442 OK;
+    - `verify` → VERIFY PASSED (10 of 10 sets, 1,564 of 1,564 journeys each);
+    - `lucid_grid_handcheck.py` → HAND CHECKS PASSED.
+  - **Run:** `caffeinate -i python3 analysis/gb_nq_backtest/lucid_grid.py driver --version full --out reports/lucid_grid_full
+    --workers 4 --batch-cases 2`, 10:59 → 13:31 (2 h 32 min).
+    - One stage-1 case alone took 170 s with about 1 GB of memory.
+    - With 4 workers, a case took about 230–250 s.
+  - **Validation:**
+    - stage 1: 54 of 54 valid;
+    - stage 2: 51 selected combos × noise 51–200, 150 of 150 valid;
+    - 0 retries, 0 FAILED;
+    - reproducibility: seed_0044, seed_0037 and seed_0010 byte-identical.
+  - **Report:** `docs/dynamic/prop_system_full_v1.md`.
+  - **Issues found (not fixed, since the script was used as is):**
+    - `free_mb()` returns −1 on macOS, so the memory gate was off (no swap was used);
+    - `G1_summary.md`'s cross-plan ranking skips the ≥ 80% paid-in-12-months filter that the selection applies;
+    - Flex 25K "max" had only one qualifying combo, so 51 combos were selected, not 52.
+  - **Comparison with the 8-hour run:** not done; its outputs aren't in the folder. Left for the dev machine.
 
 ---------------------------------------------------------------------------------------------------------------------------
 

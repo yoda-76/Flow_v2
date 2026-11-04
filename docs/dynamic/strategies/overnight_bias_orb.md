@@ -4,7 +4,7 @@ Research log and findings for one strategy. **Append to this file as research co
 section 4, then fold the conclusion into section 5 and update the status line). Nothing here is a trading decision; entries are
 evidence, tagged `[BACKTEST]`, `[PROP-SIM]`, `[DATA]` or `[CODE]` (see [README](README.md)).
 
-- **Status:** base fixed 2026-11-02 (all defaults); edge tested (B-08); in the chosen pair S1 + S3 for prop trading (B-07); funded phase simulated (B-09); robustness round R-1 passed (B-11); first-payout cost and time (B-12); 2 MNQ funded and $500 first payout (B-13, B-14); pass vs payout timeline (B-15); 2 MNQ eval / 1 MNQ funded (B-16). Last updated 2026-11-04.
+- **Status:** base fixed 2026-11-02 (all defaults); edge tested (B-08); in the chosen pair S1 + S3 for prop trading (B-07); funded phase simulated (B-09); robustness round R-1 passed (B-11); first-payout cost and time (B-12); 2 MNQ funded and $500 first payout (B-13, B-14); pass vs payout timeline (B-15); 2 MNQ eval / 1 MNQ funded (B-16); full Lucid grid, recommended Pro 50K 6/2 (B-17). Last updated 2026-11-04.
 - **Instrument tested:** NQ 1-minute bars (15m bars built from them), 2019-09-01 to 2026-10-14. Sized as 1 NQ.
 - **One-line verdict so far:** the strongest of the three. A real edge (t 4.5, every year positive, longs and shorts both work) whose
   source is the overnight-bias direction (random sides make $41/trade vs $377). It reproduces his quoted figures out of sample. Fragile by
@@ -275,6 +275,9 @@ funded account.
 Median time to the first payout under noise: 175 days ($1,000) / 148 days ($500), vs 227 / 196 with a 1 MNQ eval; mean fees
 ~$190 vs ~$141 (about one reset per journey). Best plan tested so far for the first payout.
 
+### B-17 `[PROP-SIM]` 2026-11-04, Lucid grid: every size combo and plan (with S1) — full entry: [vault_break.md B-21](vault_break.md); write-up: [prop_system_v1.md](../prop_system_v1.md)
+Recommended: Pro 50K, 6 MNQ each in the eval / 2 MNQ funded, max payout requests: first $2,000 payout in a median 163 days, 99% paid within 12 months, mean fees $365, ~$253/month net, 0% never break even, 100% of starts in every year 2019–2025 paid within 12 months (200 noise runs).
+
 ## 5. Consolidated findings
 
 1. **Real edge on NQ:** every year positive, in and out of sample, longs and shorts both positive, cost- and roll-robust (B-01, B-08).
@@ -286,11 +289,11 @@ Median time to the first payout under noise: 175 days ($1,000) / 148 days ($500)
 6. **Weaker outside NQ:** MES PF 1.22, t 1.8 (B-08).
 7. **Prop fit:** paired with S1 at 1 MNQ each — 73.1% eval pass rate on LucidPro 25K, ~$1,800/yr paid out in the funded phase (B-03 – B-09).
 8. **Robust, but 73% is optimistic:** ~67% eval pass under execution noise; first $1,000 payout ~$150 fees, ~7 months (B-11, B-12).
+9. **Best Lucid setup tested (B-17):** Pro 50K, 6 MNQ eval / 2 MNQ funded: ~$253/month to the first payout, ~$365 fees.
 
 ## 6. Open questions and planned work
 
-- Fees are now modelled for the first payout (B-16). Open: does 2 MNQ each in the funded phase shorten the ~7 months without many more
-  funded breaches? Unfinished R-1 pieces: DLL-ON noise runs, MES prop check. Truly unseen data: NQ before 2019 (needs Databento).
+- Fees are now modelled for the first payout (B-12); the size and plan question is answered by the Lucid grid (B-17). Unfinished R-1 pieces: DLL-ON noise runs, MES prop check. Truly unseen data: NQ before 2019 (needs Databento).
 - Funded-phase sizing (e.g. 2 MNQ each once a buffer exists); larger payout requests if Lucid allows them.
 - Roll-adjusted data; confirm Lucid's real rules.
 

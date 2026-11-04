@@ -14,6 +14,7 @@ Entry tags: `[BACKTEST]` a run of our Python port on recorded data, `[PROP-SIM]`
 | Matteo Conti 1: Vault Break (NQ, 30m, long) | [vault_break.md](vault_break.md) | real edge; in portfolio S1 + S3; robustness R-1 passed (~67% eval pass under noise); first payout ~7 months, 2026-11-03 |
 | Matteo Conti 2: VWAP Pullback + ADX Gate (NQ, 1m, long) | [vwap_pullback_adx.md](vwap_pullback_adx.md) | edge unconfirmed; left out of the portfolio, 2026-11-02 |
 | Matteo Conti 3: Overnight-Bias ORB (NQ, 15m, long/short) | [overnight_bias_orb.md](overnight_bias_orb.md) | real edge; in portfolio S1 + S3; robustness R-1 passed (~67% eval pass under noise); first payout ~7 months, 2026-11-03 |
+| **S1 + S3 on a Lucid account (system report)** | [../prop_system_v1.md](../prop_system_v1.md) | full Lucid grid done; recommended Pro 50K, 6 MNQ eval / 2 MNQ funded, ~$253/month to the first payout, 2026-11-04 |
 
 Other strategies tested in the same session but not yet written up here: VWAP/EMA9 cross 3m (NQ/gold), value-area break momentum (NQ),
 gap + late-day strength 5m (MNQ), Friday-low Monday revisit (gold/NQ), trend following and contrarian (gold). Their numbers are in the

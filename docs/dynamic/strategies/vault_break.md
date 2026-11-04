@@ -4,7 +4,7 @@ Research log and findings for one strategy. **Append to this file as research co
 section 4, then fold the conclusion into section 5 and update the status line). Nothing here is a trading decision; entries are
 evidence, tagged `[BACKTEST]`, `[PROP-SIM]`, `[DATA]` or `[CODE]` (see [README](README.md)).
 
-- **Status:** base fixed 2026-11-02; edge tested (B-12); in the chosen pair S1 + S3 for prop trading (B-11); funded phase simulated (B-13); robustness round R-1 passed (B-15); first-payout cost and time (B-16); 2 MNQ funded and $500 first payout (B-17, B-18); pass vs payout timeline (B-19); 2 MNQ eval / 1 MNQ funded (B-20). Last updated 2026-11-04.
+- **Status:** base fixed 2026-11-02; edge tested (B-12); in the chosen pair S1 + S3 for prop trading (B-11); funded phase simulated (B-13); robustness round R-1 passed (B-15); first-payout cost and time (B-16); 2 MNQ funded and $500 first payout (B-17, B-18); pass vs payout timeline (B-19); 2 MNQ eval / 1 MNQ funded (B-20); full Lucid grid, recommended Pro 50K 6/2 (B-21). Last updated 2026-11-04.
 - **Instrument tested:** NQ 1-minute bars (`analysis/data/NQ_1m_latest.csv`), 2019-09-01 to 2026-10-14. Sized as 1 NQ
   ($20/pt) and as MNQ ($2/pt).
 - **One-line verdict so far:** a real, modest, broad-based edge (t 5.2, every year positive, every nearby setting positive, beats
@@ -21,7 +21,7 @@ evidence, tagged `[BACKTEST]`, `[PROP-SIM]`, `[DATA]` or `[CODE]` (see [README](
 | Does it match his claims (2022 → 2026: $112–121/trade, ~67% win)? | Only with 2C: $123, 68.8%. | Medium: 1 of 34 variants. |
 | Real edge or overfit? | Real: t 5.2; all 45 nearby settings positive; walk-forward +$130k vs fixed +$151k; random long entries make $18/trade vs $122; cost- and roll-robust. MES weaker (PF 1.14, t 1.8). R-1: beats 10,000/10,000 random-direction and random-day fakes; all 1,000 noise runs profitable. | High (B-12, B-15). |
 | Where is the edge? | Mostly in which days it trades (noise-break days); entering later the same day still makes $84/trade. | Medium. |
-| Prop trading? | With S3 at 1 MNQ each on LucidPro 25K: 73.1% pass in the backtest, **~67% (median 35 days) under execution noise**, 59% with a 25% profit cut. Pass in ~35 trading days, but the first payout takes ~6½ months ($500) to ~7½ months ($1,000) on the calendar, median fees $151 (B-15, B-16, B-18, B-19). With 2 MNQ in the eval and 1 MNQ funded: ~5¾ months ($1,000) / ~5 months ($500), mean fees ~$190 (B-20). | Medium (third-party rules). |
+| Prop trading? | With S3 at 1 MNQ each on LucidPro 25K: 73.1% pass in the backtest, **~67% (median 35 days) under execution noise**, 59% with a 25% profit cut. Pass in ~35 trading days, but the first payout takes ~6½ months ($500) to ~7½ months ($1,000) on the calendar, median fees $151 (B-15, B-16, B-18, B-19). With 2 MNQ in the eval and 1 MNQ funded: ~5¾ months ($1,000) / ~5 months ($500), mean fees ~$190 (B-20). Full grid (B-21): best is **Pro 50K 6/2**, ~5⅓ months to a $2,000 first payout, ~$365 fees, ~$253/month. | Medium (third-party rules). |
 ## 2. The strategy as ported
 
 Source: interview transcript, distilled to `docs/video_transcripts/strategies/distilled/MatteoConti_1_VaultBreak.txt` (all doubts G1–G16
@@ -345,11 +345,11 @@ between the two sizes; the fee / day medians in `R2_summary.md` exclude those jo
 | Base | 1 MNQ | 33% | 97% | 100% | 100% | 0% | 0.4 |
 | Base | 2 MNQ | 38% | 73% | 90% | 60% | 8% | 2.1 |
 | Noise, median of 200 | 1 MNQ | 31% | 89% | 100% | 97% | 0% | 0.5 |
-| Noise, median of 200 | **2 MNQ** | **41%** | **70%** | 85% | 61% | **15%** | 2.0 |
+| Noise, median of 200 | **2 MNQ** | **41%** | **70%** | 85% | 61% | **15%** | 1.3 (corrected 2026-11-04; was mistyped as 2.0) |
 | Profit cut 25% | 1 / 2 MNQ | 15% / 32% | 65% / 52% | 100% / 68% | 84% / 43% | 0% / 35% | 0.9 / 3.4 |
 | Top 10 trades removed | 1 / 2 MNQ | 25% / 40% | 88% / 66% | 100% / 79% | 89% / 62% | 0% / 19% | 0.5 / 2.3 |
 
-- 2 MNQ raises the share of quick payouts (≤ 6 months: 31% → 41% under noise) but loses ~4× more funded accounts, so the
+- 2 MNQ raises the share of quick payouts (≤ 6 months: 31% → 41% under noise) but loses 2.5–5× more funded accounts (1.3 vs 0.5 under noise, 2.1 vs 0.4 on base), so the
   slow tail grows: paid within a year falls from 89% to 70%, and 15% of journeys either spend > $900 or never get paid.
   2022 starts at 2 MNQ: median fees $754, median 713 days.
 - **Verdict:** 2 MNQ from the first funded day is worse than 1 MNQ. Untested idea: 1 MNQ until the loss limit locks at $25,100
@@ -431,6 +431,17 @@ new eval and the climb from $25,000 again). Shares count every start (no journey
 - **Verdict:** 2 MNQ in the eval with 1 MNQ funded is the best plan tested so far for the first payout. Not tested: 3 MNQ in the
   eval (B-08: 45% pass, 5 days), or stepping the funded size up once the loss limit locks.
 
+### B-21 `[PROP-SIM]` 2026-11-04, Lucid grid: every eval/funded size, every account size, Pro / Flex / Direct, to the first payout and break-even — full write-up: [prop_system_v1.md](../prop_system_v1.md)
+`lucid_grid.py`, full version run on a second machine (plan [prop_grid_plan_v1.md](../prop_grid_plan_v1.md)); 391 combos × 2
+payout policies × 1,564 starts, 54 stage-1 cases and 200 noise runs for the best 51 combos; all cases valid, re-runs
+byte-identical, B-16–B-20 reproduced journey by journey.
+- **Recommended:** Pro 50K, 6 MNQ each in the eval / 2 MNQ funded, max payout requests: first $2,000 payout in a median 163 days, 99% paid within 12 months, mean fees $365, ~$253/month net, 0% never break even, 100% of starts in every year 2019–2025 paid within 12 months (200 noise runs).
+- **Pro 25K:** 3/1 max is the low-outlay pick ($123/month, $207 fees, 100% paid ≤ 12 months). The asked-for 2/2 and 3/2 are faster
+  (142 and 120 days) but lose more funded accounts (~1.7 per journey vs 0.5), so they net less ($111 and $107/month).
+- **Always request the maximum:** with $500 requests, fees eat the payout on 100K–150K accounts.
+- **Flex ranks highest on paper** (150K 10/7: $396/month), but its big combos stall for 2025 starts (0–43% paid ≤ 12 months);
+  **Direct** is steady but nets less than Pro at the same size.
+
 ## 5. Consolidated findings
 
 1. **Real edge, modest per trade:** ~$90–120 per NQ against a 75-point ($1,500) stop. Positive in every full year including the 2022 bear
@@ -452,11 +463,12 @@ new eval and the climb from $25,000 again). Shares count every start (no journey
    fees (B-17, B-18, B-19).
 9. **Size up the eval, not the funded account:** 2 MNQ each in the eval and 1 MNQ once funded cuts the median time to the first
    payout from ~227 to ~175 days ($1,000) or ~148 days ($500) under noise, for ~$50 more average fees (B-20).
+10. **Best Lucid setup tested (B-21):** Pro 50K, 6 MNQ each in the eval / 2 MNQ funded, max payout requests: first $2,000 payout in a median 163 days, 99% paid within 12 months, mean fees $365, ~$253/month net, 0% never break even, 100% of starts in every year 2019–2025 paid within 12 months (200 noise runs). Bigger accounts make more only with max payout requests; Flex stalls on recent starts; Direct is steady but slower.
 
 ## 6. Open questions and planned work
 
 - Fees are modelled for the first payout (B-16); 2 MNQ from the first funded day is worse (B-17). 2 MNQ in the eval / 1 MNQ funded is
-  the best so far (B-20). Open: 3 MNQ in the eval; 1 MNQ funded until the loss limit locks at $25,100, then 2 MNQ. Unfinished R-1 pieces: DLL-ON noise runs, MES prop check. Truly unseen data: NQ before 2019 (needs Databento).
+  the best on 25K (B-20); the full grid (B-21) answers the eval/funded size question for every Lucid plan. Open: 1 MNQ funded until the loss limit locks at $25,100, then 2 MNQ. Unfinished R-1 pieces: DLL-ON noise runs, MES prop check. Truly unseen data: NQ before 2019 (needs Databento).
 - Funded-phase sizing: e.g. 2 MNQ each once a buffer exists; larger payout requests if Lucid allows them.
 - Fixed-point TP/SL while NQ rose ~3.4× (2019 → 2026): test a price- or volatility-scaled version.
 - Roll-adjusted data; confirm Lucid's real rules.

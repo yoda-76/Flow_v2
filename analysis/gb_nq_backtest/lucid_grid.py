@@ -621,6 +621,21 @@ def noise_median(by_case, k):
     return statistics.median(v) if v else float("nan")
 
 
+def rank_combos(res, pk, pol):
+    """The selection rule [plan 3.5], shared by `select` and the report's cross-plan ranking.
+    Returns (ranked candidates, reason); each candidate is (combo id, net/month, le12m, d1 median, fbr1), noise medians."""
+    cand = []
+    for e, f in combos(pk):
+        k = cid(pk, e, f, pol)
+        by = res[k]
+        cand.append((k, noise_median(by, "net_per_month"), noise_median(by, "le12m"), noise_median(by, "d1_median"),
+                     noise_median(by, "fbr1")))
+    ok = [c for c in cand if c[2] >= 80.0 and c[1] == c[1]]
+    if ok:
+        return sorted(ok, key=lambda c: (-c[1], c[4])), "net_per_month (le12m >= 80%)"
+    return sorted([c for c in cand if c[3] == c[3]], key=lambda c: (c[3], c[4])), "lowest median days (none with le12m >= 80%)"
+
+
 def cmd_select(a):
     cfg = load_cfg(a.out)
     a.stage = 1
@@ -634,19 +649,7 @@ def cmd_select(a):
     sel = []
     for pk in PLANS:
         for pol in POLICIES:
-            cand = []
-            for e, f in combos(pk):
-                k = cid(pk, e, f, pol)
-                by = res[k]
-                cand.append((k, noise_median(by, "net_per_month"), noise_median(by, "le12m"), noise_median(by, "d1_median"),
-                             noise_median(by, "fbr1")))
-            ok = [c for c in cand if c[2] >= 80.0 and c[1] == c[1]]
-            if ok:
-                ok.sort(key=lambda c: (-c[1], c[4]))
-                why = "net_per_month (le12m >= 80%)"
-            else:
-                ok = sorted([c for c in cand if c[3] == c[3]], key=lambda c: (c[3], c[4]))
-                why = "lowest median days (none with le12m >= 80%)"
+            ok, why = rank_combos(res, pk, pol)
             for c in ok[:2]:
                 sel.append((c[0], why, f"{c[1]:.2f}", f"{c[2]:.1f}", f"{c[3]:.1f}"))
     for e, f in ((2, 2), (3, 2)):
@@ -683,6 +686,13 @@ def free_mb():
             for line in open("/proc/meminfo"):
                 if line.startswith("MemAvailable"):
                     return int(line.split()[1]) // 1024
+        except Exception:             # noqa: BLE001
+            pass
+        try:                          # macOS: free + inactive + speculative pages from vm_stat
+            out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=10).stdout
+            page = int(out.split("page size of")[1].split()[0])
+            n = {ln.split(":")[0].strip(): int(ln.split(":")[1].strip().rstrip(".")) for ln in out.splitlines()[1:] if ":" in ln}
+            return (n["Pages free"] + n.get("Pages inactive", 0) + n.get("Pages speculative", 0)) * page // 2 ** 20
         except Exception:             # noqa: BLE001
             pass
     return -1
@@ -833,13 +843,16 @@ def cmd_report(a):
         L.append(f"| {label(s['combo'])} | {s['why']} | {g('d1_median', .5):.0f} ({g('d1_median', .95):.0f}) | {g('le6m', .5):.0f}% | "
                  f"{g('le12m', .5):.0f}% | {g('fees1_mean', .5):.0f} | {g('net_per_month', .5):.0f} | {g('be_median', .5):.0f} | "
                  f"{g('never_be', .5):.1f}% |  ({len(nz)} runs)")
-    L += ["", "## Cross-plan ranking (best combo per plan x size x policy, by noise-median net per month)", "",
-          "| plan | policy | best e/f | net / month | days median | paid <= 12 mo | fees mean | break-even median |", "|---|---|---|---|---|---|---|---|"]
+    L += ["", "## Cross-plan ranking (best combo per plan x size x policy: the selection rule, stage-1 noise medians)", "",
+          "| plan | policy | best e/f | rule | net / month | days median | paid <= 12 mo | fees mean | break-even median |",
+          "|---|---|---|---|---|---|---|---|---|"]
     for pk in PLANS:
         for pol in POLICIES:
-            best = max(combos(pk), key=lambda ef: (lambda v: v if v == v else -1e18)(noise_median(res1[cid(pk, ef[0], ef[1], pol)], "net_per_month")))
-            by = res1[cid(pk, best[0], best[1], pol)]
-            L.append(f"| {pk} | {pol} | {best[0]}/{best[1]} | {noise_median(by, 'net_per_month'):.0f} | {noise_median(by, 'd1_median'):.0f} | "
+            ranked, why = rank_combos(res1, pk, pol)
+            k = ranked[0][0]
+            by = res1[k]
+            e, f = k.split("|")[1:3]
+            L.append(f"| {pk} | {pol} | {e}/{f} | {why} | {noise_median(by, 'net_per_month'):.0f} | {noise_median(by, 'd1_median'):.0f} | "
                      f"{noise_median(by, 'le12m'):.0f}% | {noise_median(by, 'fees1_mean'):.0f} | {noise_median(by, 'be_median'):.0f} |")
     rp = os.path.join(a.out, "repro_check.txt")
     L += ["", "Reproducibility check: " + (open(rp).read().replace("\n", "; ") if os.path.exists(rp) else "not run")]
