@@ -1,0 +1,79 @@
+Here is each schema in a form you can copy. Prices are Databento's list price per GB (uncompressed) as shown in the portal. Sizes and totals are what the portal showed for one year of NQ (2025-10-12 to 2026-10-11, all contracts).
+
+## Order-level and book schemas
+
+**MBO (market by order), $1.80/GB, 382.1 GB, $640.51**
+- **What it is:** every individual order event on the exchange. It's the most detailed schema and lets you rebuild the whole book.
+- **Key fields:** `ts_event`, `ts_recv`, `instrument_id`, `order_id`, `action`, `side`, `price`, `size`, `flags`, `sequence`, `channel_id`, `ts_in_delta`.
+- **`action` values:** A = add, C = cancel, M = modify, R = clear book, T = trade, F = fill of a resting order, N = none.
+- **Good for:** liquidity heatmap, icebergs and refills, exact big-trade grouping, queue behaviour, spoofing patterns, and everything the trade-based studies need.
+- **Watch for:** you need the start-of-day snapshot to rebuild the book correctly. Use only the `T` records for volume, because `F` fills would double-count it.
+
+**MBP-10 (market by price, 10 levels), $0.50/GB, 2,049 GB, $954.25**
+- **What it is:** a record for each trade or book change within the top 10 price levels, carrying the aggregated size and order count at each of those levels.
+- **Key fields:** the MBO event fields plus `levels[0..9]`, each with `bid_px`, `ask_px`, `bid_sz`, `ask_sz`, `bid_ct`, `ask_ct`.
+- **Good for:** a 10-level depth heatmap and book imbalance.
+- **Watch for:** there are no order IDs, so no icebergs or exact big trades. Each record carries all 10 levels, so the files are huge, and here it costs more than MBO.
+
+**MBP-1 (market by price, top of book), $1.80/GB, 278.4 GB, $466.62**
+- **What it is:** a record for each trade or change at the best bid or offer.
+- **Key fields:** the event fields plus `levels[0]`, which holds the best bid and ask price, size and order count.
+- **Good for:** spread and touch-liquidity history, trade-through analysis, and quote-based signals.
+- **Watch for:** there is no depth beyond the best level and no order IDs. It saves only about 27% against MBO.
+
+**TBBO (trades with best bid and offer), $28/GB, 8.1 GB, $210.00**
+- **What it is:** every trade, with the best bid and offer as it stood just before the trade.
+- **Key fields:** the Trades fields plus `levels[0]`.
+- **Good for:** everything Trades does, plus absorption and touch-liquidity analysis, spread at execution, and trade size against displayed size.
+- **Watch for:** you see the book only at moments when a trade happens, not in between.
+
+**Trades, $28/GB, 4.8 GB, $126.00**
+- **What it is:** every executed trade, tick by tick.
+- **Key fields:** `ts_event`, `ts_recv`, `instrument_id`, `price`, `size`, `side`, `action` (always T), `flags`, `sequence`.
+- **`side`:** the aggressor, A when a buyer lifted the ask... precisely, A means the resting order was on the ask side and B means it was on the bid side. Check the field description in Databento's docs before you map it to buy or sell, so you don't flip delta.
+- **Good for:** volume profile, footprint, price-level delta, cumulative delta, VWAP, tape statistics, and approximate big trades.
+- **Watch for:** no book information.
+
+## Sampled quote and bar schemas
+
+**BBO-1s and BBO-1m, $18/GB, BBO-1s 3.7 GB, $61.60**
+- **What it is:** one record per interval with the best bid and offer at the end of the interval, plus the last trade in that interval.
+- **Key fields:** `price`, `size`, `side` (last trade), and `levels[0]`.
+- **Good for:** a cheap, coarse view of the spread and touch size.
+- **Watch for:** it only samples the book, and it isn't a substitute for the full trade list. I didn't price BBO-1m.
+
+**OHLCV-1s / 1m / 1h / 1d, $70 / $70 / $190 / $190 per GB, 1m is 29.9 MB, $1.95**
+- **What it is:** open, high, low, close and volume bars.
+- **Key fields:** `open`, `high`, `low`, `close`, `volume`.
+- **Good for:** charting and quick backtests. It has no order-flow information. I didn't price 1s, 1h or 1d.
+
+## Reference and context schemas
+
+**Definition, $1.70/GB**
+- **What it is:** contract metadata.
+- **Key fields:** symbol, expiration, tick size, contract multiplier, minimum lot size, currency.
+- **Good for:** mapping `instrument_id` to symbols and knowing each contract's tick size and expiry, which you need when choosing the front month.
+
+**Statistics, $1.00/GB**
+- **What it is:** exchange statistics.
+- **Key fields:** settlement price, open interest, session high and low, cleared volume, and similar.
+- **Good for:** open interest and settlement levels.
+
+**Status, $4.00/GB**
+- **What it is:** trading-status changes.
+- **Examples:** pre-open, open, halt, close.
+- **Good for:** excluding halted periods and marking session boundaries.
+
+## Consolidated schemas (CMBP-1, CBBO-1s, CBBO-1m)
+
+- **Prices:** $1.80, $18 and $18 per GB.
+- **What they are:** versions of the top-of-book schemas that merge data across several venues.
+- **Why you can skip them:** CME futures trade on one venue, so these add nothing over MBP-1 and BBO. I haven't priced them.
+
+## Notes that apply to all of them
+- Timestamps are nanoseconds since the UNIX epoch. Prices are fixed-point integers scaled by 1e-9.
+- Billing is on uncompressed size, even if you download `.dbn.zst` files.
+- Selecting NQ in the portal pulls every contract month and spread. Using `NQ.v.0` through the API narrows it to the front month.
+- Prices change, so check the portal before buying.
+
+I can turn this into a doc if you'd rather paste it from there.

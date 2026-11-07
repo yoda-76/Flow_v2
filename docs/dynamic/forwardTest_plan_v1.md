@@ -86,3 +86,24 @@ strategy **live, each on its own MotiveWave Simulated account**, and forward-tes
 - **Size:** **1 micro each** — S1, S2, S3: 1 MNQ; Anchored VWAP: 1 MES.
 - **S2 exits:** **build trailing now** (order modify or cancel-and-replace for the TP/SL legs).
 - **Anchored VWAP:** **as designed — holds overnight and over weekends**, exits only on its own signal; its study has no session flatten.
+
+## 4. Status 2026-11-02 04:00 IST — built, parity-checked, deployed to this dev machine (commit b253f44)
+Parity from 2020 (AV from 2021-10): S1 1479/1479, S2 1991/1991 (+41 same-bar gap round trips, the live form of the
+Python gap skip, net −$62), S3 664/664, AV 556/556 — identical exits. Deployed with every gate passing.
+
+### User steps in MotiveWave (dev machine)
+1. Settings → General → Simulated Account: **Sim Trade Only ON**; add four Simulated accounts (any names, e.g. FT-S1,
+   FT-S2, FT-S3, FT-AV).
+2. Four **1-minute** charts, full 24-hour session, ≥ 30 days of history loaded: three MNQ (@MNQ or the front contract),
+   one MES.
+3. On each chart: FLOW → FLOW Runtime study. Strategy ID `mc_vault_break` / `mc_vwap_adx` / `mc_overnight_orb` (MNQ) and
+   `mc_daily_avwap` (MES). Mode **DRY_RUN**, Armed **off**. *Record Market Data* on for one MNQ chart only, and on the MES
+   chart. Pick that strategy's Sim account in the control box.
+4. Activate each. The first activation **refuses to arm** (`ACCOUNT_PROBE … kind=OTHER`) because the new account ids are
+   not listed yet — expected. Claude reads the log, adds the ids to `config/risk.local.json` `simAccountIds`, checks
+   `bar_history_warm_start` (`medianBarMs` 60000, enough bars) and the risk overrides.
+5. Re-activate; when the log is clean, the user switches each study to SIM_LIVE + Armed.
+
+### Live-unverified, to watch on the first days
+Order modify (S2 trailing) on Sim; whether the never-submitted probe order appears in MotiveWave's order list; the
+holiday dates in `config/strategies/*.json`; AV after a restart while holding (its position is then not managed).

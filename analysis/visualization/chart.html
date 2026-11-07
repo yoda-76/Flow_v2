@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLOW chart viewer</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #161c24; --fg: #d7dde5; --muted: #8592a3; --grid: #222b36; --border: #2b3542;
+    --up: #26a69a; --down: #ef5350; --accent: #4c8dff; --volup: rgba(38,166,154,.5); --voldown: rgba(239,83,80,.5);
+    --rr-win: rgba(38,166,154,.18); --rr-loss: rgba(239,83,80,.18); --rr-line: #8592a3;
+    --vp-va: rgba(76,141,255,.42); --vp-out: rgba(133,146,163,.26); --vp-poc: #f5a623; --vp-edge: #4c8dff;
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --panel: #f3f5f8; --fg: #1b2430; --muted: #5d6b7c; --grid: #e6eaf0; --border: #cfd6df;
+    --up: #159a8c; --down: #d6403d; --accent: #1f6feb; --volup: rgba(21,154,140,.5); --voldown: rgba(214,64,61,.5);
+    --rr-win: rgba(21,154,140,.15); --rr-loss: rgba(214,64,61,.15); --rr-line: #5d6b7c;
+    --vp-va: rgba(31,111,235,.34); --vp-out: rgba(93,107,124,.22); --vp-poc: #e08600; --vp-edge: #1f6feb;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+    font: 13px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  #bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--border); }
+  #sym { font-weight: 700; font-size: 15px; margin-right: 4px; }
+  .group { display: flex; gap: 2px; }
+  button, select, input { background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 8px; font: inherit; }
+  button { cursor: pointer; }
+  button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #rrhint { color: var(--muted); font-size: 12px; }
+  #legend { padding: 4px 16px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: normal;
+    border-bottom: 1px solid var(--border); min-height: 26px; }
+  #legend b { color: var(--fg); font-weight: 600; }
+  #legend .up { color: var(--up); } #legend .down { color: var(--down); }
+  #wrap { position: relative; flex: 1; min-height: 0; }
+  #chart { position: absolute; inset: 0; }
+  #msg { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; text-align: center;
+    padding: 16px; z-index: 5; background: var(--bg); color: var(--down); font-size: 15px; }
+  #gbinfo { position: absolute; top: 8px; right: 78px; z-index: 4; width: 330px; max-width: calc(100% - 100px);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; opacity: .96;
+    font-size: 11.5px; pointer-events: none; display: none; }
+  #gbinfo h4 { margin: 0 0 4px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
+  #gbinfo .row { padding: 3px 0; border-top: 1px solid var(--border); }
+  #gbinfo .k { color: var(--muted); }
+  #gbinfo .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+  #gbinfo .v.ok { color: var(--up); } #gbinfo .v.bad { color: var(--down); }
+  #gbinfo .p { color: var(--muted); font-size: 10.5px; }
+  @media (max-width: 600px) { #bar { padding: 6px 8px; } #legend { padding: 4px 8px; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="bar">
+    <span id="sym">-</span>
+    <span class="group" id="tfs"></span>
+    <select id="tz" title="Timezone (display only)">
+      <option value="America/Chicago" selected>America/Chicago</option>
+      <option value="Asia/Kolkata">Asia/Kolkata</option>
+      <option value="UTC">UTC</option>
+    </select>
+    <input type="date" id="goto" title="Go to date">
+    <button id="vptoggle" title="Session volume profiles (POC / VAH / VAL)" style="display:none">VP</button>
+    <button id="gbtoggle" title="Gianluca pre-signal panel: regime freshness, price efficiency, autocorrelation" style="display:none">GB info</button>
+    <button id="rrtool" title="Risk/reward block tool: click the chart to place one">RR: off</button>
+    <button id="rrclear" title="Remove all manual RR blocks">Clear RR</button>
+    <span id="rrhint"></span>
+    <button id="theme" title="Toggle light/dark">Light</button>
+  </div>
+  <div id="legend">&nbsp;</div>
+  <div id="wrap"><div id="chart"></div><div id="gbinfo"></div><div id="msg"></div></div>
+</div>
+
+<script src="https://unpkg.com/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>
+<script src="meta.js" onerror="window.VIZ_META_FAILED = true"></script>
+<script src="rr_block.js"></script>
+<script src="vp_profile.js"></script>
+<script src="overlays.js" onerror="void 0"></script>
+<script>
+(function () {
+  'use strict';
+  var TFS = ['1m', '5m', '15m', '1h', '4h', '1D'];
+  var TF_SEC = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1D': 86400 };
+  var msgEl = document.getElementById('msg');
+  function fail(text) { msgEl.textContent = text; msgEl.style.display = 'flex'; }
+
+  if (typeof LightweightCharts === 'undefined') { fail('Chart library failed to load (internet needed for the CDN script).'); return; }
+  var META = window.VIZ_META;
+  if (!META || window.VIZ_META_FAILED) { fail('meta.js not found - run viz_build.py first.'); return; }
+
+  var tick = META.tick || 0.1;
+  var precision = Math.max(0, Math.round(-Math.log10(tick)));
+  var priceFmt = { type: 'price', precision: precision, minMove: tick };
+  document.getElementById('sym').textContent = META.symbol;
+  document.title = META.symbol + ' chart viewer';
+
+  var tf = '15m', tz = 'America/Chicago', data = null, idxOf = null;
+  var root = document.documentElement;
+  function cssVar(n) { return getComputedStyle(root).getPropertyValue(n).trim(); }
+
+  // ---- timezone formatting (display only; data stays UTC seconds) ----
+  var fmtCache = {};
+  function dtf(key, opts) {
+    var k = tz + '|' + key;
+    if (!fmtCache[k]) { opts.timeZone = tz; fmtCache[k] = new Intl.DateTimeFormat('en-GB', opts); }
+    return fmtCache[k];
+  }
+  function toSec(t) { return typeof t === 'number' ? t : (t && t.timestamp) || 0; }
+  // A 1D bar's time is its session start (17:00 CT the evening before); label it with the trade date,
+  // which is the UTC calendar date 12 h later, whatever display timezone is picked.
+  var tradeDate = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', year: 'numeric', month: 'short', day: '2-digit', weekday: 'short' });
+  var tradeMonth = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', month: 'short', year: 'numeric' });
+  var tradeYear = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', year: 'numeric' });
+  var tradeDay = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short' });
+  function sessionDate(t) { return new Date((toSec(t) + 43200) * 1000); }
+  function fullFormatter(t) {
+    var d = new Date(toSec(t) * 1000);
+    if (tf === '1D') return tradeDate.format(sessionDate(t));
+    return dtf('f', { year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+  }
+  function tickFormatter(t, type) {
+    var d = new Date(toSec(t) * 1000), E = LightweightCharts.TickMarkType;
+    if (tf === '1D') {
+      var sd = sessionDate(t);
+      return type === E.Year ? tradeYear.format(sd) : type === E.Month ? tradeMonth.format(sd) : tradeDay.format(sd);
+    }
+    if (type === E.Year) return dtf('y', { year: 'numeric' }).format(d);
+    if (type === E.Month) return dtf('m', { month: 'short', year: 'numeric' }).format(d);
+    if (type === E.DayOfMonth) return dtf('dm', { day: '2-digit', month: 'short' }).format(d);
+    if (type === E.TimeWithSeconds) return dtf('hms', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d);
+    return dtf('hm', { hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+  }
+
+  // ---- chart ----
+  function layoutOpts() {
+    return {
+      layout: { background: { type: 'solid', color: cssVar('--bg') }, textColor: cssVar('--fg'), panes: { separatorColor: cssVar('--border') } },
+      grid: { vertLines: { color: cssVar('--grid') }, horzLines: { color: cssVar('--grid') } },
+      rightPriceScale: { borderColor: cssVar('--border') },
+      timeScale: { borderColor: cssVar('--border') }
+    };
+  }
+  // layoutOpts() carries its own timeScale key, so apply it separately: applyOptions deep-merges, Object.assign would not
+  var chart = LightweightCharts.createChart(document.getElementById('chart'), {
+    autoSize: true,
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    localization: { timeFormatter: fullFormatter },
+    timeScale: { timeVisible: true, secondsVisible: false, tickMarkFormatter: tickFormatter }
+  });
+  chart.applyOptions(layoutOpts());
+
+  var candles = chart.addSeries(LightweightCharts.CandlestickSeries, {
+    upColor: cssVar('--up'), downColor: cssVar('--down'), borderVisible: false,
+    wickUpColor: cssVar('--up'), wickDownColor: cssVar('--down'), priceFormat: priceFmt
+  }, 0);
+  var volume = chart.addSeries(LightweightCharts.HistogramSeries, { priceFormat: { type: 'volume' }, priceLineVisible: false, lastValueVisible: false }, 1);
+  try { chart.panes()[1].setHeight(110); } catch (e) { /* pane sizing is cosmetic */ }
+
+  // ---- RR blocks (overlay primitive on the candle series) ----
+  var rr = new window.RRBlocks();
+  candles.attachPrimitive(rr);
+  rr.setPrecision(precision);
+  var rrKey = 'viz-rr-' + META.symbol, rrTool = 'off';
+  function loadManual() {
+    try { var a = JSON.parse(localStorage.getItem(rrKey) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+  }
+  function saveManual() {
+    try {
+      var m = rr.blocks().filter(function (b) { return String(b.id).indexOf('m-') === 0; });
+      localStorage.setItem(rrKey, JSON.stringify(m));
+    } catch (e) { /* storage unavailable: blocks just don't persist */ }
+  }
+  var overlays = (window.VIZ_OVERLAYS || []).map(function (b, i) {
+    var c = {}; for (var k in b) c[k] = b[k];
+    c.id = 'ov-' + (b.id !== undefined ? b.id : i);
+    return c;
+  });
+  rr.setBlocks(overlays.concat(loadManual()));
+
+  // ---- session volume profiles (profiles.js is loaded lazily; the VP button appears once it is in) ----
+  var vp = new window.VPProfile();
+  candles.attachPrimitive(vp);
+  vp.setPrecision(precision);
+  var vpBtn = document.getElementById('vptoggle');
+  function vpLabel() { vpBtn.classList.toggle('active', vp.visible()); }
+  if (META.profiles) {
+    var ps = document.createElement('script');
+    ps.src = 'profiles.js';
+    ps.onload = function () { if (window.VIZ_PROFILES) { vp.setProfiles(window.VIZ_PROFILES); vpBtn.style.display = ''; vpLabel(); } };
+    document.head.appendChild(ps);
+  }
+  vpBtn.onclick = function () { vp.setVisible(!vp.visible()); vpLabel(); };
+
+  // ---- Gianluca pre-signal panel (indicators.js, lazy): regime freshness, price efficiency, autocorrelation ----
+  var IND = null, indT = [], acT = [], gbOn = true;
+  var gbBox = document.getElementById('gbinfo'), gbBtn = document.getElementById('gbtoggle');
+  function lastLE(arr, t) {
+    var lo = 0, hi = arr.length - 1, r = -1;
+    while (lo <= hi) { var m = (lo + hi) >> 1; if (arr[m] <= t) { r = m; lo = m + 1; } else hi = m - 1; }
+    return r;
+  }
+  function num(x) { return Math.round(x).toLocaleString('en-US'); }
+  function renderGb(barSec) {
+    if (!IND || !gbOn) { gbBox.style.display = 'none'; return; }
+    // the latest 15m bar that has CLOSED by the end of the hovered bar (no peeking at an unfinished 15m bar)
+    var i = lastLE(indT, barSec + TF_SEC[tf] - IND.tf);
+    if (i < 0) { gbBox.style.display = 'none'; return; }
+    var b = IND.bars[i], prev = i > 0 ? IND.bars[i - 1] : null, closeT = b[0] + IND.tf;
+    var age = b[1], fresh = age <= IND.bestAge ? 'FRESH' : age <= 60 ? 'MATURE' : 'OLD';
+    var h = '<h4>Gianluca pre-signal · 15m bar ' + dtf('hm', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(b[0] * 1000)) + ' ' + tz.split('/').pop() + '</h4>';
+    h += '<div class="row"><span class="k">Regime freshness</span> <span class="v ' + (age <= IND.bestAge ? 'ok' : age > 60 ? 'bad' : '') + '">' + age + ' bars · ' + fresh + '</span>' +
+         '<div class="p">preferred: FRESH (age 0–' + IND.bestAge + ' bars; 31–60 mature, 61+ old)</div></div>';
+    var atr = b[6], reg = atr === null ? null : atr <= 25 ? 'LOW' : atr <= 50 ? 'MEDIUM' : atr <= 75 ? 'HIGH' : 'EXTREME';
+    var atrBest = atr !== null && atr > IND.bestAtr[0] && atr <= IND.bestAtr[1];
+    h += '<div class="row"><span class="k">Volatility regime</span> <span class="v ' + (atrBest ? 'ok' : '') + '">' +
+         (atr === null ? 'warming up' : 'ATR pct ' + atr.toFixed(0) + ' · ' + reg) + '</span>' +
+         '<div class="p">preferred: HIGH (ATR percentile 51–75; 0–25 low, 26–50 medium, 76+ extreme)</div></div>';
+    var eff = b[2] ? 'Reducing volume' : (b[3] ? 'Low effort only' : 'Not reducing');
+    h += '<div class="row"><span class="k">Price efficiency</span> <span class="v ' + (b[2] ? 'ok' : '') + '">' + eff + '</span>' +
+         '<div class="p">vol ' + num(b[4]) + (prev ? ' vs prev ' + num(prev[4]) : '') + (b[5] !== null ? ' · MA20 ' + num(b[5]) : '') +
+         (b[3] ? ' · below MA' : '') + '</div><div class="p">preferred: reducing volume (vol &lt; previous bar)</div></div>';
+    var acTxt = 'n/a (build with --gb-trades)', acCls = '', acNote = '';
+    if (IND.hasAc) {
+      var j = lastLE(acT, closeT);
+      if (j < 0) { acTxt = 'warming up (&lt; 30 trades)'; }
+      else {
+        var e = IND.ac[j], st = e[1];
+        acNote = 'last trades ' + e[3].split('').join(' ') + ' · strength ' + st.toFixed(1);
+        if (e[2] === 'best') { acTxt = 'BEST trade next'; acCls = 'ok'; }
+        else if (e[2] === 'skip') { acTxt = 'SKIP next trade'; acCls = 'bad'; }
+        else if (st < 3) { acTxt = 'no memory (strength &lt; 3)'; }
+        else { acTxt = 'normal trade'; }
+      }
+    }
+    h += '<div class="row"><span class="k">Autocorrelation</span> <span class="v ' + acCls + '">' + acTxt + '</span>' +
+         (acNote ? '<div class="p">' + acNote + '</div>' : '') +
+         '<div class="p">preferred: next trade after L L L W · strength ≥ 3 (skip after W W W L)</div></div>';
+    gbBox.innerHTML = h; gbBox.style.display = 'block';
+  }
+  function gbLabel() { gbBtn.classList.toggle('active', gbOn); }
+  gbBtn.onclick = function () { gbOn = !gbOn; gbLabel(); renderGb(data ? data[data.length - 1][0] : 0); };
+  if (META.indicators) {
+    var is = document.createElement('script');
+    is.src = 'indicators.js';
+    is.onload = function () {
+      if (!window.VIZ_IND) return;
+      IND = window.VIZ_IND; indT = IND.bars.map(function (x) { return x[0]; }); acT = IND.ac.map(function (x) { return x[0]; });
+      gbBtn.style.display = ''; gbLabel(); if (data) renderGb(data[data.length - 1][0]);
+    };
+    document.head.appendChild(is);
+  }
+
+  // ---- data ----
+  function loadTf(name, cb) {
+    window.VIZ_DATA = window.VIZ_DATA || {};
+    if (window.VIZ_DATA[name]) { cb(); return; }
+    var s = document.createElement('script');
+    s.src = 'data_' + name + '.js';
+    s.onload = function () { window.VIZ_DATA[name] ? cb() : fail('data_' + name + '.js is empty - run viz_build.py first.'); };
+    s.onerror = function () { fail('data_' + name + '.js not found - run viz_build.py first.'); };
+    document.head.appendChild(s);
+  }
+  function bind(keepRange) {
+    var saved = keepRange ? chart.timeScale().getVisibleLogicalRange() : null;
+    var raw = window.VIZ_DATA[tf], c = new Array(raw.length), v = new Array(raw.length);
+    idxOf = new Map();
+    var up = cssVar('--volup'), dn = cssVar('--voldown');
+    for (var i = 0; i < raw.length; i++) {
+      var r = raw[i];
+      c[i] = { time: r[0], open: r[1], high: r[2], low: r[3], close: r[4] };
+      v[i] = { time: r[0], value: r[5], color: r[4] >= r[1] ? up : dn };
+      idxOf.set(r[0], i);
+    }
+    data = raw;
+    var times = raw.map(function (r) { return r[0]; });
+    rr.setTimeframe(TF_SEC[tf], times);
+    vp.setTimeframe(TF_SEC[tf], times);
+    candles.setData(c);
+    volume.setData(v);
+    var n = raw.length;
+    chart.timeScale().setVisibleLogicalRange(saved || { from: Math.max(0, n - 200), to: n + 5 });
+    showLegend(n - 1);
+  }
+  function setTf(name) {
+    loadTf(name, function () {
+      tf = name; msgEl.style.display = 'none';
+      Array.prototype.forEach.call(document.querySelectorAll('#tfs button'), function (b) { b.classList.toggle('active', b.dataset.tf === tf); });
+      bind();
+    });
+  }
+
+  // ---- legend ----
+  var legend = document.getElementById('legend');
+  function fmtP(x) { return x.toFixed(precision); }
+  function showLegend(i) {
+    if (!data || i < 0 || i >= data.length) { legend.innerHTML = '&nbsp;'; return; }
+    var r = data[i], prev = i > 0 ? data[i - 1][4] : r[1], ch = r[4] - prev, pct = prev ? ch / prev * 100 : 0;
+    var cls = ch >= 0 ? 'up' : 'down';
+    legend.innerHTML = fullFormatter(r[0]) + ' &nbsp; O <b>' + fmtP(r[1]) + '</b> H <b>' + fmtP(r[2]) + '</b> L <b>' + fmtP(r[3]) +
+      '</b> C <b>' + fmtP(r[4]) + '</b> V <b>' + r[5].toLocaleString('en-US') + '</b> &nbsp; <span class="' + cls + '">' +
+      (ch >= 0 ? '+' : '') + fmtP(ch) + ' (' + (ch >= 0 ? '+' : '') + pct.toFixed(2) + '%)</span>';
+    renderGb(r[0]);
+  }
+  chart.subscribeCrosshairMove(function (param) {
+    if (!data) return;
+    var t = param && param.time, bar = t && param.seriesData && param.seriesData.get(candles);
+    if (!t || !bar) { showLegend(data.length - 1); return; }
+    var i = idxOf.get(toSec(t));
+    showLegend(i === undefined ? data.length - 1 : i);
+  });
+
+  // ---- controls ----
+  var tfBox = document.getElementById('tfs');
+  TFS.forEach(function (name) {
+    var b = document.createElement('button'); b.textContent = name; b.dataset.tf = name;
+    b.onclick = function () { setTf(name); }; tfBox.appendChild(b);
+  });
+  document.getElementById('tz').onchange = function () {
+    tz = this.value; fmtCache = {};
+    chart.applyOptions({ localization: { timeFormatter: fullFormatter }, timeScale: { tickMarkFormatter: tickFormatter } });
+    if (data) showLegend(data.length - 1);
+  };
+  document.getElementById('goto').onchange = function () {
+    if (!this.value || !data) return;
+    var p = this.value.split('-'), from = Date.UTC(+p[0], +p[1] - 1, +p[2]) / 1000;
+    var first = data[0][0], last = data[data.length - 1][0];
+    var to = from + 200 * TF_SEC[tf];
+    if (from < first) from = first;
+    if (to > last) to = last;
+    if (from >= to) from = Math.max(first, to - 200 * TF_SEC[tf]);
+    try { chart.timeScale().setVisibleRange({ from: from, to: to }); } catch (e) { fail('Date out of range'); }
+  };
+  document.getElementById('theme').onclick = function () {
+    var light = root.dataset.theme !== 'light';
+    root.dataset.theme = light ? 'light' : 'dark';
+    this.textContent = light ? 'Dark' : 'Light';
+    chart.applyOptions(layoutOpts());
+    candles.applyOptions({ upColor: cssVar('--up'), downColor: cssVar('--down'), wickUpColor: cssVar('--up'), wickDownColor: cssVar('--down') });
+    if (data) bind(true);  // re-colour volume, keep the current view
+  };
+
+  // ---- RR tool ----
+  var rrBtn = document.getElementById('rrtool'), rrHint = document.getElementById('rrhint');
+  rrBtn.onclick = function () {
+    rrTool = rrTool === 'off' ? 'long' : rrTool === 'long' ? 'short' : 'off';
+    rrBtn.textContent = 'RR: ' + rrTool;
+    rrBtn.classList.toggle('active', rrTool !== 'off');
+    rrHint.textContent = rrTool === 'off' ? '' : 'click to place';
+  };
+  document.getElementById('rrclear').onclick = function () {
+    rr.blocks().forEach(function (b) { if (String(b.id).indexOf('m-') === 0) rr.remove(b.id); });
+    saveManual();
+  };
+  function roundTick(x) { return Math.round(x / tick) * tick; }
+  function cleanP(x) { return +x.toFixed(precision + 2); }
+  function avgTrueRange(i) {  // 14 bars before index i
+    var sum = 0, n = 0;
+    for (var k = Math.max(1, i - 14); k < i; k++) {
+      var h = data[k][2], l = data[k][3], pc = data[k - 1][4];
+      sum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)); n++;
+    }
+    return n ? sum / n : 0;
+  }
+  chart.subscribeClick(function (param) {
+    if (!data || !param) return;
+    if (rrTool === 'off') {
+      var hid = param.hoveredObjectId;
+      if (typeof hid === 'string' && hid.indexOf('m-') === 0 && confirm('Remove this RR block?')) { rr.remove(hid); saveManual(); }
+      return;
+    }
+    if (!param.point || param.logical === undefined || param.logical === null || !param.time) return;
+    var price = candles.coordinateToPrice(param.point.y);
+    if (price === null || price === undefined) return;
+    var start = toSec(param.time), i = idxOf.get(start);
+    if (i === undefined) return;
+    var entry = roundTick(price);
+    var risk = Math.max(20 * tick, roundTick(avgTrueRange(i)));
+    var long = rrTool === 'long', sgn = long ? 1 : -1;
+    rr.add({
+      id: 'm-' + Date.now(), side: rrTool, start: start, end: start + 30 * TF_SEC[tf],
+      entry: cleanP(entry), stop: cleanP(entry - sgn * risk), target: cleanP(entry + sgn * 2 * risk), label: 'manual'
+    });
+    saveManual();
+  });
+
+  setTf('15m');
+})();
+</script>
+</body>
+</html>

@@ -59,6 +59,10 @@ running comparison table; save full per-trade output to a file under `analysis/d
 growing entry in `decisions.md` per sweep, not one per run. Do not claim a cause when a run changed two things;
 say when a run does not isolate a variable — but still report it.
 
+**Give durations in calendar months** (user, 2026-11-07): times like "days to the first payout" are calendar days in the
+simulations. In chat, convert them to calendar months (days ÷ 30.4, one decimal, e.g. "5.4 months"). Say "trading days"
+explicitly when a figure counts only session days (e.g. the eval's ~35 trading days ≈ 1½ calendar months).
+
 ## 6. Verification habits (they have caught real bugs)
 
 - **Mutation-test every new piece**: copy the source to a scratch tree, break one behaviour, and a test must fail.

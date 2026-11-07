@@ -1,0 +1,6 @@
+[
+  {"id": "ex-short", "side": "short", "start": "2026-10-14T11:00:00Z", "end": "2026-10-14T15:00:00Z",
+   "entry": 4160.0, "stop": 4172.0, "target": 4112.0, "label": "example short (drop)"},
+  {"id": "ex-long", "side": "long", "start": "2026-10-14T13:15:00Z", "end": "2026-10-14T16:15:00Z",
+   "entry": 4111.0, "stop": 4101.0, "target": 4131.0, "label": "example long"}
+]

@@ -37,7 +37,8 @@ Medians over 200 noise runs, 1,564 start days each:
   - **Flex 150K 10/7 ($396 / month)** and **Flex 100K 7/5 ($323)** collapse for starts in 2025, the most recent year: only
     43% and 0% were paid within 12 months. That is also why about 14% of their starts never break even (§7.4). Flex pays at
     most 50% of account profit, so a $3,000 payout needs $6,000 of profit first.
-  - **Pro 150K 10/7 ($340)** costs $912 in fees, and 10% of starts never break even.
+  - **Pro 150K 10/7 ($340)** costs $912 in fees, and 10% of starts never break even. *(Pro 150K at 10/5 or 14/5 is steadier:
+    see the safety screen below.)*
   - **Direct 150K at 5 MNQ ($296)** is steady in every year with 0% never breaking even, but costs $787 upfront and takes ~6
     months.
 - **Always request the maximum.** With $500 requests the fees eat the payout: every 100K and 150K "$500" combo nets about $0
@@ -45,6 +46,35 @@ Medians over 200 noise runs, 1,564 start days each:
 
 **If the smallest outlay matters most:** Pro 25K 3/1 "max": $123 per month, $207 in fees, 162 days, 100% paid within 12 months
 in every year and every stress case except the 50% profit cut (77%).
+
+**Safety screen over all 782 combos** (added 2026-11-07).
+- **Screen:** "max" requests with:
+  - ≥ 95% paid within 12 months;
+  - 0% never breaking even (noise medians);
+  - at most 5% never breaking even with profits cut by 50%;
+  - ≥ 88% paid within 12 months with profits cut by 25%.
+- **Result:** only 8 combos pass, all of them Pro. No Flex or Direct combo passes.
+- The table shows noise medians over the 50 stage-1 runs. Only 50K 6/2 and the 25K combos also have full depth (200 runs).
+
+| Combo | First payout | Months to it | Paid ≤ 6 / 12 mo | Fees | Net / month | Net / month at −50% profit |
+|---|---|---|---|---|---|---|
+| Pro 150K 14/5 | $3,000 | **4.8** | 67% / 99% | $941 | **$329** | $73 |
+| Pro 150K 13/5 | $3,000 | 5.0 | 65% / 98% | $913 | $322 | $88 |
+| Pro 150K 12/5 | $3,000 | 5.1 | 61% / 97% | $907 | $310 | $95 |
+| **Pro 100K 9/3** (middle ground) | $2,500 | 5.6 | 57% / 99% | $662 | $270 | $107 |
+| Pro 100K 8/3 | $2,500 | 5.7 | 54% / 98% | $622 | $267 | $97 |
+| **Pro 50K 6/2** (recommended) | $2,000 | 5.3 | 60% / 100% | **$367** | $255 | **$119** |
+| Pro 25K 3/1 | $1,000 | 5.3 | 62% / 100% | $207 | $124 | $61 |
+| Pro 25K 2/1 | $1,000 | 5.7 | 55% / 99% | $190 | $121 | $46 |
+
+- **Speed barely differs among the safe combos** (4.8–5.7 months). The real choice is payout size against money at risk.
+- **What each payout returns on its fees** (received ÷ fees):
+  - 50K 6/2: about 4.9×;
+  - 100K 9/3: about 3.4×;
+  - 150K 14/5: about 2.9×.
+- **Pro 150K 10/5** narrowly misses the screen (−50% profit: 10% never break even), but otherwise makes $331 / month in 5.3
+  months for $802 in fees, and paid 100% of starts within 12 months in every start year (base).
+- **Next:** run Pro 100K 9/3 and Pro 150K 14/5 and 10/5 on noise runs 51–200 so they are as deeply tested as 50K 6/2.
 
 **How sure:** the edge passed R-1 (§3), the grid reproduces the earlier Pro 25K results journey by journey, and Pro 50K 6/2 stays
 profitable with half the backtest profit. It is still a backtest on 7 years of NQ, so the times and fees are estimates and the
